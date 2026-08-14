@@ -90,6 +90,12 @@ class NotFoundError(ProgressError):
 	code = "not-found"
 
 
+class InvalidStatusError(ProgressError):
+	"""Indicate that a requested status filter is not one of the task's valid statuses."""
+
+	code = "invalid-status"
+
+
 class GitBindingError(ProgressError):
 	"""Indicate that Git could not read or write the local link between this repository and its project."""
 

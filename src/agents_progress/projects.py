@@ -34,6 +34,10 @@ class Project:
 		"""Build a Project from a sqlite3.Row returned by a projects query."""
 		return cls(row["id"], row["slug"], row["name"], row["created_at"])
 
+	def to_dict(self) -> dict[str, str]:
+		"""Return the project's public fields, leaving out the internal created_at timestamp."""
+		return {"id": self.id, "slug": self.slug, "name": self.name}
+
 
 class BindingRepository(Protocol):
 	"""Provide the Git binding operations required by ProjectStore."""

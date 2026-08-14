@@ -12,6 +12,7 @@ from .errors import (
 	EmptyValueError,
 	GitBindingError,
 	InvalidObjectIdError,
+	InvalidStatusError,
 	MigrationFailedError,
 	NotAProjectError,
 	NotFoundError,
@@ -33,18 +34,22 @@ from .ids import (
 	is_valid_object_id,
 	validate_object_id,
 )
+from .models import Chunk, Release, Task
 from .projects import Project, ProjectStore
+from .reads import ReadStore
 
 __all__ = [
 	"AlreadyInitialisedError",
 	"BUSY_TIMEOUT_SECONDS",
 	"CHUNK_PREFIX",
+	"Chunk",
+	"DEFAULT_DATABASE_PATH",
 	"Database",
 	"DatabaseBusyError",
-	"DEFAULT_DATABASE_PATH",
 	"EmptyValueError",
 	"GitBindingError",
 	"InvalidObjectIdError",
+	"InvalidStatusError",
 	"MigrationFailedError",
 	"NOTE_PREFIX",
 	"NotAProjectError",
@@ -57,8 +62,11 @@ __all__ = [
 	"ProjectBindingRecoveryError",
 	"ProjectStore",
 	"RELEASE_PREFIX",
+	"ReadStore",
+	"Release",
 	"StaleSchemaError",
 	"TASK_PREFIX",
+	"Task",
 	"UninitialisedProjectError",
 	"WrongObjectIdTypeError",
 	"connect_database",
