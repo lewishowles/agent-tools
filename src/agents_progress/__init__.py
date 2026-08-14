@@ -8,20 +8,27 @@ from .database import (
 )
 from .errors import (
 	AlreadyInitialisedError,
+	AlreadyExistsError,
+	ConflictingInProgressError,
 	DatabaseBusyError,
+	DuplicateDependencyError,
 	EmptyValueError,
 	GitBindingError,
+	InvalidDependencyError,
 	InvalidObjectIdError,
 	InvalidStatusError,
+	InvalidTransitionError,
 	MigrationFailedError,
 	NotAProjectError,
 	NotFoundError,
 	ObjectIdCollisionError,
 	OrphanedProjectError,
+	PendingChunksError,
 	ProgressError,
 	ProjectBindingRecoveryError,
 	StaleSchemaError,
 	UninitialisedProjectError,
+	UnresolvedDependenciesError,
 	WrongObjectIdTypeError,
 )
 from .ids import (
@@ -34,29 +41,38 @@ from .ids import (
 	is_valid_object_id,
 	validate_object_id,
 )
-from .models import Chunk, Release, Task
+from .models import Chunk, Context, Note, Release, Task
 from .projects import Project, ProjectStore
 from .reads import ReadStore
+from .writes import WriteStore
 
 __all__ = [
+	"AlreadyExistsError",
 	"AlreadyInitialisedError",
 	"BUSY_TIMEOUT_SECONDS",
 	"CHUNK_PREFIX",
 	"Chunk",
+	"ConflictingInProgressError",
+	"Context",
 	"DEFAULT_DATABASE_PATH",
 	"Database",
 	"DatabaseBusyError",
+	"DuplicateDependencyError",
 	"EmptyValueError",
 	"GitBindingError",
+	"InvalidDependencyError",
 	"InvalidObjectIdError",
 	"InvalidStatusError",
+	"InvalidTransitionError",
 	"MigrationFailedError",
 	"NOTE_PREFIX",
 	"NotAProjectError",
 	"NotFoundError",
+	"Note",
 	"ObjectIdCollisionError",
 	"OrphanedProjectError",
 	"PROJECT_PREFIX",
+	"PendingChunksError",
 	"ProgressError",
 	"Project",
 	"ProjectBindingRecoveryError",
@@ -68,6 +84,8 @@ __all__ = [
 	"TASK_PREFIX",
 	"Task",
 	"UninitialisedProjectError",
+	"UnresolvedDependenciesError",
+	"WriteStore",
 	"WrongObjectIdTypeError",
 	"connect_database",
 	"generate_object_id",

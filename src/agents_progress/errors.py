@@ -90,8 +90,50 @@ class NotFoundError(ProgressError):
 	code = "not-found"
 
 
+class ConflictingInProgressError(ProgressError):
+	"""Indicate that another task is already in progress for the project."""
+
+	code = "conflicting-in-progress"
+
+
+class InvalidDependencyError(ProgressError):
+	"""Indicate that a task dependency cannot be added."""
+
+	code = "invalid-dependency"
+
+
+class DuplicateDependencyError(ProgressError):
+	"""Indicate that a task dependency already exists."""
+
+	code = "duplicate-dependency"
+
+
+class AlreadyExistsError(ProgressError):
+	"""Indicate that a unique record already exists."""
+
+	code = "already-exists"
+
+
+class UnresolvedDependenciesError(ProgressError):
+	"""Indicate that a task cannot start until its dependencies are done."""
+
+	code = "unresolved-dependencies"
+
+
+class PendingChunksError(ProgressError):
+	"""Indicate that a task still has chunks to complete."""
+
+	code = "pending-chunks"
+
+
+class InvalidTransitionError(ProgressError):
+	"""Indicate that a lifecycle transition is not valid for the current state."""
+
+	code = "invalid-transition"
+
+
 class InvalidStatusError(ProgressError):
-	"""Indicate that a requested status filter is not one of the task's valid statuses."""
+	"""Indicate that a requested status is not valid for the command."""
 
 	code = "invalid-status"
 

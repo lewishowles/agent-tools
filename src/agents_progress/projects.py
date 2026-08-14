@@ -194,3 +194,24 @@ class ProjectStore:
 			)
 
 		return project
+
+
+class _StoreBase:
+	"""Share database setup and current-project resolution across store types."""
+
+	def __init__(
+		self,
+		database: Database | None = None,
+		project_store: ProjectStore | None = None,
+	) -> None:
+		"""Let read and write stores share one database and project store."""
+		if project_store is None:
+			self.database = database or Database()
+			self.projects = ProjectStore(self.database)
+		else:
+			self.projects = project_store
+			self.database = database or project_store.database
+
+	def current_project(self, path: str | Path | None = None) -> Project:
+		"""Resolve the project bound to the given path (or the working directory)."""
+		return self.projects.current(path)

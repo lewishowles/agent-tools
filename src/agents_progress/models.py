@@ -76,3 +76,44 @@ class Chunk:
 
 	def to_dict(self) -> dict[str, object]:
 		return dataclasses.asdict(self)
+
+
+@dataclass(frozen=True)
+class Note:
+	"""A stored discovery or decision note."""
+
+	id: str
+	project_id: str
+	task_id: str | None
+	type: str
+	body: str
+	supersedes_id: str | None
+	created_at: str
+
+	@classmethod
+	def from_row(cls, row: object) -> "Note":
+		return cls(**dict(row))
+
+	def to_dict(self) -> dict[str, object]:
+		return dataclasses.asdict(self)
+
+
+@dataclass(frozen=True)
+class Context:
+	"""The current handoff context for one project."""
+
+	project_id: str
+	current_goal: str | None
+	previous_step: str | None
+	next_step: str | None
+	standing_context: str | None
+	verify_with: str | None
+	stop_marker: str | None
+	updated_at: str
+
+	@classmethod
+	def from_row(cls, row: object) -> "Context":
+		return cls(**dict(row))
+
+	def to_dict(self) -> dict[str, object]:
+		return dataclasses.asdict(self)

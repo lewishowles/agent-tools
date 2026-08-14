@@ -4,11 +4,10 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 import sqlite3
 
-from .database import Database
 from .errors import InvalidStatusError, NotFoundError
 from .ids import TASK_PREFIX, validate_object_id
 from .models import Chunk, Release, Task
-from .projects import Project, ProjectStore
+from .projects import _StoreBase
 
 # Default and maximum page size for bounded list responses.
 DEFAULT_LIMIT = 50
@@ -52,25 +51,8 @@ def page_response(
 	}
 
 
-class ReadStore:
+class ReadStore(_StoreBase):
 	"""Run the current project's read queries against the progress database."""
-
-	def __init__(
-		self,
-		database: Database | None = None,
-		project_store: ProjectStore | None = None,
-	) -> None:
-		"""Share a database and project store, opening a default database if neither is given."""
-		if project_store is None:
-			self.database = database or Database()
-			self.projects = ProjectStore(self.database)
-		else:
-			self.projects = project_store
-			self.database = database or project_store.database
-
-	def current_project(self, path: str | Path | None = None) -> Project:
-		"""Resolve the project bound to path (or the working directory)."""
-		return self.projects.current(path)
 
 	def next(self, path: str | Path | None = None) -> dict[str, object]:
 		"""Return the current project's in-progress task, its active chunk, and a next-command hint."""
