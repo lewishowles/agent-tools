@@ -309,6 +309,34 @@ def test_rename_updates_titles_without_changing_identifiers_or_slugs(
 	assert renamed_chunk["title"] == "Renamed chunk"
 
 
+@pytest.mark.parametrize("initial_status", ["planned", "active"])
+def test_release_complete_moves_planned_or_active_releases_to_done(
+	tmp_path: Path, initial_status: str
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", status=initial_status)
+
+	completed = store.release_complete(release["id"])
+
+	assert completed["id"] == release["id"]
+	assert completed["status"] == "done"
+
+
+def test_release_complete_rejects_an_already_done_release(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", status="done")
+
+	with pytest.raises(InvalidTransitionError, match="done"):
+		store.release_complete(release["id"])
+
+	assert (
+		ReadStore(store.database, _ProjectStore(store.database)).release_list()[
+			"items"
+		][0]["status"]
+		== "done"
+	)
+
+
 def test_two_short_writes_complete_with_the_configured_database_locking(
 	tmp_path: Path,
 ) -> None:

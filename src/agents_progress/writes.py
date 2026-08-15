@@ -172,6 +172,40 @@ class WriteStore(_StoreBase):
 				).fetchone()
 			).to_dict()
 
+	def release_complete(
+		self, release_id: str, path: str | Path | None = None
+	) -> dict[str, object]:
+		"""Complete a planned or active current-project release."""
+		validate_object_id(release_id, RELEASE_PREFIX)
+		project = self.current_project(path)
+
+		with self.database.transaction() as connection:
+			release = connection.execute(
+				"SELECT id, project_id, slug, title, overview, status, position "
+				"FROM releases WHERE id = ? AND project_id = ?",
+				(release_id, project.id),
+			).fetchone()
+			if release is None:
+				raise NotFoundError(
+					f"release {release_id} was not found", {"id": release_id}
+				)
+			if release["status"] not in {"planned", "active"}:
+				raise InvalidTransitionError(
+					f"release {release_id} cannot be completed from status {release['status']}",
+					{"id": release_id, "status": release["status"]},
+				)
+
+			connection.execute(
+				"UPDATE releases SET status = 'done' WHERE id = ?", (release_id,)
+			)
+			return Release.from_row(
+				connection.execute(
+					"SELECT id, project_id, slug, title, overview, status, position "
+					"FROM releases WHERE id = ?",
+					(release_id,),
+				).fetchone()
+			).to_dict()
+
 	def task_add(
 		self,
 		slug: str,

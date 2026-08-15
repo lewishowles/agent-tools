@@ -168,6 +168,11 @@ _COMMAND_SPECS = (
 					_argument("--title", required=True),
 				),
 			),
+			_CommandSpec(
+				"complete",
+				"complete a planned or active release",
+				arguments=(_argument("release_id"),),
+			),
 		),
 		destination="release_command",
 	),
@@ -464,6 +469,10 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 		("release", "rename"): lambda: (
 			WriteStore(database).release_rename(args.release_id, args.title),
 			"release rename",
+		),
+		("release", "complete"): lambda: (
+			WriteStore(database).release_complete(args.release_id),
+			"release complete",
 		),
 		("task", "add"): lambda: (
 			WriteStore(database).task_add(

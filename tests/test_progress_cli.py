@@ -70,6 +70,7 @@ def test_json_success_uses_the_stable_envelope(
 			"release_rename",
 			"write",
 		),
+		(["release", "complete", "rel_" + "r" * 22], "release_complete", "write"),
 		(["task", "remove", "tsk_" + "t" * 22], "task_remove", "write"),
 		(
 			["task", "rename", "tsk_" + "t" * 22, "--title", "Renamed task"],
