@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 
 from .database import Database
 from .errors import ProgressError
@@ -22,6 +23,31 @@ class ProgressArgumentParser(argparse.ArgumentParser):
 	def error(self, message: str) -> None:
 		"""Turn an argparse usage error into a CliUsageError the caller can format."""
 		raise CliUsageError(message)
+
+
+@dataclass(frozen=True)
+class _ArgumentSpec:
+	"""Describe one argument on a command parser."""
+
+	names: tuple[str, ...]
+	kwargs: dict[str, object]
+
+
+@dataclass(frozen=True)
+class _CommandSpec:
+	"""Describe one command parser and any nested command parsers."""
+
+	name: str
+	help_text: str
+	arguments: tuple[_ArgumentSpec, ...] = ()
+	children: tuple["_CommandSpec", ...] = ()
+	destination: str | None = None
+	page_options: bool = False
+
+
+def _argument(*names: str, **kwargs: object) -> _ArgumentSpec:
+	"""Create one declarative argparse argument specification."""
+	return _ArgumentSpec(names, kwargs)
 
 
 def _add_output_options(parser: argparse.ArgumentParser) -> None:
@@ -56,196 +82,277 @@ def _add_page_options(parser: argparse.ArgumentParser) -> None:
 	)
 
 
-def _add_navigation_commands(commands: argparse._SubParsersAction) -> None:
-	"""Add commands that show the current task and active chunk."""
-	for name in ("next", "current"):
-		command = commands.add_parser(
-			name, help="show the current task and active chunk"
-		)
-		_add_output_options(command)
+def _add_command_specs(
+	commands: argparse._SubParsersAction,
+	specs: tuple[_CommandSpec, ...],
+) -> None:
+	"""Build command parsers from the shared declarative command specification."""
+	for spec in specs:
+		parser = commands.add_parser(spec.name, help=spec.help_text)
+
+		if spec.children:
+			nested_commands = parser.add_subparsers(
+				dest=spec.destination, required=True
+			)
+			_add_command_specs(nested_commands, spec.children)
+			continue
+
+		for argument in spec.arguments:
+			argument_kwargs = dict(argument.kwargs)
+			if isinstance(argument_kwargs.get("default"), list):
+				argument_kwargs["default"] = list(argument_kwargs["default"])
+
+			parser.add_argument(*argument.names, **argument_kwargs)
+
+		if spec.page_options:
+			_add_page_options(parser)
+
+		_add_output_options(parser)
 
 
-def _add_project_commands(commands: argparse._SubParsersAction) -> None:
-	"""Add commands for managing the current project binding."""
-	project = commands.add_parser("project", help="manage the current project binding")
-	project_commands = project.add_subparsers(dest="project_command", required=True)
-	project_init = project_commands.add_parser("init", help="create and bind a project")
-	project_init.add_argument("--slug", required=True)
-	project_init.add_argument("--name", required=True)
-	_add_output_options(project_init)
-	project_attach = project_commands.add_parser(
-		"attach", help="bind an existing project"
-	)
-	project_attach.add_argument("project_id")
-	_add_output_options(project_attach)
-	project_current = project_commands.add_parser(
-		"current", help="show the bound project"
-	)
-	_add_output_options(project_current)
-
-
-def _add_release_commands(commands: argparse._SubParsersAction) -> None:
-	"""Add release creation, lifecycle, and listing commands."""
-	release = commands.add_parser("release", help="read release records")
-	release_commands = release.add_subparsers(dest="release_command", required=True)
-	release_add = release_commands.add_parser("add", help="create a release")
-	release_add.add_argument("--slug", required=True)
-	release_add.add_argument("--title", required=True)
-	release_add.add_argument("--overview", default="")
-	release_add.add_argument(
-		"--status", choices=("planned", "active", "done"), default="planned"
-	)
-	release_add.add_argument("--position", type=int)
-	_add_output_options(release_add)
-	release_list = release_commands.add_parser("list", help="list releases")
-	_add_page_options(release_list)
-	_add_output_options(release_list)
-	release_remove = release_commands.add_parser("remove", help="remove a release")
-	release_remove.add_argument("release_id")
-	_add_output_options(release_remove)
-
-
-def _add_task_commands(commands: argparse._SubParsersAction) -> None:
-	"""Add task creation, lifecycle, dependency, and query commands."""
-	task = commands.add_parser("task", help="read task records")
-	task_commands = task.add_subparsers(dest="task_command", required=True)
-	task_add = task_commands.add_parser("add", help="create a task")
-	task_add.add_argument("--slug", required=True)
-	task_add.add_argument("--title", required=True)
-	task_add.add_argument("--overview", default="")
-	task_add.add_argument("--purpose", default="")
-	task_add.add_argument("--contract", default="")
-	task_add.add_argument("--model-tier", default=None)
-	task_add.add_argument("--files", default=None)
-	task_add.add_argument("--acceptance-criteria", default="")
-	task_add.add_argument("--verification", default="")
-	task_add.add_argument("--risks", default="")
-	task_add.add_argument("--release", "--release-id", dest="release_id")
-	task_add.add_argument(
-		"--depends-on", "--dependency", dest="depends_on", action="append", default=[]
-	)
-	task_add.add_argument("--position", type=int)
-	_add_output_options(task_add)
-	task_dependency = task_commands.add_parser(
-		"dependency", help="manage task dependencies"
-	)
-	task_dependency_commands = task_dependency.add_subparsers(
-		dest="dependency_command", required=True
-	)
-	task_dependency_add = task_dependency_commands.add_parser(
-		"add", help="add a task dependency"
-	)
-	task_dependency_add.add_argument("task_id")
-	task_dependency_add.add_argument("depends_on_task_id")
-	_add_output_options(task_dependency_add)
-	task_dependency_remove = task_dependency_commands.add_parser(
-		"remove", help="remove a task dependency"
-	)
-	task_dependency_remove.add_argument("task_id")
-	task_dependency_remove.add_argument("depends_on_task_id")
-	_add_output_options(task_dependency_remove)
-	task_remove = task_commands.add_parser("remove", help="remove a task")
-	task_remove.add_argument("task_id")
-	_add_output_options(task_remove)
-	task_start = task_commands.add_parser("start", help="start a ready task")
-	task_start.add_argument("task_id")
-	_add_output_options(task_start)
-	task_complete = task_commands.add_parser("complete", help="complete a task")
-	task_complete.add_argument("task_id")
-	_add_output_options(task_complete)
-	task_block = task_commands.add_parser("block", help="block a task")
-	task_block.add_argument("task_id")
-	task_block.add_argument("--reason", required=True)
-	task_block.add_argument("--needs-decision", action="store_true")
-	_add_output_options(task_block)
-	task_unblock = task_commands.add_parser("unblock", help="make a blocked task ready")
-	task_unblock.add_argument("task_id")
-	_add_output_options(task_unblock)
-	task_get = task_commands.add_parser("get", help="show one task")
-	task_get.add_argument("task_id")
-	_add_output_options(task_get)
-	task_list = task_commands.add_parser("list", help="list tasks")
-	task_list.add_argument("--status")
-	_add_page_options(task_list)
-	_add_output_options(task_list)
-
-
-def _add_chunk_commands(commands: argparse._SubParsersAction) -> None:
-	"""Add chunk creation, completion, and listing commands."""
-	chunk = commands.add_parser("chunk", help="read chunk records")
-	chunk_commands = chunk.add_subparsers(dest="chunk_command", required=True)
-	chunk_add = chunk_commands.add_parser("add", help="create a pending chunk")
-	chunk_add.add_argument("--task", required=True, dest="task_id")
-	chunk_add.add_argument("--title", required=True)
-	chunk_add.add_argument("--description", default="")
-	chunk_add.add_argument("--position", type=int)
-	_add_output_options(chunk_add)
-	chunk_complete = chunk_commands.add_parser(
-		"complete", help="complete an active chunk"
-	)
-	chunk_complete.add_argument("chunk_id")
-	_add_output_options(chunk_complete)
-	chunk_remove = chunk_commands.add_parser("remove", help="remove a chunk")
-	chunk_remove.add_argument("chunk_id")
-	_add_output_options(chunk_remove)
-	chunk_list = chunk_commands.add_parser("list", help="list chunks for a task")
-	chunk_list.add_argument("--task", required=True, dest="task_id")
-	_add_page_options(chunk_list)
-	_add_output_options(chunk_list)
-
-
-def _add_ready_command(commands: argparse._SubParsersAction) -> None:
-	"""Add the command that lists tasks ready to start."""
-	ready = commands.add_parser("ready", help="list tasks ready to start")
-	_add_page_options(ready)
-	_add_output_options(ready)
-
-
-def _add_discovery_commands(commands: argparse._SubParsersAction) -> None:
-	"""Add the command for recording discovery notes."""
-	discovery = commands.add_parser("discovery", help="record a discovery note")
-	discovery_commands = discovery.add_subparsers(
-		dest="discovery_command", required=True
-	)
-	discovery_add = discovery_commands.add_parser("add", help="add a discovery note")
-	discovery_add.add_argument("--task", required=True, dest="task_id")
-	discovery_add.add_argument("body", nargs="+")
-	_add_output_options(discovery_add)
-	discovery_remove = discovery_commands.add_parser(
-		"remove", help="remove a discovery note"
-	)
-	discovery_remove.add_argument("note_id")
-	_add_output_options(discovery_remove)
-
-
-def _add_decision_commands(commands: argparse._SubParsersAction) -> None:
-	"""Add the command for recording decision notes."""
-	decision = commands.add_parser("decision", help="record a decision note")
-	decision_commands = decision.add_subparsers(dest="decision_command", required=True)
-	decision_add = decision_commands.add_parser("add", help="add a decision note")
-	decision_add.add_argument("--task", required=True, dest="task_id")
-	decision_add.add_argument("--supersedes", dest="supersedes_id")
-	decision_add.add_argument("body", nargs="+")
-	_add_output_options(decision_add)
-	decision_remove = decision_commands.add_parser(
-		"remove", help="remove a decision note"
-	)
-	decision_remove.add_argument("note_id")
-	_add_output_options(decision_remove)
-
-
-def _add_context_commands(commands: argparse._SubParsersAction) -> None:
-	"""Add the command for replacing handoff context."""
-	context = commands.add_parser("context", help="replace handoff context")
-	context_commands = context.add_subparsers(dest="context_command", required=True)
-	context_set = context_commands.add_parser("set", help="set current handoff context")
-	context_set.add_argument("--current-goal")
-	context_set.add_argument("--previous-step")
-	context_set.add_argument("--next-step")
-	context_set.add_argument("--standing-context")
-	context_set.add_argument("--verify-with")
-	context_set.add_argument("--stop-marker")
-	_add_output_options(context_set)
+# Every CLI command and its nested subcommands, in the order they should appear in --help.
+_COMMAND_SPECS = (
+	_CommandSpec("next", "show the current task and active chunk"),
+	_CommandSpec("current", "show the current task and active chunk"),
+	_CommandSpec(
+		"project",
+		"manage the current project binding",
+		children=(
+			_CommandSpec(
+				"init",
+				"create and bind a project",
+				arguments=(
+					_argument("--slug", required=True),
+					_argument("--name", required=True),
+				),
+			),
+			_CommandSpec(
+				"attach",
+				"bind an existing project",
+				arguments=(_argument("project_id"),),
+			),
+			_CommandSpec("current", "show the bound project"),
+		),
+		destination="project_command",
+	),
+	_CommandSpec(
+		"release",
+		"read release records",
+		children=(
+			_CommandSpec(
+				"add",
+				"create a release",
+				arguments=(
+					_argument("--slug", required=True),
+					_argument("--title", required=True),
+					_argument("--overview", default=""),
+					_argument(
+						"--status",
+						choices=("planned", "active", "done"),
+						default="planned",
+					),
+					_argument("--position", type=int),
+				),
+			),
+			_CommandSpec("list", "list releases", page_options=True),
+			_CommandSpec(
+				"remove",
+				"remove a release",
+				arguments=(_argument("release_id"),),
+			),
+		),
+		destination="release_command",
+	),
+	_CommandSpec(
+		"task",
+		"read task records",
+		children=(
+			_CommandSpec(
+				"add",
+				"create a task",
+				arguments=(
+					_argument("--slug", required=True),
+					_argument("--title", required=True),
+					_argument("--overview", default=""),
+					_argument("--purpose", default=""),
+					_argument("--contract", default=""),
+					_argument("--model-tier", default=None),
+					_argument("--files", default=None),
+					_argument("--acceptance-criteria", default=""),
+					_argument("--verification", default=""),
+					_argument("--risks", default=""),
+					_argument("--release", "--release-id", dest="release_id"),
+					_argument(
+						"--depends-on",
+						"--dependency",
+						dest="depends_on",
+						action="append",
+						default=[],
+					),
+					_argument("--position", type=int),
+				),
+			),
+			_CommandSpec(
+				"dependency",
+				"manage task dependencies",
+				children=(
+					_CommandSpec(
+						"add",
+						"add a task dependency",
+						arguments=(
+							_argument("task_id"),
+							_argument("depends_on_task_id"),
+						),
+					),
+					_CommandSpec(
+						"remove",
+						"remove a task dependency",
+						arguments=(
+							_argument("task_id"),
+							_argument("depends_on_task_id"),
+						),
+					),
+				),
+				destination="dependency_command",
+			),
+			_CommandSpec(
+				"remove",
+				"remove a task",
+				arguments=(_argument("task_id"),),
+			),
+			_CommandSpec(
+				"start",
+				"start a ready task",
+				arguments=(_argument("task_id"),),
+			),
+			_CommandSpec(
+				"complete",
+				"complete a task",
+				arguments=(_argument("task_id"),),
+			),
+			_CommandSpec(
+				"block",
+				"block a task",
+				arguments=(
+					_argument("task_id"),
+					_argument("--reason", required=True),
+					_argument("--needs-decision", action="store_true"),
+				),
+			),
+			_CommandSpec(
+				"unblock",
+				"make a blocked task ready",
+				arguments=(_argument("task_id"),),
+			),
+			_CommandSpec(
+				"get",
+				"show one task",
+				arguments=(_argument("task_id"),),
+			),
+			_CommandSpec(
+				"list",
+				"list tasks",
+				arguments=(_argument("--status"),),
+				page_options=True,
+			),
+		),
+		destination="task_command",
+	),
+	_CommandSpec(
+		"chunk",
+		"read chunk records",
+		children=(
+			_CommandSpec(
+				"add",
+				"create a pending chunk",
+				arguments=(
+					_argument("--task", required=True, dest="task_id"),
+					_argument("--title", required=True),
+					_argument("--description", default=""),
+					_argument("--position", type=int),
+				),
+			),
+			_CommandSpec(
+				"complete",
+				"complete an active chunk",
+				arguments=(_argument("chunk_id"),),
+			),
+			_CommandSpec(
+				"remove",
+				"remove a chunk",
+				arguments=(_argument("chunk_id"),),
+			),
+			_CommandSpec(
+				"list",
+				"list chunks for a task",
+				arguments=(_argument("--task", required=True, dest="task_id"),),
+				page_options=True,
+			),
+		),
+		destination="chunk_command",
+	),
+	_CommandSpec("ready", "list tasks ready to start", page_options=True),
+	_CommandSpec(
+		"discovery",
+		"record a discovery note",
+		children=(
+			_CommandSpec(
+				"add",
+				"add a discovery note",
+				arguments=(
+					_argument("--task", required=True, dest="task_id"),
+					_argument("body", nargs="+"),
+				),
+			),
+			_CommandSpec(
+				"remove",
+				"remove a discovery note",
+				arguments=(_argument("note_id"),),
+			),
+		),
+		destination="discovery_command",
+	),
+	_CommandSpec(
+		"decision",
+		"record a decision note",
+		children=(
+			_CommandSpec(
+				"add",
+				"add a decision note",
+				arguments=(
+					_argument("--task", required=True, dest="task_id"),
+					_argument("--supersedes", dest="supersedes_id"),
+					_argument("body", nargs="+"),
+				),
+			),
+			_CommandSpec(
+				"remove",
+				"remove a decision note",
+				arguments=(_argument("note_id"),),
+			),
+		),
+		destination="decision_command",
+	),
+	_CommandSpec(
+		"context",
+		"replace handoff context",
+		children=(
+			_CommandSpec(
+				"set",
+				"set current handoff context",
+				arguments=(
+					_argument("--current-goal"),
+					_argument("--previous-step"),
+					_argument("--next-step"),
+					_argument("--standing-context"),
+					_argument("--verify-with"),
+					_argument("--stop-marker"),
+				),
+			),
+		),
+		destination="context_command",
+	),
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -268,15 +375,7 @@ def build_parser() -> argparse.ArgumentParser:
 	)
 	commands = parser.add_subparsers(dest="command", required=True)
 
-	_add_navigation_commands(commands)
-	_add_project_commands(commands)
-	_add_release_commands(commands)
-	_add_task_commands(commands)
-	_add_chunk_commands(commands)
-	_add_ready_command(commands)
-	_add_discovery_commands(commands)
-	_add_decision_commands(commands)
-	_add_context_commands(commands)
+	_add_command_specs(commands, _COMMAND_SPECS)
 
 	return parser
 
