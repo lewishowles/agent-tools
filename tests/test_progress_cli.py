@@ -65,7 +65,17 @@ def test_json_success_uses_the_stable_envelope(
 			"write",
 		),
 		(["release", "remove", "rel_" + "r" * 22], "release_remove", "write"),
+		(
+			["release", "rename", "rel_" + "r" * 22, "--title", "Renamed release"],
+			"release_rename",
+			"write",
+		),
 		(["task", "remove", "tsk_" + "t" * 22], "task_remove", "write"),
+		(
+			["task", "rename", "tsk_" + "t" * 22, "--title", "Renamed task"],
+			"task_rename",
+			"write",
+		),
 		(["task", "start", "tsk_" + "t" * 22], "task_start", "write"),
 		(["task", "complete", "tsk_" + "t" * 22], "task_complete", "write"),
 		(
@@ -81,6 +91,11 @@ def test_json_success_uses_the_stable_envelope(
 		),
 		(["chunk", "complete", "chk_" + "c" * 22], "chunk_complete", "write"),
 		(["chunk", "remove", "chk_" + "c" * 22], "chunk_remove", "write"),
+		(
+			["chunk", "rename", "chk_" + "c" * 22, "--title", "Renamed chunk"],
+			"chunk_rename",
+			"write",
+		),
 		(
 			["discovery", "add", "--task", "tsk_" + "t" * 22, "A", "discovery"],
 			"discovery_add",

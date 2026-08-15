@@ -286,6 +286,29 @@ def test_remove_childless_rows_and_dependency_edges(tmp_path: Path) -> None:
 			)
 
 
+def test_rename_updates_titles_without_changing_identifiers_or_slugs(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release")
+	task = store.task_add("task", "Task", release_id=release["id"])
+	chunk = store.chunk_add(task["id"], "Chunk")
+
+	renamed_release = store.release_rename(release["id"], "Renamed release")
+	renamed_task = store.task_rename(task["id"], "Renamed task")
+	renamed_chunk = store.chunk_rename(chunk["id"], "Renamed chunk")
+
+	assert renamed_release["id"] == release["id"]
+	assert renamed_release["slug"] == release["slug"]
+	assert renamed_release["title"] == "Renamed release"
+	assert renamed_task["id"] == task["id"]
+	assert renamed_task["slug"] == task["slug"]
+	assert renamed_task["title"] == "Renamed task"
+	assert renamed_chunk["id"] == chunk["id"]
+	assert renamed_chunk["task_id"] == chunk["task_id"]
+	assert renamed_chunk["title"] == "Renamed chunk"
+
+
 def test_two_short_writes_complete_with_the_configured_database_locking(
 	tmp_path: Path,
 ) -> None:

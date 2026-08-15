@@ -140,6 +140,38 @@ class WriteStore(_StoreBase):
 
 		return {"id": release_id}
 
+	def release_rename(
+		self,
+		release_id: str,
+		title: str,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""Update only the title of a current-project release."""
+		validate_object_id(release_id, RELEASE_PREFIX)
+		_require_text(title, "release title")
+		project = self.current_project(path)
+
+		with self.database.transaction() as connection:
+			release = connection.execute(
+				"SELECT 1 FROM releases WHERE id = ? AND project_id = ?",
+				(release_id, project.id),
+			).fetchone()
+			if release is None:
+				raise NotFoundError(
+					f"release {release_id} was not found", {"id": release_id}
+				)
+
+			connection.execute(
+				"UPDATE releases SET title = ? WHERE id = ?", (title, release_id)
+			)
+			return Release.from_row(
+				connection.execute(
+					"SELECT id, project_id, slug, title, overview, status, position "
+					"FROM releases WHERE id = ?",
+					(release_id,),
+				).fetchone()
+			).to_dict()
+
 	def task_add(
 		self,
 		slug: str,
@@ -309,6 +341,26 @@ class WriteStore(_StoreBase):
 
 		return {"id": task_id}
 
+	def task_rename(
+		self,
+		task_id: str,
+		title: str,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""Update only the title of a current-project task."""
+		validate_object_id(task_id, TASK_PREFIX)
+		_require_text(title, "task title")
+		project = self.current_project(path)
+
+		with self.database.transaction() as connection:
+			if _task_row(connection, task_id, project.id) is None:
+				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
+
+			connection.execute(
+				"UPDATE tasks SET title = ? WHERE id = ?", (title, task_id)
+			)
+			return _task_dict(connection, task_id, project.id)
+
 	def task_dependency_add(
 		self,
 		task_id: str,
@@ -462,6 +514,26 @@ class WriteStore(_StoreBase):
 			connection.execute("DELETE FROM chunks WHERE id = ?", (chunk_id,))
 
 		return {"id": chunk_id}
+
+	def chunk_rename(
+		self,
+		chunk_id: str,
+		title: str,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""Update only the title of a current-project chunk."""
+		validate_object_id(chunk_id, CHUNK_PREFIX)
+		_require_text(title, "chunk title")
+		project = self.current_project(path)
+
+		with self.database.transaction() as connection:
+			if _chunk_row(connection, chunk_id, project.id) is None:
+				raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
+
+			connection.execute(
+				"UPDATE chunks SET title = ? WHERE id = ?", (title, chunk_id)
+			)
+			return _chunk_dict(connection, chunk_id, project.id)
 
 	def task_start(
 		self, task_id: str, path: str | Path | None = None

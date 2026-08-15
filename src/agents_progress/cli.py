@@ -160,6 +160,14 @@ _COMMAND_SPECS = (
 				"remove a release",
 				arguments=(_argument("release_id"),),
 			),
+			_CommandSpec(
+				"rename",
+				"rename a release",
+				arguments=(
+					_argument("release_id"),
+					_argument("--title", required=True),
+				),
+			),
 		),
 		destination="release_command",
 	),
@@ -219,6 +227,11 @@ _COMMAND_SPECS = (
 				"remove",
 				"remove a task",
 				arguments=(_argument("task_id"),),
+			),
+			_CommandSpec(
+				"rename",
+				"rename a task",
+				arguments=(_argument("task_id"), _argument("--title", required=True)),
 			),
 			_CommandSpec(
 				"start",
@@ -281,6 +294,11 @@ _COMMAND_SPECS = (
 				"remove",
 				"remove a chunk",
 				arguments=(_argument("chunk_id"),),
+			),
+			_CommandSpec(
+				"rename",
+				"rename a chunk",
+				arguments=(_argument("chunk_id"), _argument("--title", required=True)),
 			),
 			_CommandSpec(
 				"list",
@@ -443,6 +461,10 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 			WriteStore(database).release_remove(args.release_id),
 			"release remove",
 		),
+		("release", "rename"): lambda: (
+			WriteStore(database).release_rename(args.release_id, args.title),
+			"release rename",
+		),
 		("task", "add"): lambda: (
 			WriteStore(database).task_add(
 				slug=args.slug,
@@ -465,6 +487,10 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 		("task", "remove"): lambda: (
 			WriteStore(database).task_remove(args.task_id),
 			"task remove",
+		),
+		("task", "rename"): lambda: (
+			WriteStore(database).task_rename(args.task_id, args.title),
+			"task rename",
 		),
 		("task", "start"): lambda: (
 			WriteStore(database).task_start(args.task_id),
@@ -512,6 +538,10 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 		("chunk", "remove"): lambda: (
 			WriteStore(database).chunk_remove(args.chunk_id),
 			"chunk remove",
+		),
+		("chunk", "rename"): lambda: (
+			WriteStore(database).chunk_rename(args.chunk_id, args.title),
+			"chunk rename",
 		),
 		("ready", None): lambda: (
 			ReadStore(database).ready(args.limit, args.offset),
