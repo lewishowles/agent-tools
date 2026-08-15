@@ -12,8 +12,8 @@ chunks, and handoff notes in SQLite. The default database is
 
 ## Getting started
 
-From the `dev-tools` repository root, install the local package into your uv tool
-environment:
+From the `dev-tools` repository root, install the local package into your uv
+tool environment:
 
 ```bash
 uv tool install --reinstall --from packages/progress agents-progress
@@ -21,46 +21,527 @@ uv tool install --reinstall --from packages/progress agents-progress
 
 This puts `progress` on your `PATH` without publishing the package.
 
-## Usage
-
-Initialise a project from its Git repository:
+Bind the database to the Git repository where you are working:
 
 ```bash
 progress project init --slug agents --name "Agent configuration"
 ```
 
-Create and work through a release, task, and chunks:
+Use `progress project attach <project_id>` when the project already exists in
+the database and another Git checkout needs to use it.
 
-```bash
-# Create a release. Use the returned ID in the task command below.
-progress release add --slug progress-store --title "Progress store"
+## Command overview
 
-# Associate the task with that release.
-progress task add --slug package-progress --title "Package the progress CLI" --release <release-id>
+The complete command shape is:
 
-# Add the pending chunks that make up the task.
-progress chunk add --task <task-id> --title "Add package metadata"
-progress chunk add --task <task-id> --title "Document package usage"
-
-# Starting the task automatically activates its first pending chunk.
-progress task start <task-id>
-
-# Inspect the active task and chunk.
-progress next
-
-# Completing the active chunk automatically activates the next pending chunk.
-progress chunk complete <chunk-id>
-
-# Complete the newly active chunk, then record the discovery and finish the task.
-progress chunk complete <next-chunk-id>
-progress discovery add --task <task-id> "The local package is installed from the workspace."
-progress task complete <task-id>
+```text
+progress [--json] [--database <path>] {next,current,project,release,task,chunk,ready,discovery,decision,context}
 ```
 
-Common options:
+Throughout this reference, commands use:
 
-- `--json`: return a stable machine-readable response instead of readable terminal output
-- `--database PATH`: use another SQLite database
-- `--limit`: limit the number of results returned by list commands and `ready`
-- `--offset`: skip results when paginating list commands and `ready`
-- `task list --status STATUS`: filter tasks by status
+- `<value>` for a required value,
+- `[--flag]` for an optional flag, and
+- `...` for a body made from the remaining arguments.
+
+Every subcommand accepts these common options:
+
+- `--json`: return a machine-readable response instead of readable terminal output
+- `--database <path>`: use `<path>` instead of `~/.agents/progress.db`
+
+## Current work
+
+### `progress next`
+
+Show the next active task and chunk for the current project.
+
+```bash
+progress next
+```
+
+### `progress current`
+
+Show the current task and chunk for the current project.
+
+```bash
+progress current
+```
+
+### `progress ready`
+
+List tasks that are ready to start:
+
+```text
+progress ready [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
+```
+
+- `--limit <limit>`: maximum number of tasks to return
+- `--offset <offset>`: number of tasks to skip before returning results
+
+## Projects
+
+Project commands bind progress records to a Git repository.
+
+### `progress project init`
+
+Create a project for the current Git repository:
+
+```text
+progress project init --slug <slug> --name <name> [--json] [--database <path>]
+```
+
+- `--slug <slug>`: short project identifier
+- `--name <name>`: display name
+
+### `progress project attach`
+
+Attach the current Git repository to an existing project:
+
+```text
+progress project attach <project_id> [--json] [--database <path>]
+```
+
+- `<project_id>`: ID of the project to attach
+
+### `progress project current`
+
+Show the project attached to the current Git repository:
+
+```text
+progress project current [--json] [--database <path>]
+```
+
+## Releases
+
+A release groups related tasks and has a title, slug, overview, position, and
+status.
+
+### `progress release add`
+
+Create a release:
+
+```text
+progress release add --slug <slug> --title <title> [--overview <overview>] [--status {planned,active,done}] [--position <position>] [--json] [--database <path>]
+```
+
+- `--slug <slug>`: stable slug stored on the release
+- `--title <title>`: display title
+- `--overview <overview>`: optional description
+- `--status {planned,active,done}`: initial release status
+- `--position <position>`: optional ordering position
+
+### `progress release list`
+
+List releases for the current project:
+
+```text
+progress release list [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
+```
+
+- `--limit <limit>`: maximum number of releases to return
+- `--offset <offset>`: number of releases to skip before returning results
+
+See [Listing](#listing) for output from this command.
+
+### `progress release remove`
+
+Remove a release:
+
+```text
+progress release remove <release_id> [--json] [--database <path>]
+```
+
+Removal is a hard delete. It is rejected when any task still refers to the
+release, and the error names the blocking task IDs. The operation is atomic,
+so a rejected removal does not delete anything. Deletion never cascades to
+tasks.
+
+### `progress release rename`
+
+Change a release title without changing its slug or ID:
+
+```text
+progress release rename <release_id> --title <title> [--json] [--database <path>]
+```
+
+- `--title <title>`: replacement display title
+
+### `progress release complete`
+
+Move a planned or active release to `done`:
+
+```text
+progress release complete <release_id> [--json] [--database <path>]
+```
+
+Completing a release that is already `done` is rejected and the error names its
+current status. A release is started by starting a task within it.
+
+## Tasks
+
+A task belongs to the current project and can belong to a release. It can have
+chunks, notes, and dependencies.
+
+### `progress task add`
+
+Create a task:
+
+```text
+progress task add --slug <slug> --title <title> [--overview <overview>] [--purpose <purpose>] [--contract <contract>] [--model-tier <model_tier>] [--files <files>] [--acceptance-criteria <acceptance_criteria>] [--verification <verification>] [--risks <risks>] [--release <release_id> | --release-id <release_id>] [--depends-on <task_id> | --dependency <task_id>] [--position <position>] [--json] [--database <path>]
+```
+
+- `--slug <slug>`: stable slug stored on the task
+- `--title <title>`: display title
+- `--overview <overview>`: optional summary
+- `--purpose <purpose>`: optional purpose
+- `--contract <contract>`: optional task contract
+- `--model-tier <model_tier>`: optional model tier label; this is a freeform string
+- `--files <files>`: optional files covered by the task
+- `--acceptance-criteria <acceptance_criteria>`: optional completion conditions
+- `--verification <verification>`: optional verification instructions
+- `--risks <risks>`: optional risks
+- `--release <release_id>` or `--release-id <release_id>`: associate the task with a release
+- `--depends-on <task_id>` or `--dependency <task_id>`: add a dependency on another task
+- `--position <position>`: optional ordering position
+
+The new task is `ready` when its dependencies allow it to start, or `blocked`
+when it still has unresolved dependencies.
+
+### `progress task dependency add`
+
+Add a dependency:
+
+```text
+progress task dependency add <task_id> <depends_on_task_id> [--json] [--database <path>]
+```
+
+- `<task_id>`: task that depends on another task
+- `<depends_on_task_id>`: task that must be completed first
+
+### `progress task dependency remove`
+
+Remove an existing dependency:
+
+```text
+progress task dependency remove <task_id> <depends_on_task_id> [--json] [--database <path>]
+```
+
+### `progress task remove`
+
+Remove a task:
+
+```text
+progress task remove <task_id> [--json] [--database <path>]
+```
+
+Removal is a hard delete and is rejected when any of these still refer to the
+task:
+
+- a chunk
+- a dependency edge where the task is either the dependent or the dependency
+- a discovery or decision note
+
+The error names every blocking child ID. The operation is atomic, and deletion
+never cascades to chunks, notes, or dependency edges.
+
+### `progress task rename`
+
+Change a task title:
+
+```text
+progress task rename <task_id> --title <title> [--json] [--database <path>]
+```
+
+- `--title <title>`: replacement display title
+
+### `progress task start`
+
+Start a task:
+
+```text
+progress task start <task_id> [--json] [--database <path>]
+```
+
+Starting a task requires the task to be `ready`, moves it to `in-progress`, and
+activates its first pending chunk, when it has one. Unfinished dependencies
+raise `UnresolvedDependenciesError`. The database permits only one
+`in-progress` task per project, so another active task raises
+`ConflictingInProgressError`.
+
+### `progress task complete`
+
+Complete a task:
+
+```text
+progress task complete <task_id> [--json] [--database <path>]
+```
+
+This moves the task to `done` only when it is `in-progress` and has no `pending`
+or `active` chunks. If chunks remain, `PendingChunksError` names the blocking
+chunk IDs.
+
+### `progress task unblock`
+
+Make a `blocked` or `needs-decision` task ready to start. Dependencies are
+checked again before the transition. If any remain unfinished, the command is
+rejected with `UnresolvedDependenciesError`, which names their task IDs:
+
+```text
+progress task unblock <task_id> [--json] [--database <path>]
+```
+
+### `progress task get`
+
+Show one task by ID:
+
+```text
+progress task get <task_id> [--json] [--database <path>]
+```
+
+### `progress task block`
+
+Block a `ready` or `in-progress` task, optionally marking that it needs a
+decision. If the task is `in-progress`, its active chunk returns to `pending`:
+
+```text
+progress task block <task_id> --reason <reason> [--needs-decision] [--json] [--database <path>]
+```
+
+- `--reason <reason>`: reason for blocking the task
+- `--needs-decision`: use the `needs-decision` status instead of `blocked`
+
+### `progress task list`
+
+List tasks for the current project:
+
+```text
+progress task list [--status <status>] [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
+```
+
+- `--status <status>`: filter by task status
+- `--limit <limit>`: maximum number of tasks to return
+- `--offset <offset>`: number of tasks to skip before returning results
+
+See [Listing](#listing) for output from this command.
+
+## Chunks
+
+A chunk is a unit of work within a task.
+
+### `progress chunk add`
+
+Add a pending chunk to a task:
+
+```text
+progress chunk add --task <task_id> --title <title> [--description <description>] [--position <position>] [--json] [--database <path>]
+```
+
+- `--task <task_id>`: task that owns the chunk
+- `--title <title>`: display title
+- `--description <description>`: optional description
+- `--position <position>`: optional ordering position
+
+### `progress chunk complete`
+
+Complete a chunk:
+
+```text
+progress chunk complete <chunk_id> [--json] [--database <path>]
+```
+
+Completing an active chunk moves it to `done` and activates the next pending
+chunk when one exists.
+
+### `progress chunk remove`
+
+Remove a chunk:
+
+```text
+progress chunk remove <chunk_id> [--json] [--database <path>]
+```
+
+Chunks have no referencing child rows, so a chunk can be removed directly.
+Removal is a hard delete and never cascades.
+
+### `progress chunk rename`
+
+Change a chunk title:
+
+```text
+progress chunk rename <chunk_id> --title <title> [--json] [--database <path>]
+```
+
+- `--title <title>`: replacement display title
+
+### `progress chunk list`
+
+List chunks:
+
+```text
+progress chunk list --task <task_id> [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
+```
+
+- `--task <task_id>`: task whose chunks should be listed
+- `--limit <limit>`: maximum number of chunks to return
+- `--offset <offset>`: number of chunks to skip before returning results
+
+See [Listing](#listing) for output from this command.
+
+## Notes
+
+Notes are attached to tasks. A note is either a discovery or a decision.
+
+### `progress discovery add`
+
+Add a discovery note:
+
+```text
+progress discovery add --task <task_id> [--json] [--database <path>] <body>...
+```
+
+- `--task <task_id>`: task that owns the note
+- `<body>...`: note text made from the remaining arguments
+
+### `progress discovery remove`
+
+Remove a discovery note:
+
+```text
+progress discovery remove <note_id> [--json] [--database <path>]
+```
+
+Removal is a hard delete. It is rejected when another note supersedes this
+note, and the error names those blocking note IDs. The operation is atomic.
+
+### `progress decision add`
+
+Add a decision note:
+
+```text
+progress decision add --task <task_id> [--supersedes <note_id>] [--json] [--database <path>] <body>...
+```
+
+- `--task <task_id>`: task that owns the note
+- `--supersedes <note_id>`: note superseded by this decision
+- `<body>...`: note text made from the remaining arguments
+
+### `progress decision remove`
+
+Remove a decision note:
+
+```text
+progress decision remove <note_id> [--json] [--database <path>]
+```
+
+Removal is a hard delete. It is rejected when another note supersedes this
+note, and the error names those blocking note IDs. The operation is atomic.
+
+## Handoff context
+
+### `progress context set`
+
+Set the current project's singleton handoff context:
+
+```text
+progress context set [--current-goal <current_goal>] [--previous-step <previous_step>] [--next-step <next_step>] [--standing-context <standing_context>] [--verify-with <verify_with>] [--stop-marker <stop_marker>] [--json] [--database <path>]
+```
+
+- `--current-goal <current_goal>`: current goal
+- `--previous-step <previous_step>`: completed or last attempted step
+- `--next-step <next_step>`: next step to take
+- `--standing-context <standing_context>`: context that remains useful between steps
+- `--verify-with <verify_with>`: command or evidence that verifies the work
+- `--stop-marker <stop_marker>`: condition that tells the next agent when to stop
+
+Calling `context set` replaces the stored singleton context for the current
+project.
+
+## Listing
+
+The list commands support pagination with `--limit` and `--offset`. Task lists
+also support `--status`, and `ready` lists the tasks that can start.
+`--limit` defaults to `50` and accepts values from `1` to `200`.
+
+### Releases
+
+```text
+$ progress release list --limit 20 --offset 0
+Releases:
+- First release [planned] (rel_WMA5n_KV1i0Ddtp4Iq3hJQ)
+```
+
+### Tasks
+
+```text
+$ progress task list --status ready --limit 20 --offset 0
+Tasks:
+- First task [ready] (tsk_nIHyevhUxTyEDLbyfXPhRQ)
+```
+
+### Chunks
+
+```text
+$ progress chunk list --task tsk_nIHyevhUxTyEDLbyfXPhRQ --limit 20 --offset 0
+Chunks:
+- First chunk [pending] (chk_KkjpMXgs5qkPeUsEuNDIDg)
+```
+
+### Ready tasks
+
+```text
+$ progress ready --limit 20 --offset 0
+Ready tasks:
+- First task [ready] (tsk_nIHyevhUxTyEDLbyfXPhRQ)
+```
+
+## Statuses, note types, and model tiers
+
+This table lists every legal literal for each status, note type, and model-tier
+field, and the command that sets or changes it.
+
+| Field             | Literal          | Set or reached by                                                                                                                                                             |
+| ----------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `release.status`  | `planned`        | `release add --status planned`                                                                                                                                                |
+| `release.status`  | `active`         | `release add --status active`                                                                                                                                                 |
+| `release.status`  | `done`           | `release add --status done`, or `release complete` from `planned` or `active`                                                                                                 |
+| `task.status`     | `ready`          | `task add` when dependencies allow work, or `task unblock`                                                                                                                    |
+| `task.status`     | `in-progress`    | `task start`                                                                                                                                                                  |
+| `task.status`     | `blocked`        | `task add` when dependencies block work, `task dependency add` when an unfinished dependency is added to a ready task, or `task block` without `--needs-decision`             |
+| `task.status`     | `needs-decision` | `task block --needs-decision`                                                                                                                                                 |
+| `task.status`     | `done`           | `task complete`                                                                                                                                                               |
+| `chunk.status`    | `pending`        | `chunk add`, or `task block` when an in-progress task's active chunk is returned to pending                                                                                   |
+| `chunk.status`    | `active`         | `task start`, or `chunk complete` activating the next pending chunk                                                                                                           |
+| `chunk.status`    | `done`           | `chunk complete`                                                                                                                                                              |
+| `chunk.status`    | `skipped`        | Schema-legal, but currently unreachable through any CLI command                                                                                                               |
+| `note.type`       | `discovery`      | `discovery add`; immutable after creation                                                                                                                                     |
+| `note.type`       | `decision`       | `decision add`; immutable after creation                                                                                                                                      |
+| `task.model_tier` | Any string       | Set only at creation with `task add --model-tier`; no rename or update command changes it. This field is freeform and has no enumerated values or CLI `--choices` restriction |
+
+The available transitions are:
+
+- `release complete`: `planned` or `active` → `done`; `done` → rejected, with the current status named in the error
+- `task start`: `ready` → `in-progress`; unfinished dependencies raise `UnresolvedDependenciesError`, and another `in-progress` task in the same project raises `ConflictingInProgressError` because the database enforces one in-progress task per project
+- `task block`: `ready` or `in-progress` → `blocked`, or → `needs-decision` with `--needs-decision`; an active chunk is returned to `pending`
+- `task unblock`: `blocked` or `needs-decision` → `ready`; dependencies are re-checked, and unresolved dependencies reject the transition with `UnresolvedDependenciesError` naming the unfinished task IDs
+- `task complete`: an `in-progress` task with no `pending` or `active` chunks becomes `done`; pending or active chunks raise `PendingChunksError` naming their blocking chunk IDs
+- `task start`: the first pending chunk becomes `active`
+- `chunk complete`: the active chunk becomes `done`, and the next pending chunk becomes `active` when one exists
+
+## Removal and errors
+
+All remove commands use hard deletion and preserve referential integrity. No
+remove command cascades to related rows. A removal that would orphan a child is
+rejected before deletion, and the whole operation is rolled back.
+
+| Command                                                 | Rejected when                                        | Blocking IDs named in the error                  |
+| ------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------ |
+| `release remove <release_id>`                           | A task refers to the release                         | Referencing task IDs                             |
+| `task remove <task_id>`                                 | A chunk, dependency edge, or note refers to the task | Referencing chunk, task, dependency, or note IDs |
+| `chunk remove <chunk_id>`                               | Never; chunks have no referencing rows               | None                                             |
+| `discovery remove <note_id>`                            | Another note supersedes the note                     | Superseding note IDs                             |
+| `decision remove <note_id>`                             | Another note supersedes the note                     | Superseding note IDs                             |
+| `task dependency remove <task_id> <depends_on_task_id>` | Never; removing an edge has no children              | None                                             |
+
+With `--json`, these failures use the CLI's stable machine-readable error
+envelope. Without it, the same reason and blocking IDs are shown in the
+readable terminal response.
