@@ -13,6 +13,7 @@ from agents_progress.errors import (
 	InvalidDependencyError,
 	InvalidTransitionError,
 	PendingChunksError,
+	StillReferencedError,
 	UnresolvedDependenciesError,
 )
 from agents_progress.projects import Project
@@ -190,6 +191,99 @@ def test_notes_and_context_replace_the_project_context_row(tmp_path: Path) -> No
 	assert context["next_step"] == "Run tests"
 	assert updated_context["current_goal"] == "Finish Commit 4"
 	assert updated_context["next_step"] is None
+
+
+def test_remove_rejects_every_referenced_parent_row(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release")
+	task = store.task_add("task", "Task", release_id=release["id"])
+	chunk = store.chunk_add(task["id"], "Chunk")
+	dependent = store.task_add("dependent", "Dependent")
+	dependency = store.task_add("dependency", "Dependency")
+	store.task_dependency_add(dependent["id"], task["id"])
+	store.task_dependency_add(task["id"], dependency["id"])
+	discovery = store.discovery_add(task["id"], "Discovery")
+
+	with pytest.raises(StillReferencedError, match=task["id"]):
+		store.release_remove(release["id"])
+
+	with pytest.raises(StillReferencedError) as error:
+		store.task_remove(task["id"])
+
+	message = str(error.value)
+	assert chunk["id"] in message
+	assert f"{dependent['id']} -> {task['id']}" in message
+	assert f"{task['id']} -> {dependency['id']}" in message
+	assert discovery["id"] in message
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM releases WHERE id = ?", (release["id"],)
+			).fetchone()
+			is not None
+		)
+		assert (
+			connection.execute(
+				"SELECT 1 FROM tasks WHERE id = ?", (task["id"],)
+			).fetchone()
+			is not None
+		)
+
+
+def test_remove_note_rejects_a_superseded_note(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = store.task_add("task", "Task")
+	discovery = store.discovery_add(task["id"], "Discovery")
+	decision = store.decision_add(task["id"], "Decision", supersedes_id=discovery["id"])
+
+	with pytest.raises(StillReferencedError, match=decision["id"]):
+		store.discovery_remove(discovery["id"])
+
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM notes WHERE id = ?", (discovery["id"],)
+			).fetchone()
+			is not None
+		)
+
+	assert store.decision_remove(decision["id"]) == {"id": decision["id"]}
+	assert store.discovery_remove(discovery["id"]) == {"id": discovery["id"]}
+
+
+def test_remove_childless_rows_and_dependency_edges(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release")
+	task = store.task_add("task", "Task", release_id=release["id"])
+	dependency = store.task_add("dependency", "Dependency")
+	chunk = store.chunk_add(task["id"], "Chunk")
+	discovery = store.discovery_add(task["id"], "Discovery")
+	store.task_dependency_add(task["id"], dependency["id"])
+
+	assert store.task_dependency_remove(task["id"], dependency["id"]) == {
+		"task_id": task["id"],
+		"depends_on_task_id": dependency["id"],
+	}
+	assert store.chunk_remove(chunk["id"]) == {"id": chunk["id"]}
+	assert store.discovery_remove(discovery["id"]) == {"id": discovery["id"]}
+	assert store.task_remove(task["id"]) == {"id": task["id"]}
+	assert store.task_remove(dependency["id"]) == {"id": dependency["id"]}
+	assert store.release_remove(release["id"]) == {"id": release["id"]}
+
+	with store.database.connection() as connection:
+		for table, object_id in (
+			("releases", release["id"]),
+			("tasks", task["id"]),
+			("tasks", dependency["id"]),
+			("chunks", chunk["id"]),
+			("notes", discovery["id"]),
+		):
+			assert (
+				connection.execute(
+					f"SELECT 1 FROM {table} WHERE id = ?", (object_id,)
+				).fetchone()
+				is None
+			)
 
 
 def test_two_short_writes_complete_with_the_configured_database_locking(

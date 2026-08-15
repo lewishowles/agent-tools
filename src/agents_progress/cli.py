@@ -85,7 +85,7 @@ def _add_project_commands(commands: argparse._SubParsersAction) -> None:
 
 
 def _add_release_commands(commands: argparse._SubParsersAction) -> None:
-	"""Add release creation and listing commands."""
+	"""Add release creation, lifecycle, and listing commands."""
 	release = commands.add_parser("release", help="read release records")
 	release_commands = release.add_subparsers(dest="release_command", required=True)
 	release_add = release_commands.add_parser("add", help="create a release")
@@ -100,6 +100,9 @@ def _add_release_commands(commands: argparse._SubParsersAction) -> None:
 	release_list = release_commands.add_parser("list", help="list releases")
 	_add_page_options(release_list)
 	_add_output_options(release_list)
+	release_remove = release_commands.add_parser("remove", help="remove a release")
+	release_remove.add_argument("release_id")
+	_add_output_options(release_remove)
 
 
 def _add_task_commands(commands: argparse._SubParsersAction) -> None:
@@ -135,6 +138,15 @@ def _add_task_commands(commands: argparse._SubParsersAction) -> None:
 	task_dependency_add.add_argument("task_id")
 	task_dependency_add.add_argument("depends_on_task_id")
 	_add_output_options(task_dependency_add)
+	task_dependency_remove = task_dependency_commands.add_parser(
+		"remove", help="remove a task dependency"
+	)
+	task_dependency_remove.add_argument("task_id")
+	task_dependency_remove.add_argument("depends_on_task_id")
+	_add_output_options(task_dependency_remove)
+	task_remove = task_commands.add_parser("remove", help="remove a task")
+	task_remove.add_argument("task_id")
+	_add_output_options(task_remove)
 	task_start = task_commands.add_parser("start", help="start a ready task")
 	task_start.add_argument("task_id")
 	_add_output_options(task_start)
@@ -173,6 +185,9 @@ def _add_chunk_commands(commands: argparse._SubParsersAction) -> None:
 	)
 	chunk_complete.add_argument("chunk_id")
 	_add_output_options(chunk_complete)
+	chunk_remove = chunk_commands.add_parser("remove", help="remove a chunk")
+	chunk_remove.add_argument("chunk_id")
+	_add_output_options(chunk_remove)
 	chunk_list = chunk_commands.add_parser("list", help="list chunks for a task")
 	chunk_list.add_argument("--task", required=True, dest="task_id")
 	_add_page_options(chunk_list)
@@ -196,6 +211,11 @@ def _add_discovery_commands(commands: argparse._SubParsersAction) -> None:
 	discovery_add.add_argument("--task", required=True, dest="task_id")
 	discovery_add.add_argument("body", nargs="+")
 	_add_output_options(discovery_add)
+	discovery_remove = discovery_commands.add_parser(
+		"remove", help="remove a discovery note"
+	)
+	discovery_remove.add_argument("note_id")
+	_add_output_options(discovery_remove)
 
 
 def _add_decision_commands(commands: argparse._SubParsersAction) -> None:
@@ -207,6 +227,11 @@ def _add_decision_commands(commands: argparse._SubParsersAction) -> None:
 	decision_add.add_argument("--supersedes", dest="supersedes_id")
 	decision_add.add_argument("body", nargs="+")
 	_add_output_options(decision_add)
+	decision_remove = decision_commands.add_parser(
+		"remove", help="remove a decision note"
+	)
+	decision_remove.add_argument("note_id")
+	_add_output_options(decision_remove)
 
 
 def _add_context_commands(commands: argparse._SubParsersAction) -> None:
@@ -315,6 +340,10 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 			ReadStore(database).release_list(args.limit, args.offset),
 			"release list",
 		),
+		("release", "remove"): lambda: (
+			WriteStore(database).release_remove(args.release_id),
+			"release remove",
+		),
 		("task", "add"): lambda: (
 			WriteStore(database).task_add(
 				slug=args.slug,
@@ -334,6 +363,10 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 			"task add",
 		),
 		("task", "dependency"): lambda: _run_task_dependency(args, database),
+		("task", "remove"): lambda: (
+			WriteStore(database).task_remove(args.task_id),
+			"task remove",
+		),
 		("task", "start"): lambda: (
 			WriteStore(database).task_start(args.task_id),
 			"task start",
@@ -377,6 +410,10 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 			WriteStore(database).chunk_complete(args.chunk_id),
 			"chunk complete",
 		),
+		("chunk", "remove"): lambda: (
+			WriteStore(database).chunk_remove(args.chunk_id),
+			"chunk remove",
+		),
 		("ready", None): lambda: (
 			ReadStore(database).ready(args.limit, args.offset),
 			"ready",
@@ -385,11 +422,19 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 			WriteStore(database).discovery_add(args.task_id, " ".join(args.body)),
 			"discovery add",
 		),
+		("discovery", "remove"): lambda: (
+			WriteStore(database).discovery_remove(args.note_id),
+			"discovery remove",
+		),
 		("decision", "add"): lambda: (
 			WriteStore(database).decision_add(
 				args.task_id, " ".join(args.body), args.supersedes_id
 			),
 			"decision add",
+		),
+		("decision", "remove"): lambda: (
+			WriteStore(database).decision_remove(args.note_id),
+			"decision remove",
 		),
 		("context", "set"): lambda: (
 			WriteStore(database).context_set(
@@ -414,6 +459,14 @@ def _run_task_dependency(
 	args: argparse.Namespace, database: Database
 ) -> tuple[object, str]:
 	"""Run the nested task dependency command."""
+	if args.dependency_command == "remove":
+		return (
+			WriteStore(database).task_dependency_remove(
+				args.task_id, args.depends_on_task_id
+			),
+			"task dependency remove",
+		)
+
 	return (
 		WriteStore(database).task_dependency_add(args.task_id, args.depends_on_task_id),
 		"task dependency add",

@@ -14,6 +14,7 @@ from .errors import (
 	InvalidTransitionError,
 	NotFoundError,
 	PendingChunksError,
+	StillReferencedError,
 	UnresolvedDependenciesError,
 )
 from .ids import (
@@ -104,6 +105,40 @@ class WriteStore(_StoreBase):
 			).fetchone()
 
 		return Release.from_row(row).to_dict()
+
+	def release_remove(
+		self, release_id: str, path: str | Path | None = None
+	) -> dict[str, object]:
+		"""Remove a current-project release when no task still uses it."""
+		validate_object_id(release_id, RELEASE_PREFIX)
+		project = self.current_project(path)
+
+		with self.database.transaction() as connection:
+			release = connection.execute(
+				"SELECT 1 FROM releases WHERE id = ? AND project_id = ?",
+				(release_id, project.id),
+			).fetchone()
+
+			if release is None:
+				raise NotFoundError(
+					f"release {release_id} was not found", {"id": release_id}
+				)
+
+			task_ids = [
+				row["id"]
+				for row in connection.execute(
+					"SELECT id FROM tasks WHERE release_id = ? ORDER BY id",
+					(release_id,),
+				).fetchall()
+			]
+
+			_raise_if_referenced(
+				"release", release_id, {"tasks": task_ids} if task_ids else {}
+			)
+
+			connection.execute("DELETE FROM releases WHERE id = ?", (release_id,))
+
+		return {"id": release_id}
 
 	def task_add(
 		self,
@@ -218,6 +253,62 @@ class WriteStore(_StoreBase):
 
 			return _task_dict(connection, task_id, project.id)
 
+	def task_remove(
+		self, task_id: str, path: str | Path | None = None
+	) -> dict[str, object]:
+		"""Remove a current-project task when no child row still uses it."""
+		validate_object_id(task_id, TASK_PREFIX)
+		project = self.current_project(path)
+
+		with self.database.transaction() as connection:
+			task = _task_row(connection, task_id, project.id)
+
+			if task is None:
+				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
+
+			references: dict[str, list[str]] = {}
+			chunk_ids = [
+				row["id"]
+				for row in connection.execute(
+					"SELECT id FROM chunks WHERE task_id = ? ORDER BY id", (task_id,)
+				).fetchall()
+			]
+
+			if chunk_ids:
+				references["chunks"] = chunk_ids
+
+			dependency_edges = [
+				f"{row['task_id']} -> {row['depends_on_task_id']}"
+				for row in connection.execute(
+					"""
+					SELECT task_id, depends_on_task_id
+					FROM task_dependencies
+					WHERE task_id = ? OR depends_on_task_id = ?
+					ORDER BY task_id, depends_on_task_id
+					""",
+					(task_id, task_id),
+				).fetchall()
+			]
+
+			if dependency_edges:
+				references["dependencies"] = dependency_edges
+
+			note_ids = [
+				row["id"]
+				for row in connection.execute(
+					"SELECT id FROM notes WHERE task_id = ? ORDER BY id", (task_id,)
+				).fetchall()
+			]
+
+			if note_ids:
+				references["notes"] = note_ids
+
+			_raise_if_referenced("task", task_id, references)
+
+			connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+		return {"id": task_id}
+
 	def task_dependency_add(
 		self,
 		task_id: str,
@@ -276,6 +367,54 @@ class WriteStore(_StoreBase):
 
 			return _task_dict(connection, task_id, project.id)
 
+	def task_dependency_remove(
+		self,
+		task_id: str,
+		depends_on_task_id: str,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""Remove one existing same-project task dependency edge."""
+		validate_object_id(task_id, TASK_PREFIX)
+		validate_object_id(depends_on_task_id, TASK_PREFIX)
+		project = self.current_project(path)
+
+		with self.database.transaction() as connection:
+			if _task_row(connection, task_id, project.id) is None:
+				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
+			if _task_row(connection, depends_on_task_id, project.id) is None:
+				raise NotFoundError(
+					f"dependency task {depends_on_task_id} was not found",
+					{"id": depends_on_task_id},
+				)
+
+			edge = connection.execute(
+				"""
+				SELECT task_id, depends_on_task_id
+				FROM task_dependencies
+				WHERE task_id = ? AND depends_on_task_id = ?
+				""",
+				(task_id, depends_on_task_id),
+			).fetchone()
+
+			if edge is None:
+				raise NotFoundError(
+					f"task {task_id} does not depend on {depends_on_task_id}",
+					{
+						"task_id": task_id,
+						"depends_on_task_id": depends_on_task_id,
+					},
+				)
+
+			connection.execute(
+				"DELETE FROM task_dependencies WHERE task_id = ? AND depends_on_task_id = ?",
+				(task_id, depends_on_task_id),
+			)
+
+		return {
+			"task_id": task_id,
+			"depends_on_task_id": depends_on_task_id,
+		}
+
 	def chunk_add(
 		self,
 		task_id: str,
@@ -308,6 +447,21 @@ class WriteStore(_StoreBase):
 			)
 
 			return _chunk_dict(connection, chunk_id, project.id)
+
+	def chunk_remove(
+		self, chunk_id: str, path: str | Path | None = None
+	) -> dict[str, object]:
+		"""Remove a current-project chunk."""
+		validate_object_id(chunk_id, CHUNK_PREFIX)
+		project = self.current_project(path)
+
+		with self.database.transaction() as connection:
+			if _chunk_row(connection, chunk_id, project.id) is None:
+				raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
+
+			connection.execute("DELETE FROM chunks WHERE id = ?", (chunk_id,))
+
+		return {"id": chunk_id}
 
 	def task_start(
 		self, task_id: str, path: str | Path | None = None
@@ -535,6 +689,57 @@ class WriteStore(_StoreBase):
 		"""Store a decision note, optionally superseding an earlier note."""
 		return self._note_add("decision", task_id, body, supersedes_id, path)
 
+	def discovery_remove(
+		self, note_id: str, path: str | Path | None = None
+	) -> dict[str, object]:
+		"""Remove a discovery note when no later note supersedes it."""
+		return self._note_remove("discovery", note_id, path)
+
+	def decision_remove(
+		self, note_id: str, path: str | Path | None = None
+	) -> dict[str, object]:
+		"""Remove a decision note when no later note supersedes it."""
+		return self._note_remove("decision", note_id, path)
+
+	def _note_remove(
+		self,
+		note_type: str,
+		note_id: str,
+		path: str | Path | None,
+	) -> dict[str, object]:
+		"""Remove one typed current-project note without orphaning a superseder."""
+		validate_object_id(note_id, NOTE_PREFIX)
+		project = self.current_project(path)
+
+		with self.database.transaction() as connection:
+			note = connection.execute(
+				f"SELECT {_NOTE_COLUMNS} FROM notes WHERE id = ? AND project_id = ?",
+				(note_id, project.id),
+			).fetchone()
+
+			if note is None or note["type"] != note_type:
+				raise NotFoundError(
+					f"{note_type} note {note_id} was not found", {"id": note_id}
+				)
+
+			superseding_ids = [
+				row["id"]
+				for row in connection.execute(
+					"SELECT id FROM notes WHERE supersedes_id = ? ORDER BY id",
+					(note_id,),
+				).fetchall()
+			]
+
+			_raise_if_referenced(
+				f"{note_type} note",
+				note_id,
+				{"notes": superseding_ids} if superseding_ids else {},
+			)
+
+			connection.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+
+		return {"id": note_id}
+
 	def _note_add(
 		self,
 		note_type: str,
@@ -641,6 +846,27 @@ def _require_text(value: str, label: str) -> None:
 	"""Reject required text values that contain no non-whitespace characters."""
 	if not value.strip():
 		raise EmptyValueError(f"{label} must not be empty")
+
+
+def _raise_if_referenced(
+	object_type: str,
+	object_id: str,
+	references: dict[str, list[str]],
+) -> None:
+	"""Reject a delete while naming every row that still references the object."""
+	if not references:
+		return
+
+	reference_text = "; ".join(
+		f"{label}: {', '.join(values)}" for label, values in references.items()
+	)
+
+	children = [child for values in references.values() for child in values]
+
+	raise StillReferencedError(
+		f"{object_type} {object_id} is still referenced by {reference_text}",
+		{"id": object_id, "references": references, "children": children},
+	)
 
 
 def _normalise_dependencies(depends_on: Iterable[str]) -> tuple[str, ...]:

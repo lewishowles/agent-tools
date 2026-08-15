@@ -53,6 +53,19 @@ def test_json_success_uses_the_stable_envelope(
 			"task_dependency_add",
 			"write",
 		),
+		(
+			[
+				"task",
+				"dependency",
+				"remove",
+				"tsk_" + "t" * 22,
+				"tsk_" + "d" * 22,
+			],
+			"task_dependency_remove",
+			"write",
+		),
+		(["release", "remove", "rel_" + "r" * 22], "release_remove", "write"),
+		(["task", "remove", "tsk_" + "t" * 22], "task_remove", "write"),
 		(["task", "start", "tsk_" + "t" * 22], "task_start", "write"),
 		(["task", "complete", "tsk_" + "t" * 22], "task_complete", "write"),
 		(
@@ -67,14 +80,25 @@ def test_json_success_uses_the_stable_envelope(
 			"write",
 		),
 		(["chunk", "complete", "chk_" + "c" * 22], "chunk_complete", "write"),
+		(["chunk", "remove", "chk_" + "c" * 22], "chunk_remove", "write"),
 		(
 			["discovery", "add", "--task", "tsk_" + "t" * 22, "A", "discovery"],
 			"discovery_add",
 			"write",
 		),
 		(
+			["discovery", "remove", "nte_" + "n" * 22],
+			"discovery_remove",
+			"write",
+		),
+		(
 			["decision", "add", "--task", "tsk_" + "t" * 22, "A", "decision"],
 			"decision_add",
+			"write",
+		),
+		(
+			["decision", "remove", "nte_" + "n" * 22],
+			"decision_remove",
 			"write",
 		),
 		(["context", "set", "--current-goal", "Goal"], "context_set", "write"),

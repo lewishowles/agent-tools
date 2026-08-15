@@ -90,6 +90,12 @@ class NotFoundError(ProgressError):
 	code = "not-found"
 
 
+class StillReferencedError(ProgressError):
+	"""Indicate that a record cannot be removed while other rows reference it."""
+
+	code = "still-referenced"
+
+
 class ConflictingInProgressError(ProgressError):
 	"""Indicate that another task is already in progress for the project."""
 
