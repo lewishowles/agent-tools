@@ -206,10 +206,24 @@ progress task add --slug <slug> --title <title> [--overview <overview>] [--purpo
 - `--risks <risks>`: optional risks
 - `--release <release_id>` or `--release-id <release_id>`: associate the task with a release
 - `--depends-on <task_id>` or `--dependency <task_id>`: add a dependency on another task
-- `--position <position>`: optional ordering position
+- `--position <position>`: optional ordering position; when omitted, the task
+  uses the first unused positive position in its release or unassigned queue
 
 The new task is `ready` when its dependencies allow it to start, or `blocked`
 when it still has unresolved dependencies.
+
+### `progress task move`
+
+Move a task within its release or unassigned queue:
+
+```text
+progress task move <task_id> --before <task_id> [--json] [--database <path>]
+progress task move <task_id> --after <task_id> [--json] [--database <path>]
+```
+
+Exactly one of `--before` or `--after` is required. The move changes task
+positions atomically, moving the selected task before or after the target and
+shifting each task between its old and new positions by one place.
 
 ### `progress task dependency add`
 

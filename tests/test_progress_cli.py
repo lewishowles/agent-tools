@@ -110,6 +110,17 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 			"write",
 		),
 		(
+			[
+				"task",
+				"move",
+				"tsk_" + "t" * 22,
+				"--before",
+				"tsk_" + "b" * 22,
+			],
+			"task_move",
+			"write",
+		),
+		(
 			["task", "dependency", "add", "tsk_" + "t" * 22, "tsk_" + "d" * 22],
 			"task_dependency_add",
 			"write",

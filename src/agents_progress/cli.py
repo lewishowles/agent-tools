@@ -224,6 +224,15 @@ _COMMAND_SPECS = (
 				),
 			),
 			_CommandSpec(
+				"move",
+				"move a task before or after another task",
+				arguments=(
+					_argument("task_id"),
+					_argument("--before", help="move before TASK_ID"),
+					_argument("--after", help="move after TASK_ID"),
+				),
+			),
+			_CommandSpec(
 				"dependency",
 				"manage task dependencies",
 				children=(
@@ -546,6 +555,7 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 			),
 			"task add",
 		),
+		("task", "move"): lambda: _run_task_move(args, database),
 		("task", "dependency"): lambda: _run_task_dependency(args, database),
 		("task", "remove"): lambda: (
 			WriteStore(database).task_remove(args.task_id),
@@ -661,6 +671,21 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 		raise CliUsageError("unknown progress command")
 
 	return handler()
+
+
+def _run_task_move(args: argparse.Namespace, database: Database) -> tuple[object, str]:
+	"""Run the relative task move command after validating its target flag."""
+	if (args.before is None) == (args.after is None):
+		raise CliUsageError("task move requires exactly one of --before or --after")
+
+	return (
+		WriteStore(database).task_move(
+			args.task_id,
+			before_task_id=args.before,
+			after_task_id=args.after,
+		),
+		"task move",
+	)
 
 
 def _run_task_dependency(

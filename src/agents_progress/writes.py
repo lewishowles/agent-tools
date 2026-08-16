@@ -323,7 +323,7 @@ class WriteStore(_StoreBase):
 			task_position = (
 				position
 				if position is not None
-				else _next_position(connection, "tasks", "project_id", project.id)
+				else _next_task_position(connection, project.id, release_id)
 			)
 			try:
 				connection.execute(
@@ -445,6 +445,79 @@ class WriteStore(_StoreBase):
 			connection.execute(
 				"UPDATE tasks SET title = ? WHERE id = ?", (title, task_id)
 			)
+			return _task_dict(connection, task_id, project.id)
+
+	def task_move(
+		self,
+		task_id: str,
+		before_task_id: str | None = None,
+		after_task_id: str | None = None,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""Move a task before or after another task in the same queue."""
+		validate_object_id(task_id, TASK_PREFIX)
+		if (before_task_id is None) == (after_task_id is None):
+			raise InvalidTransitionError(
+				"task move requires exactly one of before_task_id or after_task_id",
+				{"task_id": task_id},
+			)
+
+		target_task_id = before_task_id or after_task_id
+		validate_object_id(target_task_id, TASK_PREFIX)
+		if target_task_id == task_id:
+			raise InvalidTransitionError(
+				"a task cannot move relative to itself", {"task_id": task_id}
+			)
+
+		project = self.current_project(path)
+		with self.database.transaction() as connection:
+			task = _task_row(connection, task_id, project.id)
+			if task is None:
+				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
+
+			target = _task_row(connection, target_task_id, project.id)
+			if target is None:
+				raise NotFoundError(
+					f"task {target_task_id} was not found", {"id": target_task_id}
+				)
+
+			if task["release_id"] != target["release_id"]:
+				raise InvalidTransitionError(
+					"tasks must belong to the same release or unassigned queue",
+					{"task_id": task_id, "target_task_id": target_task_id},
+				)
+
+			if task["release_id"] is None:
+				queue_filter = "release_id IS NULL"
+				queue_parameters = (project.id,)
+			else:
+				queue_filter = "release_id = ?"
+				queue_parameters = (project.id, task["release_id"])
+
+			queue_rows = connection.execute(
+				f"SELECT id, position FROM tasks WHERE project_id = ? AND {queue_filter} "
+				"ORDER BY position, id",
+				queue_parameters,
+			).fetchall()
+			ordered_ids = [row["id"] for row in queue_rows]
+			positions = {row["id"]: row["position"] for row in queue_rows}
+			ordered_ids.remove(task_id)
+			target_index = ordered_ids.index(target_task_id)
+			insert_index = (
+				target_index if before_task_id is not None else target_index + 1
+			)
+			ordered_ids.insert(insert_index, task_id)
+
+			first_position = min(positions.values(), default=1)
+			for index, ordered_id in enumerate(ordered_ids, start=first_position):
+				if positions[ordered_id] == index:
+					continue
+
+				connection.execute(
+					"UPDATE tasks SET position = ? WHERE id = ?",
+					(index, ordered_id),
+				)
+
 			return _task_dict(connection, task_id, project.id)
 
 	def task_dependency_add(
@@ -1077,6 +1150,29 @@ def _next_position(
 			(value,),
 		).fetchone()[0]
 	)
+
+
+def _next_task_position(
+	connection: sqlite3.Connection, project_id: str, release_id: str | None
+) -> int:
+	"""Return the first unused positive position in one task queue."""
+	if release_id is None:
+		rows = connection.execute(
+			"SELECT position FROM tasks WHERE project_id = ? AND release_id IS NULL",
+			(project_id,),
+		).fetchall()
+	else:
+		rows = connection.execute(
+			"SELECT position FROM tasks WHERE project_id = ? AND release_id = ?",
+			(project_id, release_id),
+		).fetchall()
+
+	used_positions = {row["position"] for row in rows}
+	position = 1
+	while position in used_positions:
+		position += 1
+
+	return position
 
 
 def _task_row(

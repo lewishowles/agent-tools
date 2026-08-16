@@ -73,6 +73,71 @@ def test_explicit_zero_positions_are_preserved(tmp_path: Path) -> None:
 	assert chunk["position"] == 0
 
 
+def test_task_defaults_use_the_next_free_position_in_each_queue(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release")
+	store.task_add("first", "First", release_id=release["id"], position=1)
+	store.task_add("third", "Third", release_id=release["id"], position=3)
+	store.task_add("unassigned-first", "Unassigned first", position=1)
+
+	release_task = store.task_add("second", "Second", release_id=release["id"])
+	unassigned_task = store.task_add("unassigned-second", "Unassigned second")
+
+	assert release_task["position"] == 2
+	assert unassigned_task["position"] == 2
+
+
+def test_task_move_reorders_only_the_task_queue(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release")
+	first = store.task_add("first", "First", release_id=release["id"])
+	second = store.task_add("second", "Second", release_id=release["id"])
+	third = store.task_add("third", "Third", release_id=release["id"])
+	unassigned = store.task_add("unassigned", "Unassigned")
+
+	moved = store.task_move(third["id"], before_task_id=first["id"])
+	ordered = ReadStore(store.database, _ProjectStore(store.database)).task_list()
+
+	assert moved["id"] == third["id"]
+	assert moved["position"] == 1
+	assert [
+		item["id"] for item in ordered["items"] if item["release_id"] == release["id"]
+	] == [
+		third["id"],
+		first["id"],
+		second["id"],
+	]
+	assert unassigned["position"] == 1
+
+	store.task_move(first["id"], after_task_id=second["id"])
+	ordered = ReadStore(store.database, _ProjectStore(store.database)).task_list()
+
+	assert [
+		item["id"] for item in ordered["items"] if item["release_id"] == release["id"]
+	] == [
+		third["id"],
+		second["id"],
+		first["id"],
+	]
+
+
+def test_task_move_rejects_tasks_from_different_releases(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first_release = store.release_add("first-release", "First release")
+	second_release = store.release_add("second-release", "Second release")
+	first_task = store.task_add(
+		"first-task", "First task", release_id=first_release["id"]
+	)
+	second_task = store.task_add(
+		"second-task", "Second task", release_id=second_release["id"]
+	)
+
+	with pytest.raises(InvalidTransitionError, match="same release"):
+		store.task_move(first_task["id"], before_task_id=second_task["id"])
+
+
 def test_creation_and_chunk_lifecycle_are_atomic(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("release", "Progress store", "Store progress.")
