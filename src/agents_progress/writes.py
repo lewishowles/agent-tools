@@ -14,6 +14,7 @@ from .errors import (
 	InvalidTransitionError,
 	NotFoundError,
 	PendingChunksError,
+	ProgressError,
 	StillReferencedError,
 	UnresolvedDependenciesError,
 )
@@ -197,6 +198,57 @@ class WriteStore(_StoreBase):
 
 			connection.execute(
 				"UPDATE releases SET status = 'done' WHERE id = ?", (release_id,)
+			)
+			return Release.from_row(
+				connection.execute(
+					"SELECT id, project_id, slug, title, overview, status, position "
+					"FROM releases WHERE id = ?",
+					(release_id,),
+				).fetchone()
+			).to_dict()
+
+	def release_edit(
+		self,
+		release_id: str,
+		overview: str | None = None,
+		clear_overview: bool = False,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""Update only the overview of a current-project release."""
+		validate_object_id(release_id, RELEASE_PREFIX)
+		if overview is None and not clear_overview:
+			raise ProgressError(
+				"release edit requires --overview or --clear-overview",
+				{"id": release_id},
+			)
+		if overview is not None and clear_overview:
+			raise ProgressError(
+				"release edit accepts either --overview or --clear-overview, not both",
+				{"id": release_id},
+			)
+
+		overview_value = overview if overview is not None else ""
+		project = self.current_project(path)
+
+		with self.database.transaction() as connection:
+			release = connection.execute(
+				"SELECT id, project_id, slug, title, overview, status, position "
+				"FROM releases WHERE id = ? AND project_id = ?",
+				(release_id, project.id),
+			).fetchone()
+			if release is None:
+				raise NotFoundError(
+					f"release {release_id} was not found", {"id": release_id}
+				)
+			if release["overview"] == overview_value:
+				raise ProgressError(
+					f"release {release_id} overview is already unchanged",
+					{"id": release_id},
+				)
+
+			connection.execute(
+				"UPDATE releases SET overview = ? WHERE id = ?",
+				(overview_value, release_id),
 			)
 			return Release.from_row(
 				connection.execute(

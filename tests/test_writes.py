@@ -13,6 +13,7 @@ from agents_progress.errors import (
 	InvalidDependencyError,
 	InvalidTransitionError,
 	PendingChunksError,
+	ProgressError,
 	StillReferencedError,
 	UnresolvedDependenciesError,
 )
@@ -307,6 +308,79 @@ def test_rename_updates_titles_without_changing_identifiers_or_slugs(
 	assert renamed_chunk["id"] == chunk["id"]
 	assert renamed_chunk["task_id"] == chunk["task_id"]
 	assert renamed_chunk["title"] == "Renamed chunk"
+
+
+def test_release_edit_updates_only_overview_and_preserves_task_references(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add(
+		"release",
+		"Release",
+		overview="Original overview",
+		status="active",
+		position=3,
+	)
+	tasks = [
+		store.task_add(f"task-{number}", f"Task {number}", release_id=release["id"])
+		for number in range(17)
+	]
+
+	updated = store.release_edit(release["id"], overview="Updated overview")
+
+	assert updated["id"] == release["id"]
+	assert updated["project_id"] == release["project_id"]
+	assert updated["slug"] == release["slug"]
+	assert updated["title"] == release["title"]
+	assert updated["overview"] == "Updated overview"
+	assert updated["status"] == release["status"]
+	assert updated["position"] == release["position"]
+
+	with store.database.connection() as connection:
+		release_ids = [
+			row["release_id"]
+			for row in connection.execute(
+				"SELECT release_id FROM tasks WHERE release_id = ? ORDER BY id",
+				(release["id"],),
+			).fetchall()
+		]
+
+	assert len(tasks) == 17
+	assert release_ids == [release["id"]] * 17
+
+
+@pytest.mark.parametrize(
+	"edit_arguments",
+	[
+		pytest.param({"overview": ""}, id="empty-overview"),
+		pytest.param({"clear_overview": True}, id="clear-flag"),
+	],
+)
+def test_release_edit_can_clear_the_overview(
+	tmp_path: Path, edit_arguments: dict[str, object]
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Overview")
+
+	updated = store.release_edit(release["id"], **edit_arguments)
+
+	assert updated["overview"] == ""
+
+
+def test_release_edit_rejects_an_unchanged_overview(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Overview")
+
+	with pytest.raises(ProgressError, match="already unchanged"):
+		store.release_edit(release["id"], overview="Overview")
+
+
+def test_release_edit_requires_one_overview_input(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release")
+
+	with pytest.raises(ProgressError, match="requires"):
+		store.release_edit(release["id"])
 
 
 @pytest.mark.parametrize("initial_status", ["planned", "active"])

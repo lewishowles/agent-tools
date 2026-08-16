@@ -174,6 +174,19 @@ _COMMAND_SPECS = (
 				),
 			),
 			_CommandSpec(
+				"edit",
+				"edit a release overview",
+				arguments=(
+					_argument("release_id"),
+					_argument("--overview", default=argparse.SUPPRESS),
+					_argument(
+						"--clear-overview",
+						action="store_true",
+						default=argparse.SUPPRESS,
+					),
+				),
+			),
+			_CommandSpec(
 				"complete",
 				"complete a planned or active release",
 				arguments=(_argument("release_id"),),
@@ -502,6 +515,14 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 		("release", "rename"): lambda: (
 			WriteStore(database).release_rename(args.release_id, args.title),
 			"release rename",
+		),
+		("release", "edit"): lambda: (
+			WriteStore(database).release_edit(
+				args.release_id,
+				overview=getattr(args, "overview", None),
+				clear_overview=getattr(args, "clear_overview", False),
+			),
+			"release edit",
 		),
 		("release", "complete"): lambda: (
 			WriteStore(database).release_complete(args.release_id),
