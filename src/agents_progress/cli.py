@@ -396,7 +396,7 @@ def build_parser() -> argparse.ArgumentParser:
 		default=None,
 		help="use PATH instead of ~/.agents/progress.db",
 	)
-	commands = parser.add_subparsers(dest="command", required=True)
+	commands = parser.add_subparsers(dest="command")
 
 	_add_command_specs(commands, _COMMAND_SPECS)
 
@@ -409,8 +409,14 @@ def main(argv: list[str] | None = None) -> int:
 	json_mode = "--json" in arguments
 
 	try:
-		args = build_parser().parse_args(arguments)
+		parser = build_parser()
+		args = parser.parse_args(arguments)
 		json_mode = bool(getattr(args, "json", json_mode))
+
+		if args.command is None:
+			parser.print_help()
+			return 0
+
 		data, command = _run_command(args)
 	except CliUsageError as error:
 		return _write_error(

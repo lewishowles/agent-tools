@@ -1,9 +1,18 @@
 import json
 from pathlib import Path
 
+import pytest
 from agents_progress import cli
 from agents_progress.errors import AlreadyExistsError, DuplicateDependencyError
-import pytest
+
+
+def test_bare_invocation_prints_help_and_succeeds(capsys) -> None:
+	assert cli.main([]) == 0
+
+	output = capsys.readouterr()
+
+	assert output.err == ""
+	assert output.out == cli.build_parser().format_help()
 
 
 def test_json_success_uses_the_stable_envelope(
