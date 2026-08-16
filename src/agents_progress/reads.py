@@ -12,7 +12,7 @@ from .ids import (
 	validate_object_id,
 )
 from .models import Chunk, Context, Note, Release, Task
-from .projects import _StoreBase
+from .projects import Project, _StoreBase
 
 # Default and maximum page size for bounded list responses.
 DEFAULT_LIMIT = 50
@@ -65,42 +65,103 @@ def page_response(
 	}
 
 
+def _task_response(
+	project: Project,
+	task_row: sqlite3.Row | None,
+	chunk_row: sqlite3.Row | None,
+	empty_hint: str,
+) -> dict[str, object]:
+	"""Build the stable response shared by the current and next commands."""
+	task = Task.from_row(task_row) if task_row is not None else None
+	chunk = Chunk.from_row(chunk_row) if chunk_row is not None else None
+
+	return {
+		"project": project.to_dict(),
+		"task": task.to_dict() if task is not None else None,
+		"chunk": chunk.to_dict() if chunk is not None else None,
+		"hint_command": ReadStore._next_hint(task, chunk, empty_hint),
+	}
+
+
+def _in_progress_task_and_chunk(
+	connection: sqlite3.Connection, project_id: str
+) -> tuple[sqlite3.Row | None, sqlite3.Row | None]:
+	"""Fetch the current in-progress task and its active chunk."""
+	task_row = connection.execute(
+		f"SELECT {_TASK_COLUMNS} FROM tasks "
+		"WHERE project_id = ? AND status = 'in-progress'",
+		(project_id,),
+	).fetchone()
+	chunk_row = (
+		_active_chunk(connection, task_row["id"]) if task_row is not None else None
+	)
+
+	return task_row, chunk_row
+
+
+def _active_chunk(connection: sqlite3.Connection, task_id: str) -> sqlite3.Row | None:
+	"""Fetch the first active chunk for a task."""
+	return connection.execute(
+		f"SELECT {_CHUNK_COLUMNS} FROM chunks "
+		"WHERE task_id = ? AND status = 'active' "
+		"ORDER BY position, id LIMIT 1",
+		(task_id,),
+	).fetchone()
+
+
 class ReadStore(_StoreBase):
 	"""Run the current project's read queries against the progress database."""
 
 	def next(self, path: str | Path | None = None) -> dict[str, object]:
-		"""Return the current project's in-progress task, its active chunk, and a next-command hint."""
+		"""Return the next actionable task, its active chunk, and a next-command hint."""
+		project = self.current_project(path)
+
+		with self.database.transaction() as connection:
+			task_row, chunk_row = _in_progress_task_and_chunk(connection, project.id)
+			if task_row is None:
+				task_row = connection.execute(
+					f"SELECT {_TASK_COLUMNS} FROM tasks "
+					"WHERE project_id = ? AND status = 'ready' "
+					"ORDER BY position, id LIMIT 1",
+					(project.id,),
+				).fetchone()
+			if task_row is None:
+				blocked_task = connection.execute(
+					f"""
+					SELECT {_TASK_COLUMNS} FROM tasks
+					WHERE project_id = ? AND status = 'blocked'
+					AND EXISTS (SELECT 1 FROM task_dependencies WHERE task_id = tasks.id)
+					AND NOT EXISTS (
+					SELECT 1 FROM task_dependencies AS dependencies
+					JOIN tasks AS dependency ON dependency.id = dependencies.depends_on_task_id
+					WHERE dependencies.task_id = tasks.id AND dependency.status != 'done'
+					)
+					ORDER BY position, id LIMIT 1
+					""",
+					(project.id,),
+				).fetchone()
+				if blocked_task is not None:
+					# Keep the read and write modules acyclic while sharing this transition.
+					from .writes import _unblock_task
+
+					_unblock_task(connection, blocked_task["id"], project.id)
+					task_row = connection.execute(
+						f"SELECT {_TASK_COLUMNS} FROM tasks WHERE id = ? AND project_id = ?",
+						(blocked_task["id"], project.id),
+					).fetchone()
+				if task_row is not None:
+					chunk_row = _active_chunk(connection, task_row["id"])
+
+		return _task_response(project, task_row, chunk_row, "progress task list")
+
+	def current(self, path: str | Path | None = None) -> dict[str, object]:
+		"""Return the current project's in-progress task and its active chunk."""
 		project = self.current_project(path)
 
 		with self.database.connection() as connection:
-			task_row = connection.execute(
-				f"SELECT {_TASK_COLUMNS} FROM tasks "
-				"WHERE project_id = ? AND status = 'in-progress'",
-				(project.id,),
-			).fetchone()
-			chunk_row = None
-			if task_row is not None:
-				chunk_row = connection.execute(
-					f"SELECT {_CHUNK_COLUMNS} FROM chunks "
-					"WHERE task_id = ? AND status = 'active' "
-					"ORDER BY position, id LIMIT 1",
-					(task_row["id"],),
-				).fetchone()
+			task_row, chunk_row = _in_progress_task_and_chunk(connection, project.id)
 
-		task = Task.from_row(task_row) if task_row is not None else None
-		chunk = Chunk.from_row(chunk_row) if chunk_row is not None else None
-		hint_command = self._next_hint(task, chunk)
-
-		return {
-			"project": project.to_dict(),
-			"task": task.to_dict() if task is not None else None,
-			"chunk": chunk.to_dict() if chunk is not None else None,
-			"hint_command": hint_command,
-		}
-
-	def current(self, path: str | Path | None = None) -> dict[str, object]:
-		"""Return the same read model as next; current and next answer the same question."""
-		return self.next(path)
+		return _task_response(project, task_row, chunk_row, "progress ready")
 
 	def release_list(
 		self,
@@ -388,10 +449,14 @@ class ReadStore(_StoreBase):
 		return page_response(items, limit, offset, total)
 
 	@staticmethod
-	def _next_hint(task: Task | None, chunk: Chunk | None) -> str | None:
-		"""Suggest the next useful command for the current task and chunk state."""
+	def _next_hint(
+		task: Task | None, chunk: Chunk | None, empty_hint: str
+	) -> str | None:
+		"""Suggest the next useful command for the selected task and chunk state."""
 		if task is None:
-			return "progress ready"
+			return empty_hint
+		if task.status == "ready":
+			return f"progress task start {task.id}"
 		if chunk is not None:
 			return f"progress chunk complete {chunk.id}"
 		return f"progress task complete {task.id}"

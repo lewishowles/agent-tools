@@ -6,6 +6,7 @@ from agents_progress.database import Database
 from agents_progress.errors import NotFoundError, WrongObjectIdTypeError
 from agents_progress.projects import Project
 from agents_progress.reads import ReadStore
+from agents_progress.writes import WriteStore
 
 
 PROJECT_ID = "prj_" + "p" * 22
@@ -142,6 +143,99 @@ def test_next_returns_the_task_chunk_and_next_command(tmp_path: Path) -> None:
 	assert result["task"]["id"] == TASK_A
 	assert result["chunk"]["id"] == CHUNK_A
 	assert result["hint_command"] == f"progress chunk complete {CHUNK_A}"
+
+
+def test_next_returns_the_earliest_ready_task_when_nothing_is_in_progress(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	writer = WriteStore(store.database, _ProjectStore(store.database))
+	first_ready = writer.task_add(
+		"first-ready", "First ready", release_id=RELEASE_A, position=0
+	)
+
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (TASK_A,))
+
+	result = store.next()
+
+	assert result["task"]["id"] == first_ready["id"]
+	assert result["task"]["status"] == "ready"
+	assert result["chunk"] is None
+	assert result["hint_command"] == f"progress task start {first_ready['id']}"
+
+
+def test_next_unblocks_the_earliest_dependent_task_and_persists_it(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	writer = WriteStore(store.database, _ProjectStore(store.database))
+	blocked = writer.task_add(
+		"unblockable", "Unblockable", release_id=RELEASE_A, depends_on=[TASK_A]
+	)
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE tasks SET status = 'done' WHERE id IN (?, ?)", (TASK_A, TASK_B)
+		)
+
+	result = store.next()
+	ready_tasks = store.task_list(status="ready")["items"]
+	second_result = store.next()
+
+	assert result["task"]["id"] == blocked["id"]
+	assert result["task"]["status"] == "ready"
+	assert result["task"]["status_reason"] is None
+	assert [task["id"] for task in ready_tasks] == [blocked["id"]]
+	assert second_result["task"]["id"] == blocked["id"]
+
+
+def test_next_keeps_a_manually_blocked_task_without_dependencies_blocked(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	writer = WriteStore(store.database, _ProjectStore(store.database))
+	writer.task_block(TASK_B, "Waiting for a decision")
+
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (TASK_A,))
+
+	result = store.next()
+	task = store.task_get(TASK_B)
+
+	assert result["task"] is None
+	assert result["chunk"] is None
+	assert result["hint_command"] == "progress task list"
+	assert task["status"] == "blocked"
+	assert task["status_reason"] == "Waiting for a decision"
+
+
+def test_current_stays_in_progress_only_when_ready_tasks_exist(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (TASK_A,))
+
+	result = store.current()
+
+	assert result["task"] is None
+	assert result["chunk"] is None
+	assert result["hint_command"] == "progress ready"
+
+
+def test_next_points_to_task_list_when_no_actionable_task_exists(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE tasks SET status = 'done'", ())
+
+	result = store.next()
+
+	assert result["task"] is None
+	assert result["chunk"] is None
+	assert result["hint_command"] == "progress task list"
 
 
 def test_task_list_and_ready_use_position_then_object_id_and_pagination(

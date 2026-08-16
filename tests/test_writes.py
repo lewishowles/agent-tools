@@ -122,6 +122,7 @@ def test_dependencies_block_and_unblock_tasks(tmp_path: Path) -> None:
 	ready_dependent = store.task_unblock(dependent["id"])
 
 	assert ready_dependent["status"] == "ready"
+	assert ready_dependent["status_reason"] is None
 
 
 def test_starting_a_second_task_names_the_existing_task(tmp_path: Path) -> None:

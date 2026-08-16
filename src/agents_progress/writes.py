@@ -767,29 +767,7 @@ class WriteStore(_StoreBase):
 		project = self.current_project(path)
 
 		with self.database.transaction() as connection:
-			task = _task_row(connection, task_id, project.id)
-			if task is None:
-				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
-			if task["status"] not in {"blocked", "needs-decision"}:
-				raise InvalidTransitionError(
-					f"task {task_id} is not blocked",
-					{"id": task_id, "status": task["status"]},
-				)
-
-			unresolved = _unresolved_dependencies(connection, task_id)
-			if unresolved:
-				raise UnresolvedDependenciesError(
-					f"task {task_id} has unfinished dependencies: {', '.join(row['id'] for row in unresolved)}",
-					{
-						"task_id": task_id,
-						"dependencies": [row["id"] for row in unresolved],
-					},
-				)
-
-			connection.execute(
-				"UPDATE tasks SET status = 'ready', status_reason = NULL, updated_at = ? WHERE id = ?",
-				(utc_timestamp(), task_id),
-			)
+			_unblock_task(connection, task_id, project.id)
 
 			return _task_dict(connection, task_id, project.id)
 
@@ -998,6 +976,35 @@ class WriteStore(_StoreBase):
 			).fetchone()
 
 		return Context.from_row(row).to_dict()
+
+
+def _unblock_task(
+	connection: sqlite3.Connection, task_id: str, project_id: str
+) -> None:
+	"""Make one blocked task ready when all its dependencies are done."""
+	task = _task_row(connection, task_id, project_id)
+	if task is None:
+		raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
+	if task["status"] not in {"blocked", "needs-decision"}:
+		raise InvalidTransitionError(
+			f"task {task_id} is not blocked",
+			{"id": task_id, "status": task["status"]},
+		)
+
+	unresolved = _unresolved_dependencies(connection, task_id)
+	if unresolved:
+		raise UnresolvedDependenciesError(
+			f"task {task_id} has unfinished dependencies: {', '.join(row['id'] for row in unresolved)}",
+			{
+				"task_id": task_id,
+				"dependencies": [row["id"] for row in unresolved],
+			},
+		)
+
+	connection.execute(
+		"UPDATE tasks SET status = 'ready', status_reason = NULL, updated_at = ? WHERE id = ?",
+		(utc_timestamp(), task_id),
+	)
 
 
 def _require_text(value: str, label: str) -> None:
