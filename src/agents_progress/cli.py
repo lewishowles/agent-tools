@@ -156,6 +156,11 @@ _COMMAND_SPECS = (
 			),
 			_CommandSpec("list", "list releases", page_options=True),
 			_CommandSpec(
+				"get",
+				"show one release",
+				arguments=(_argument("release_id"),),
+			),
+			_CommandSpec(
 				"remove",
 				"remove a release",
 				arguments=(_argument("release_id"),),
@@ -306,6 +311,11 @@ _COMMAND_SPECS = (
 				arguments=(_argument("chunk_id"), _argument("--title", required=True)),
 			),
 			_CommandSpec(
+				"get",
+				"show one chunk",
+				arguments=(_argument("chunk_id"),),
+			),
+			_CommandSpec(
 				"list",
 				"list chunks for a task",
 				arguments=(_argument("--task", required=True, dest="task_id"),),
@@ -326,6 +336,12 @@ _COMMAND_SPECS = (
 					_argument("--task", required=True, dest="task_id"),
 					_argument("body", nargs="+"),
 				),
+			),
+			_CommandSpec(
+				"list",
+				"list discovery notes",
+				arguments=(_argument("--task", dest="task_id"),),
+				page_options=True,
 			),
 			_CommandSpec(
 				"remove",
@@ -349,6 +365,12 @@ _COMMAND_SPECS = (
 				),
 			),
 			_CommandSpec(
+				"list",
+				"list decision notes",
+				arguments=(_argument("--task", dest="task_id"),),
+				page_options=True,
+			),
+			_CommandSpec(
 				"remove",
 				"remove a decision note",
 				arguments=(_argument("note_id"),),
@@ -360,6 +382,7 @@ _COMMAND_SPECS = (
 		"context",
 		"replace handoff context",
 		children=(
+			_CommandSpec("get", "show current handoff context"),
 			_CommandSpec(
 				"set",
 				"set current handoff context",
@@ -468,6 +491,10 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 			ReadStore(database).release_list(args.limit, args.offset),
 			"release list",
 		),
+		("release", "get"): lambda: (
+			ReadStore(database).release_get(args.release_id),
+			"release get",
+		),
 		("release", "remove"): lambda: (
 			WriteStore(database).release_remove(args.release_id),
 			"release remove",
@@ -537,6 +564,10 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 			ReadStore(database).chunk_list(args.task_id, args.limit, args.offset),
 			"chunk list",
 		),
+		("chunk", "get"): lambda: (
+			ReadStore(database).chunk_get(args.chunk_id),
+			"chunk get",
+		),
 		("chunk", "add"): lambda: (
 			WriteStore(database).chunk_add(
 				task_id=args.task_id,
@@ -566,6 +597,10 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 			WriteStore(database).discovery_add(args.task_id, " ".join(args.body)),
 			"discovery add",
 		),
+		("discovery", "list"): lambda: (
+			ReadStore(database).discovery_list(args.task_id, args.limit, args.offset),
+			"discovery list",
+		),
 		("discovery", "remove"): lambda: (
 			WriteStore(database).discovery_remove(args.note_id),
 			"discovery remove",
@@ -575,6 +610,10 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 				args.task_id, " ".join(args.body), args.supersedes_id
 			),
 			"decision add",
+		),
+		("decision", "list"): lambda: (
+			ReadStore(database).decision_list(args.task_id, args.limit, args.offset),
+			"decision list",
 		),
 		("decision", "remove"): lambda: (
 			WriteStore(database).decision_remove(args.note_id),
@@ -590,6 +629,10 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 				stop_marker=args.stop_marker,
 			),
 			"context set",
+		),
+		("context", "get"): lambda: (
+			ReadStore(database).context_get(),
+			"context get",
 		),
 	}
 	handler = dispatch.get((command_name, subcommand_name))

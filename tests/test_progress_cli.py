@@ -40,6 +40,58 @@ def test_json_success_uses_the_stable_envelope(
 
 
 @pytest.mark.parametrize(
+	("arguments", "method_name"),
+	[
+		(["context", "get"], "context_get"),
+		(["discovery", "list"], "discovery_list"),
+		(
+			["decision", "list", "--task", "tsk_" + "t" * 22],
+			"decision_list",
+		),
+		(["release", "get", "rel_" + "r" * 22], "release_get"),
+		(["chunk", "get", "chk_" + "c" * 22], "chunk_get"),
+	],
+)
+def test_new_read_commands_dispatch_with_the_json_envelope(
+	tmp_path: Path,
+	monkeypatch,
+	capsys,
+	arguments: list[str],
+	method_name: str,
+) -> None:
+	data = {"id": "obj_test"}
+	calls: list[str] = []
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def __getattr__(self, name):
+			def handler(*arguments, **keyword_arguments):
+				calls.append(name)
+				return data
+
+			return handler
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert (
+		cli.main(
+			[
+				*arguments,
+				"--database",
+				str(tmp_path / "db"),
+				"--json",
+			]
+		)
+		== 0
+	)
+
+	assert calls == [method_name]
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+@pytest.mark.parametrize(
 	("arguments", "method_name", "store_name"),
 	[
 		(

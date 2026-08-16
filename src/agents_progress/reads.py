@@ -5,8 +5,13 @@ from pathlib import Path
 import sqlite3
 
 from .errors import InvalidStatusError, NotFoundError
-from .ids import TASK_PREFIX, validate_object_id
-from .models import Chunk, Release, Task
+from .ids import (
+	CHUNK_PREFIX,
+	RELEASE_PREFIX,
+	TASK_PREFIX,
+	validate_object_id,
+)
+from .models import Chunk, Context, Note, Release, Task
 from .projects import _StoreBase
 
 # Default and maximum page size for bounded list responses.
@@ -28,6 +33,15 @@ _TASK_COLUMNS = (
 _CHUNK_COLUMNS = (
 	"id, task_id, position, title, description, status, started_at, completed_at"
 )
+
+_NOTE_COLUMNS = "id, project_id, task_id, type, body, supersedes_id, created_at"
+
+_CONTEXT_COLUMNS = (
+	"project_id, current_goal, previous_step, next_step, standing_context, "
+	"verify_with, stop_marker, updated_at"
+)
+
+NOTE_TYPES = frozenset({"discovery", "decision"})
 
 
 def validate_page(limit: int = DEFAULT_LIMIT, offset: int = 0) -> tuple[int, int]:
@@ -112,6 +126,29 @@ class ReadStore(_StoreBase):
 				(project.id,),
 			)
 
+	def release_get(
+		self,
+		release_id: str,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""Return one current-project release, raising not-found if it does not exist here."""
+		validate_object_id(release_id, RELEASE_PREFIX)
+		project = self.current_project(path)
+
+		with self.database.connection() as connection:
+			row = connection.execute(
+				f"SELECT {_RELEASE_COLUMNS} FROM releases "
+				"WHERE id = ? AND project_id = ?",
+				(release_id, project.id),
+			).fetchone()
+
+		if row is None:
+			raise NotFoundError(
+				f"release {release_id} was not found", {"id": release_id}
+			)
+
+		return Release.from_row(row).to_dict()
+
 	def task_get(
 		self,
 		task_id: str,
@@ -168,6 +205,29 @@ class ReadStore(_StoreBase):
 				parameters,
 			)
 
+	def chunk_get(
+		self,
+		chunk_id: str,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""Return one current-project chunk, raising not-found if it does not exist here."""
+		validate_object_id(chunk_id, CHUNK_PREFIX)
+		project = self.current_project(path)
+
+		with self.database.connection() as connection:
+			row = connection.execute(
+				f"SELECT {_CHUNK_COLUMNS} FROM chunks "
+				"WHERE id = ? AND EXISTS ("
+				"SELECT 1 FROM tasks WHERE tasks.id = chunks.task_id "
+				"AND tasks.project_id = ?)",
+				(chunk_id, project.id),
+			).fetchone()
+
+		if row is None:
+			raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
+
+		return Chunk.from_row(row).to_dict()
+
 	def chunk_list(
 		self,
 		task_id: str,
@@ -200,6 +260,77 @@ class ReadStore(_StoreBase):
 				"task_id = ?",
 				(task_id,),
 			)
+
+	def discovery_list(
+		self,
+		task_id: str | None = None,
+		limit: int = DEFAULT_LIMIT,
+		offset: int = 0,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""List discovery notes for the current project, optionally for one task."""
+		return self.note_list("discovery", task_id, limit, offset, path)
+
+	def decision_list(
+		self,
+		task_id: str | None = None,
+		limit: int = DEFAULT_LIMIT,
+		offset: int = 0,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""List decision notes for the current project, optionally for one task."""
+		return self.note_list("decision", task_id, limit, offset, path)
+
+	def note_list(
+		self,
+		note_type: str,
+		task_id: str | None = None,
+		limit: int = DEFAULT_LIMIT,
+		offset: int = 0,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""List one type of note for the current project in creation order."""
+		if note_type not in NOTE_TYPES:
+			raise ValueError(f"unknown note type {note_type!r}")
+		if task_id is not None:
+			validate_object_id(task_id, TASK_PREFIX)
+
+		limit, offset = validate_page(limit, offset)
+		project = self.current_project(path)
+		where = "project_id = ? AND type = ?"
+		parameters: tuple[object, ...] = (project.id, note_type)
+		if task_id is not None:
+			where += " AND task_id = ?"
+			parameters += (task_id,)
+
+		with self.database.connection() as connection:
+			return self._paged_query(
+				connection,
+				f"SELECT {_NOTE_COLUMNS} FROM notes WHERE {where} "
+				"ORDER BY created_at, id",
+				parameters,
+				Note.from_row,
+				limit,
+				offset,
+				"notes",
+				where,
+				parameters,
+			)
+
+	def context_get(self, path: str | Path | None = None) -> dict[str, object]:
+		"""Return the current project's handoff context or a clear not-set result."""
+		project = self.current_project(path)
+
+		with self.database.connection() as connection:
+			row = connection.execute(
+				f"SELECT {_CONTEXT_COLUMNS} FROM context WHERE project_id = ?",
+				(project.id,),
+			).fetchone()
+
+		if row is None:
+			return {"status": "not-set", "project_id": project.id}
+
+		return Context.from_row(row).to_dict()
 
 	def ready(
 		self,
@@ -237,7 +368,7 @@ class ReadStore(_StoreBase):
 		connection: sqlite3.Connection,
 		query: str,
 		parameters: tuple[object, ...],
-		factory: Callable[[object], Release | Task | Chunk],
+		factory: Callable[[object], Release | Task | Chunk | Note],
 		limit: int,
 		offset: int,
 		table: str,
