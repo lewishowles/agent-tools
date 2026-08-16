@@ -62,7 +62,7 @@ def _add_output_options(parser: argparse.ArgumentParser) -> None:
 		"--database",
 		metavar="PATH",
 		default=argparse.SUPPRESS,
-		help="use PATH instead of ~/.agents/progress.db",
+		help="use PATH instead of $AGENTS_PROGRESS_DATABASE or ~/.agents/progress.db",
 	)
 
 
@@ -394,7 +394,7 @@ def build_parser() -> argparse.ArgumentParser:
 		"--database",
 		metavar="PATH",
 		default=None,
-		help="use PATH instead of ~/.agents/progress.db",
+		help="use PATH instead of $AGENTS_PROGRESS_DATABASE or ~/.agents/progress.db",
 	)
 	commands = parser.add_subparsers(dest="command")
 

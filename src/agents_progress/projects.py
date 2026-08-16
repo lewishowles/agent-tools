@@ -112,6 +112,7 @@ class ProjectStore:
 			raise ProjectBindingRecoveryError(
 				project_id,
 				recovery_command,
+				cause,
 				compensation_error,
 			) from cause
 

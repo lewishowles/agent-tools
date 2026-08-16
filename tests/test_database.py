@@ -3,7 +3,13 @@ import sqlite3
 import pytest
 
 from agents_progress import database as database_module
-from agents_progress.database import Database, connect_database
+from agents_progress.database import (
+	DATABASE_ENVIRONMENT_VARIABLE,
+	DEFAULT_DATABASE_PATH,
+	Database,
+	connect_database,
+	resolve_database_path,
+)
 from agents_progress.errors import DatabaseBusyError
 
 
@@ -78,3 +84,30 @@ def test_transaction_converts_locked_begin_and_commit_errors(
 			pass
 
 	assert connection.closed
+
+
+def test_resolve_database_path_uses_the_default_without_overrides(monkeypatch) -> None:
+	monkeypatch.delenv(DATABASE_ENVIRONMENT_VARIABLE, raising=False)
+
+	assert resolve_database_path() == DEFAULT_DATABASE_PATH
+
+
+def test_resolve_database_path_uses_the_environment_override(
+	monkeypatch, tmp_path
+) -> None:
+	database_path = tmp_path / "environment.db"
+	monkeypatch.setenv(DATABASE_ENVIRONMENT_VARIABLE, str(database_path))
+
+	assert resolve_database_path() == database_path
+
+
+def test_resolve_database_path_prefers_the_explicit_path_over_the_environment(
+	monkeypatch, tmp_path
+) -> None:
+	monkeypatch.setenv(
+		DATABASE_ENVIRONMENT_VARIABLE,
+		str(tmp_path / "environment.db"),
+	)
+	explicit_path = tmp_path / "explicit.db"
+
+	assert resolve_database_path(explicit_path) == explicit_path

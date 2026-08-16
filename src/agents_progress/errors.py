@@ -159,10 +159,13 @@ class ProjectBindingRecoveryError(ProgressError):
 		self,
 		project_id: str,
 		recovery_command: str,
-		cause: Exception,
+		write_error: Exception,
+		rollback_error: Exception,
 	) -> None:
 		message = (
 			f"project binding recovery is required for {project_id}; "
+			f"binding write failed: {write_error}; "
+			f"rollback failed: {rollback_error}; "
 			f"run: {recovery_command}"
 		)
 		super().__init__(
@@ -170,6 +173,7 @@ class ProjectBindingRecoveryError(ProgressError):
 			{
 				"project_id": project_id,
 				"recovery_command": recovery_command,
-				"cause": str(cause),
+				"write_error": str(write_error),
+				"rollback_error": str(rollback_error),
 			},
 		)

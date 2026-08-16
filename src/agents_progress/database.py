@@ -1,5 +1,6 @@
 """Configured SQLite connections and short write transactions."""
 
+import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -10,13 +11,22 @@ from .schema import is_busy_error, migrate
 
 # the one global database shared by every project, unless a path is given explicitly
 DEFAULT_DATABASE_PATH = Path.home() / ".agents" / "progress.db"
+# fallback database path, checked before DEFAULT_DATABASE_PATH when --database is omitted
+DATABASE_ENVIRONMENT_VARIABLE = "AGENTS_PROGRESS_DATABASE"
 # how long a connection waits on a locked database before raising DatabaseBusyError
 BUSY_TIMEOUT_SECONDS = 5.0
 
 
 def resolve_database_path(path: str | Path | None = None) -> Path:
 	"""Resolve the configured global database path."""
-	return Path(path).expanduser() if path is not None else DEFAULT_DATABASE_PATH
+	if path is not None:
+		return Path(path).expanduser()
+
+	environment_path = os.environ.get(DATABASE_ENVIRONMENT_VARIABLE)
+	if environment_path:
+		return Path(environment_path).expanduser()
+
+	return DEFAULT_DATABASE_PATH
 
 
 def _busy_error(error: sqlite3.OperationalError) -> DatabaseBusyError:

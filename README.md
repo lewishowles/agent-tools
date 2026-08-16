@@ -48,6 +48,10 @@ Every subcommand accepts these common options:
 
 - `--json`: return a machine-readable response instead of readable terminal output
 - `--database <path>`: use `<path>` instead of `~/.agents/progress.db`
+- `AGENTS_PROGRESS_DATABASE`: use this path when `--database` is not provided
+
+Database path precedence is `--database`, then `AGENTS_PROGRESS_DATABASE`, then
+the default `~/.agents/progress.db`.
 
 ## Current work
 

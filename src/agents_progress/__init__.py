@@ -2,9 +2,11 @@
 
 from .database import (
 	BUSY_TIMEOUT_SECONDS,
+	DATABASE_ENVIRONMENT_VARIABLE,
 	DEFAULT_DATABASE_PATH,
 	Database,
 	connect_database,
+	resolve_database_path,
 )
 from .errors import (
 	AlreadyInitialisedError,
@@ -54,6 +56,7 @@ __all__ = [
 	"Chunk",
 	"ConflictingInProgressError",
 	"Context",
+	"DATABASE_ENVIRONMENT_VARIABLE",
 	"DEFAULT_DATABASE_PATH",
 	"Database",
 	"DatabaseBusyError",
@@ -90,5 +93,6 @@ __all__ = [
 	"connect_database",
 	"generate_object_id",
 	"is_valid_object_id",
+	"resolve_database_path",
 	"validate_object_id",
 ]

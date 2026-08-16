@@ -126,3 +126,5 @@ def test_init_compensates_a_database_failure_and_reports_recovery_failure(
 		store.init("agents", "Agent configuration")
 
 	assert "git config --local --unset-all progress.project-id" in error.value.message
+	assert "binding write failed: database write failed" in error.value.message
+	assert "rollback failed: git compensation failed" in error.value.message
