@@ -311,6 +311,7 @@ def test_human_success_renders_readable_output(
 			"title": "Read surface",
 			"status": "in-progress",
 			"overview": "Read the current task.",
+			"status_reason": "Waiting for a decision",
 		},
 		"chunk": {
 			"id": "chk_test",
@@ -318,6 +319,7 @@ def test_human_success_renders_readable_output(
 			"description": "Render readable output.",
 			"status": "active",
 		},
+		"dependency_ids": ["tsk_dependency"],
 		"hint_command": "progress chunk complete chk_test",
 	}
 
@@ -337,6 +339,9 @@ def test_human_success_renders_readable_output(
 	assert output.err == ""
 	assert "Project: Agents" in output.out
 	assert "Task: Read surface" in output.out
+	assert "Status: in-progress" in output.out
+	assert "Blocking reason: Waiting for a decision" in output.out
+	assert "Dependency IDs: tsk_dependency" in output.out
 	assert "Next: progress chunk complete chk_test" in output.out
 
 

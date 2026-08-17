@@ -112,7 +112,7 @@ def _add_command_specs(
 
 # Every CLI command and its nested subcommands, in the order they should appear in --help.
 _COMMAND_SPECS = (
-	_CommandSpec("next", "show the current task and active chunk"),
+	_CommandSpec("next", "show the next queued task and active chunk"),
 	_CommandSpec("current", "show the current task and active chunk"),
 	_CommandSpec(
 		"project",

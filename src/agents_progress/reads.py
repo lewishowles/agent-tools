@@ -70,6 +70,7 @@ def _task_response(
 	task_row: sqlite3.Row | None,
 	chunk_row: sqlite3.Row | None,
 	empty_hint: str,
+	dependency_ids: Sequence[str],
 ) -> dict[str, object]:
 	"""Build the stable response shared by the current and next commands."""
 	task = Task.from_row(task_row) if task_row is not None else None
@@ -79,6 +80,7 @@ def _task_response(
 		"project": project.to_dict(),
 		"task": task.to_dict() if task is not None else None,
 		"chunk": chunk.to_dict() if chunk is not None else None,
+		"dependency_ids": list(dependency_ids),
 		"hint_command": ReadStore._next_hint(task, chunk, empty_hint),
 	}
 
@@ -109,50 +111,44 @@ def _active_chunk(connection: sqlite3.Connection, task_id: str) -> sqlite3.Row |
 	).fetchone()
 
 
+def _dependency_ids(connection: sqlite3.Connection, task_id: str) -> list[str]:
+	"""Return a task's dependency IDs in deterministic order."""
+	rows = connection.execute(
+		"SELECT depends_on_task_id FROM task_dependencies "
+		"WHERE task_id = ? ORDER BY depends_on_task_id",
+		(task_id,),
+	).fetchall()
+
+	return [row["depends_on_task_id"] for row in rows]
+
+
 class ReadStore(_StoreBase):
 	"""Run the current project's read queries against the progress database."""
 
 	def next(self, path: str | Path | None = None) -> dict[str, object]:
-		"""Return the next actionable task, its active chunk, and a next-command hint."""
+		"""Return the next queued task, its active chunk, and a next-command hint."""
 		project = self.current_project(path)
 
-		with self.database.transaction() as connection:
+		with self.database.connection() as connection:
 			task_row, chunk_row = _in_progress_task_and_chunk(connection, project.id)
 			if task_row is None:
 				task_row = connection.execute(
 					f"SELECT {_TASK_COLUMNS} FROM tasks "
-					"WHERE project_id = ? AND status = 'ready' "
+					"WHERE project_id = ? AND status IN ('ready', 'blocked', 'needs-decision') "
 					"ORDER BY position, id LIMIT 1",
 					(project.id,),
 				).fetchone()
-			if task_row is None:
-				blocked_task = connection.execute(
-					f"""
-					SELECT {_TASK_COLUMNS} FROM tasks
-					WHERE project_id = ? AND status = 'blocked'
-					AND EXISTS (SELECT 1 FROM task_dependencies WHERE task_id = tasks.id)
-					AND NOT EXISTS (
-					SELECT 1 FROM task_dependencies AS dependencies
-					JOIN tasks AS dependency ON dependency.id = dependencies.depends_on_task_id
-					WHERE dependencies.task_id = tasks.id AND dependency.status != 'done'
-					)
-					ORDER BY position, id LIMIT 1
-					""",
-					(project.id,),
-				).fetchone()
-				if blocked_task is not None:
-					# Keep the read and write modules acyclic while sharing this transition.
-					from .writes import _unblock_task
-
-					_unblock_task(connection, blocked_task["id"], project.id)
-					task_row = connection.execute(
-						f"SELECT {_TASK_COLUMNS} FROM tasks WHERE id = ? AND project_id = ?",
-						(blocked_task["id"], project.id),
-					).fetchone()
 				if task_row is not None:
 					chunk_row = _active_chunk(connection, task_row["id"])
+			dependency_ids = (
+				_dependency_ids(connection, task_row["id"])
+				if task_row is not None
+				else []
+			)
 
-		return _task_response(project, task_row, chunk_row, "progress task list")
+		return _task_response(
+			project, task_row, chunk_row, "progress task list", dependency_ids
+		)
 
 	def current(self, path: str | Path | None = None) -> dict[str, object]:
 		"""Return the current project's in-progress task and its active chunk."""
@@ -160,8 +156,15 @@ class ReadStore(_StoreBase):
 
 		with self.database.connection() as connection:
 			task_row, chunk_row = _in_progress_task_and_chunk(connection, project.id)
+			dependency_ids = (
+				_dependency_ids(connection, task_row["id"])
+				if task_row is not None
+				else []
+			)
 
-		return _task_response(project, task_row, chunk_row, "progress ready")
+		return _task_response(
+			project, task_row, chunk_row, "progress ready", dependency_ids
+		)
 
 	def release_list(
 		self,
@@ -457,6 +460,8 @@ class ReadStore(_StoreBase):
 			return empty_hint
 		if task.status == "ready":
 			return f"progress task start {task.id}"
+		if task.status in {"blocked", "needs-decision"}:
+			return f"progress task unblock {task.id}"
 		if chunk is not None:
 			return f"progress chunk complete {chunk.id}"
 		return f"progress task complete {task.id}"

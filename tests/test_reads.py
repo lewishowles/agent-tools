@@ -165,29 +165,31 @@ def test_next_returns_the_earliest_ready_task_when_nothing_is_in_progress(
 	assert result["hint_command"] == f"progress task start {first_ready['id']}"
 
 
-def test_next_unblocks_the_earliest_dependent_task_and_persists_it(
+def test_next_reports_the_earliest_blocked_task_without_changing_it(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
 	writer = WriteStore(store.database, _ProjectStore(store.database))
 	blocked = writer.task_add(
-		"unblockable", "Unblockable", release_id=RELEASE_A, depends_on=[TASK_A]
+		"blocked", "Blocked", release_id=RELEASE_A, depends_on=[TASK_A], position=3
 	)
 
 	with store.database.transaction() as connection:
-		connection.execute(
-			"UPDATE tasks SET status = 'done' WHERE id IN (?, ?)", (TASK_A, TASK_B)
-		)
+		connection.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (TASK_A,))
+		connection.execute("UPDATE tasks SET position = 6 WHERE id = ?", (TASK_B,))
+
+	before = store.task_get(blocked["id"])
 
 	result = store.next()
-	ready_tasks = store.task_list(status="ready")["items"]
-	second_result = store.next()
+	after = store.task_get(blocked["id"])
 
 	assert result["task"]["id"] == blocked["id"]
-	assert result["task"]["status"] == "ready"
-	assert result["task"]["status_reason"] is None
-	assert [task["id"] for task in ready_tasks] == [blocked["id"]]
-	assert second_result["task"]["id"] == blocked["id"]
+	assert result["task"]["status"] == "blocked"
+	assert result["task"]["status_reason"] == before["status_reason"]
+	assert result["dependency_ids"] == [TASK_A]
+	assert after["status"] == before["status"]
+	assert after["status_reason"] == before["status_reason"]
+	assert after["updated_at"] == before["updated_at"]
 
 
 def test_next_keeps_a_manually_blocked_task_without_dependencies_blocked(
@@ -203,9 +205,12 @@ def test_next_keeps_a_manually_blocked_task_without_dependencies_blocked(
 	result = store.next()
 	task = store.task_get(TASK_B)
 
-	assert result["task"] is None
+	assert result["task"]["id"] == TASK_B
+	assert result["task"]["status"] == "blocked"
+	assert result["task"]["status_reason"] == "Waiting for a decision"
+	assert result["dependency_ids"] == []
 	assert result["chunk"] is None
-	assert result["hint_command"] == "progress task list"
+	assert result["hint_command"] == f"progress task unblock {TASK_B}"
 	assert task["status"] == "blocked"
 	assert task["status_reason"] == "Waiting for a decision"
 

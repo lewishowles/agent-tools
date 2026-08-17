@@ -57,7 +57,13 @@ the default `~/.agents/progress.db`.
 
 ### `progress next`
 
-Show the next active task and chunk for the current project.
+Show the next unfinished task and its active chunk for the current project.
+
+An in-progress task remains the first choice. Otherwise, `progress next` uses
+task position order across ready, blocked, and needs-decision tasks. It does not
+reorder tasks or change a blocked task's status. Blocked results include the
+stored blocking reason and dependency IDs so you can choose whether to unblock,
+move, or revise the task.
 
 ```bash
 progress next

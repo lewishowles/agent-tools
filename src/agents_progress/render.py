@@ -14,7 +14,7 @@ def render(command: str, data: object) -> str:
 
 
 def _render_next(data: object) -> str:
-	"""Render the current task and its active chunk as prose lines."""
+	"""Render the selected task and its active chunk as prose lines."""
 	if not isinstance(data, dict):
 		return str(data)
 
@@ -22,7 +22,7 @@ def _render_next(data: object) -> str:
 	chunk = data.get("chunk")
 	lines = [f"Project: {data.get('project', {}).get('name', '')}", ""]
 	if not isinstance(task, dict):
-		lines.extend(["No task is in progress.", ""])
+		lines.extend(["No task is selected.", ""])
 	else:
 		lines.extend(
 			[
@@ -30,9 +30,19 @@ def _render_next(data: object) -> str:
 				f"Status: {task.get('status', '')}",
 				f"Overview: {task.get('overview') or task.get('purpose') or ''}",
 				f"ID: {task.get('id', '')}",
-				"",
 			]
 		)
+		status_reason = task.get("status_reason")
+		if status_reason:
+			lines.append(f"Blocking reason: {status_reason}")
+
+		dependency_ids = data.get("dependency_ids")
+		if isinstance(dependency_ids, list) and dependency_ids:
+			lines.append(
+				f"Dependency IDs: {', '.join(str(item) for item in dependency_ids)}"
+			)
+
+		lines.append("")
 		if isinstance(chunk, dict):
 			lines.extend(
 				[
