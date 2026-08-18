@@ -96,12 +96,6 @@ class StillReferencedError(ProgressError):
 	code = "still-referenced"
 
 
-class ConflictingInProgressError(ProgressError):
-	"""Indicate that another task is already in progress for the project."""
-
-	code = "conflicting-in-progress"
-
-
 class InvalidDependencyError(ProgressError):
 	"""Indicate that a task dependency cannot be added."""
 

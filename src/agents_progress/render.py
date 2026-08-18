@@ -91,9 +91,21 @@ def _render_object(data: dict[str, object]) -> str:
 	"""Render one stable public object as labelled rows."""
 	lines = []
 	for key, value in data.items():
+		if key == "demoted_task":
+			lines.append(f"Demoted task: {_format_demoted_task(value)}")
+			continue
+
 		label = key.replace("_", " ").capitalize()
 		if label == "Id" or label.endswith(" id"):
 			label = label[:-2] + "ID"
 		lines.append(f"{label}: {'' if value is None else value}")
 
 	return "\n".join(lines) + "\n"
+
+
+def _format_demoted_task(value: object) -> str:
+	"""Name the task task_start demoted back to ready, or blank when none was."""
+	if not isinstance(value, dict):
+		return ""
+
+	return f"{value.get('title', '')} ({value.get('id', '')})"

@@ -289,8 +289,11 @@ progress task start <task_id> [--json] [--database <path>]
 Starting a task requires the task to be `ready`, moves it to `in-progress`, and
 activates its first pending chunk, when it has one. Unfinished dependencies
 raise `UnresolvedDependenciesError`. The database permits only one
-`in-progress` task per project, so another active task raises
-`ConflictingInProgressError`.
+`in-progress` task per project: if another task already holds that status,
+starting a new one demotes it back to `ready` (its active chunk, if any,
+reverts to `pending`; completed chunks are untouched) in the same
+transaction. The response's `demoted_task` field names the task that was
+demoted, or is `null` when nothing was.
 
 ### `progress task complete`
 
@@ -533,7 +536,7 @@ field, and the command that sets or changes it.
 | `task.status`     | `blocked`        | `task add` when dependencies block work, `task dependency add` when an unfinished dependency is added to a ready task, or `task block` without `--needs-decision`             |
 | `task.status`     | `needs-decision` | `task block --needs-decision`                                                                                                                                                 |
 | `task.status`     | `done`           | `task complete`                                                                                                                                                               |
-| `chunk.status`    | `pending`        | `chunk add`, or `task block` when an in-progress task's active chunk is returned to pending                                                                                   |
+| `chunk.status`    | `pending`        | `chunk add`, or `task block`/`task start` (demoting another task) returning an in-progress task's active chunk to pending                                                     |
 | `chunk.status`    | `active`         | `task start`, or `chunk complete` activating the next pending chunk                                                                                                           |
 | `chunk.status`    | `done`           | `chunk complete`                                                                                                                                                              |
 | `chunk.status`    | `skipped`        | Schema-legal, but currently unreachable through any CLI command                                                                                                               |
@@ -544,7 +547,7 @@ field, and the command that sets or changes it.
 The available transitions are:
 
 - `release complete`: `planned` or `active` → `done`; `done` → rejected, with the current status named in the error
-- `task start`: `ready` → `in-progress`; unfinished dependencies raise `UnresolvedDependenciesError`, and another `in-progress` task in the same project raises `ConflictingInProgressError` because the database enforces one in-progress task per project
+- `task start`: `ready` → `in-progress`; unfinished dependencies raise `UnresolvedDependenciesError`. The database enforces one in-progress task per project, so another `in-progress` task in the same project is demoted to `ready` (its active chunk, if any, returned to `pending`) in the same transaction, and named in the response's `demoted_task` field
 - `task block`: `ready` or `in-progress` → `blocked`, or → `needs-decision` with `--needs-decision`; an active chunk is returned to `pending`
 - `task unblock`: `blocked` or `needs-decision` → `ready`; dependencies are re-checked, and unresolved dependencies reject the transition with `UnresolvedDependenciesError` naming the unfinished task IDs
 - `task complete`: an `in-progress` task with no `pending` or `active` chunks becomes `done`; pending or active chunks raise `PendingChunksError` naming their blocking chunk IDs

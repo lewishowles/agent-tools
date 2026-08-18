@@ -8,7 +8,6 @@ import pytest
 from agents_progress.database import Database
 from agents_progress import database as database_module
 from agents_progress.errors import (
-	ConflictingInProgressError,
 	DatabaseBusyError,
 	InvalidDependencyError,
 	InvalidTransitionError,
@@ -190,14 +189,59 @@ def test_dependencies_block_and_unblock_tasks(tmp_path: Path) -> None:
 	assert ready_dependent["status_reason"] is None
 
 
-def test_starting_a_second_task_names_the_existing_task(tmp_path: Path) -> None:
+def test_starting_a_second_task_demotes_the_first_to_ready(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	first = store.task_add("first", "First")
+	first_chunk = store.chunk_add(first["id"], "Chunk")
 	second = store.task_add("second", "Second")
 	store.task_start(first["id"])
 
-	with pytest.raises(ConflictingInProgressError, match=first["id"]):
-		store.task_start(second["id"])
+	started_second = store.task_start(second["id"])
+	demoted_first = ReadStore(store.database, _ProjectStore(store.database)).task_get(
+		first["id"]
+	)
+	first_chunks = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		first["id"]
+	)
+
+	assert started_second["status"] == "in-progress"
+	assert started_second["demoted_task"] == {
+		"id": first["id"],
+		"slug": first["slug"],
+		"title": first["title"],
+	}
+	assert demoted_first["status"] == "ready"
+	assert demoted_first["status_reason"] is None
+	assert first_chunks["items"][0]["id"] == first_chunk["id"]
+	assert first_chunks["items"][0]["status"] == "pending"
+
+
+def test_starting_a_task_alone_reports_no_demotion(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = store.task_add("only", "Only")
+
+	started = store.task_start(task["id"])
+
+	assert started["demoted_task"] is None
+
+
+def test_demoting_a_task_preserves_its_completed_chunks(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first = store.task_add("first", "First")
+	completed_chunk = store.chunk_add(first["id"], "Done chunk")
+	remaining_chunk = store.chunk_add(first["id"], "Remaining chunk")
+	second = store.task_add("second", "Second")
+	store.task_start(first["id"])
+	store.chunk_complete(completed_chunk["id"])
+
+	store.task_start(second["id"])
+	first_chunks = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		first["id"]
+	)
+	chunks_by_id = {chunk["id"]: chunk for chunk in first_chunks["items"]}
+
+	assert chunks_by_id[completed_chunk["id"]]["status"] == "done"
+	assert chunks_by_id[remaining_chunk["id"]]["status"] == "pending"
 
 
 def test_blocking_returns_active_chunk_to_pending(tmp_path: Path) -> None:

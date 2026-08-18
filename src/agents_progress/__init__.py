@@ -11,7 +11,6 @@ from .database import (
 from .errors import (
 	AlreadyInitialisedError,
 	AlreadyExistsError,
-	ConflictingInProgressError,
 	DatabaseBusyError,
 	DuplicateDependencyError,
 	EmptyValueError,
@@ -54,7 +53,6 @@ __all__ = [
 	"BUSY_TIMEOUT_SECONDS",
 	"CHUNK_PREFIX",
 	"Chunk",
-	"ConflictingInProgressError",
 	"Context",
 	"DATABASE_ENVIRONMENT_VARIABLE",
 	"DEFAULT_DATABASE_PATH",
