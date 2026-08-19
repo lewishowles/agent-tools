@@ -15,6 +15,44 @@ def test_bare_invocation_prints_help_and_succeeds(capsys) -> None:
 	assert output.out == cli.build_parser().format_help()
 
 
+@pytest.mark.parametrize(
+	("command", "expected_choices"),
+	[
+		("project", "{init,attach,current}"),
+		("release", "{add,list,get,remove,rename,edit,complete}"),
+		(
+			"task",
+			"{add,move,dependency,remove,rename,edit,start,complete,block,unblock,get,list}",
+		),
+		("chunk", "{add,move,start,complete,remove,rename,edit,get,list}"),
+		("discovery", "{add,list,remove}"),
+		("decision", "{add,list,remove}"),
+		("context", "{get,set}"),
+	],
+)
+def test_missing_noun_subcommand_lists_valid_choices(
+	capsys, command: str, expected_choices: str
+) -> None:
+	assert cli.main([command]) == 2
+
+	output = capsys.readouterr()
+
+	assert output.out == ""
+	assert output.err == (
+		f"Error: the following arguments are required: {expected_choices}\n"
+	)
+
+
+def test_top_level_help_uses_a_short_usage_placeholder() -> None:
+	help_text = cli.build_parser().format_help()
+	usage_line = help_text.splitlines()[0]
+
+	assert "COMMAND" in usage_line
+	assert "{next,current,doctor" not in usage_line
+	assert "\n  COMMAND\n" in help_text
+	assert "    task           read task records" in help_text
+
+
 def test_json_success_uses_the_stable_envelope(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:

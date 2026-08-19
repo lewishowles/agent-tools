@@ -96,6 +96,12 @@ def _non_empty_text_argument(flag: str) -> Callable[[str], str]:
 	return parse
 
 
+def _command_metavar(specs: tuple[_CommandSpec, ...]) -> str:
+	"""Return the valid command names in argparse's choice format."""
+	names = ",".join(spec.name for spec in specs)
+	return f"{{{names}}}"
+
+
 def _add_command_specs(
 	commands: argparse._SubParsersAction,
 	specs: tuple[_CommandSpec, ...],
@@ -106,7 +112,9 @@ def _add_command_specs(
 
 		if spec.children:
 			nested_commands = parser.add_subparsers(
-				dest=spec.destination, required=True
+				dest=spec.destination,
+				required=True,
+				metavar=_command_metavar(spec.children),
 			)
 			_add_command_specs(nested_commands, spec.children)
 			continue
@@ -546,7 +554,7 @@ def build_parser() -> argparse.ArgumentParser:
 		default=None,
 		help="use PATH instead of $AGENTS_PROGRESS_DATABASE or ~/.agents/progress.db",
 	)
-	commands = parser.add_subparsers(dest="command")
+	commands = parser.add_subparsers(dest="command", metavar="COMMAND")
 
 	_add_command_specs(commands, _COMMAND_SPECS)
 
