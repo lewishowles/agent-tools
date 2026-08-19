@@ -473,6 +473,7 @@ def test_remove_rejects_every_referenced_parent_row(tmp_path: Path) -> None:
 	store.task_dependency_add(dependent["id"], task["id"])
 	store.task_dependency_add(task["id"], dependency["id"])
 	discovery = store.discovery_add(task["id"], "Discovery")
+	decision = store.decision_add(task["id"], "Decision")
 
 	with pytest.raises(StillReferencedError, match=task["id"]):
 		store.release_remove(release["id"])
@@ -485,6 +486,7 @@ def test_remove_rejects_every_referenced_parent_row(tmp_path: Path) -> None:
 	assert f"{dependent['id']} -> {task['id']}" in message
 	assert f"{task['id']} -> {dependency['id']}" in message
 	assert discovery["id"] in message
+	assert decision["id"] in message
 	with store.database.connection() as connection:
 		assert (
 			connection.execute(

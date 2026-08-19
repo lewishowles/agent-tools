@@ -161,10 +161,10 @@ Remove a release:
 progress release remove <release_id> [--json] [--database <path>]
 ```
 
-Removal is a hard delete. It is rejected when any task still refers to the
-release, and the error names the blocking task IDs. The operation is atomic,
-so a rejected removal does not delete anything. Deletion never cascades to
-tasks.
+Removal is a hard delete. It raises `StillReferencedError` when any task still
+refers to the release, and the error names the blocking task IDs. The operation
+is atomic, so a rejected removal does not delete anything. Deletion never
+cascades to tasks. Remove or move every referencing task before retrying.
 
 ### `progress release rename`
 
@@ -258,15 +258,16 @@ Remove a task:
 progress task remove <task_id> [--json] [--database <path>]
 ```
 
-Removal is a hard delete and is rejected when any of these still refer to the
-task:
+Removal is a hard delete and raises `StillReferencedError` when any of these
+still refer to the task:
 
 - a chunk
 - a dependency edge where the task is either the dependent or the dependency
 - a discovery or decision note
 
 The error names every blocking child ID. The operation is atomic, and deletion
-never cascades to chunks, notes, or dependency edges.
+never cascades to chunks, notes, or dependency edges. Remove every child row,
+note, and dependency edge explicitly before retrying.
 
 ### `progress task rename`
 
