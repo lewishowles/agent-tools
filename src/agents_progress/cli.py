@@ -266,6 +266,61 @@ _COMMAND_SPECS = (
 				arguments=(_argument("task_id"), _argument("--title", required=True)),
 			),
 			_CommandSpec(
+				"edit",
+				"edit task planning fields",
+				arguments=(
+					_argument("task_id"),
+					_argument("--overview", default=argparse.SUPPRESS),
+					_argument("--purpose", default=argparse.SUPPRESS),
+					_argument("--contract", default=argparse.SUPPRESS),
+					_argument("--model-tier", default=argparse.SUPPRESS),
+					_argument("--files", default=argparse.SUPPRESS),
+					_argument("--acceptance-criteria", default=argparse.SUPPRESS),
+					_argument("--verification", default=argparse.SUPPRESS),
+					_argument("--risks", default=argparse.SUPPRESS),
+					_argument(
+						"--clear-overview",
+						action="store_true",
+						default=argparse.SUPPRESS,
+					),
+					_argument(
+						"--clear-purpose",
+						action="store_true",
+						default=argparse.SUPPRESS,
+					),
+					_argument(
+						"--clear-contract",
+						action="store_true",
+						default=argparse.SUPPRESS,
+					),
+					_argument(
+						"--clear-model-tier",
+						action="store_true",
+						default=argparse.SUPPRESS,
+					),
+					_argument(
+						"--clear-files",
+						action="store_true",
+						default=argparse.SUPPRESS,
+					),
+					_argument(
+						"--clear-acceptance-criteria",
+						action="store_true",
+						default=argparse.SUPPRESS,
+					),
+					_argument(
+						"--clear-verification",
+						action="store_true",
+						default=argparse.SUPPRESS,
+					),
+					_argument(
+						"--clear-risks",
+						action="store_true",
+						default=argparse.SUPPRESS,
+					),
+				),
+			),
+			_CommandSpec(
 				"start",
 				"start a ready task",
 				arguments=(_argument("task_id"),),
@@ -579,6 +634,7 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 			WriteStore(database).task_rename(args.task_id, args.title),
 			"task rename",
 		),
+		("task", "edit"): lambda: _run_task_edit(args, database),
 		("task", "start"): lambda: (
 			WriteStore(database).task_start(args.task_id),
 			"task start",
@@ -704,6 +760,32 @@ def _run_task_move(args: argparse.Namespace, database: Database) -> tuple[object
 			after_task_id=args.after,
 		),
 		"task move",
+	)
+
+
+def _run_task_edit(args: argparse.Namespace, database: Database) -> tuple[object, str]:
+	"""Run task edit with omitted flags separated from explicit empty values."""
+	return (
+		WriteStore(database).task_edit(
+			args.task_id,
+			overview=getattr(args, "overview", None),
+			purpose=getattr(args, "purpose", None),
+			contract=getattr(args, "contract", None),
+			model_tier=getattr(args, "model_tier", None),
+			files=getattr(args, "files", None),
+			acceptance_criteria=getattr(args, "acceptance_criteria", None),
+			verification=getattr(args, "verification", None),
+			risks=getattr(args, "risks", None),
+			clear_overview=getattr(args, "clear_overview", False),
+			clear_purpose=getattr(args, "clear_purpose", False),
+			clear_contract=getattr(args, "clear_contract", False),
+			clear_model_tier=getattr(args, "clear_model_tier", False),
+			clear_files=getattr(args, "clear_files", False),
+			clear_acceptance_criteria=getattr(args, "clear_acceptance_criteria", False),
+			clear_verification=getattr(args, "clear_verification", False),
+			clear_risks=getattr(args, "clear_risks", False),
+		),
+		"task edit",
 	)
 
 

@@ -446,6 +446,96 @@ class WriteStore(_StoreBase):
 			)
 			return _task_dict(connection, task_id, project.id)
 
+	def task_edit(
+		self,
+		task_id: str,
+		overview: str | None = None,
+		purpose: str | None = None,
+		contract: str | None = None,
+		model_tier: str | None = None,
+		files: str | None = None,
+		acceptance_criteria: str | None = None,
+		verification: str | None = None,
+		risks: str | None = None,
+		clear_overview: bool = False,
+		clear_purpose: bool = False,
+		clear_contract: bool = False,
+		clear_model_tier: bool = False,
+		clear_files: bool = False,
+		clear_acceptance_criteria: bool = False,
+		clear_verification: bool = False,
+		clear_risks: bool = False,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""Update selected planning fields without changing task lifecycle data."""
+		validate_object_id(task_id, TASK_PREFIX)
+
+		values = {
+			"overview": overview,
+			"purpose": purpose,
+			"contract": contract,
+			"model_tier": model_tier,
+			"files": files,
+			"acceptance_criteria": acceptance_criteria,
+			"verification": verification,
+			"risks": risks,
+		}
+		clear_fields = {
+			"overview": clear_overview,
+			"purpose": clear_purpose,
+			"contract": clear_contract,
+			"model_tier": clear_model_tier,
+			"files": clear_files,
+			"acceptance_criteria": clear_acceptance_criteria,
+			"verification": clear_verification,
+			"risks": clear_risks,
+		}
+
+		if not any(
+			value is not None or clear_fields[field] for field, value in values.items()
+		):
+			raise ProgressError(
+				"task edit requires at least one field",
+				{"id": task_id},
+			)
+
+		for field, value in values.items():
+			if clear_fields[field] and value is not None:
+				raise ProgressError(
+					f"task edit accepts either --{field.replace('_', '-')} or "
+					f"--clear-{field.replace('_', '-')}, not both",
+					{"id": task_id, "field": field},
+				)
+			if value is not None and not isinstance(value, str):
+				raise ProgressError(
+					f"task {field} must be text",
+					{"id": task_id, "field": field},
+				)
+
+		project = self.current_project(path)
+		nullable_fields = {"model_tier", "files"}
+		updates = []
+		parameters: list[object] = []
+		for field, value in values.items():
+			if value is None and not clear_fields[field]:
+				continue
+
+			if clear_fields[field]:
+				value = None if field in nullable_fields else ""
+
+			updates.append(f"{field} = ?")
+			parameters.append(value)
+
+		with self.database.transaction() as connection:
+			if _task_row(connection, task_id, project.id) is None:
+				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
+
+			connection.execute(
+				f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?",
+				(*parameters, task_id),
+			)
+			return _task_dict(connection, task_id, project.id)
+
 	def task_move(
 		self,
 		task_id: str,

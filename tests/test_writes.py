@@ -524,6 +524,96 @@ def test_rename_updates_titles_without_changing_identifiers_or_slugs(
 	assert renamed_chunk["title"] == "Renamed chunk"
 
 
+def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release")
+	task = store.task_add(
+		"task",
+		"Task",
+		overview="Original overview",
+		purpose="Original purpose",
+		contract="Original contract",
+		model_tier="sonnet",
+		files="original.py",
+		acceptance_criteria="Original criteria",
+		verification="Original verification",
+		risks="Original risks",
+		release_id=release["id"],
+		position=3,
+	)
+
+	updated = store.task_edit(
+		task["id"],
+		overview="Updated overview",
+		clear_model_tier=True,
+		files="updated.py",
+	)
+
+	assert updated["id"] == task["id"]
+	assert updated["project_id"] == task["project_id"]
+	assert updated["slug"] == task["slug"]
+	assert updated["release_id"] == task["release_id"]
+	assert updated["title"] == task["title"]
+	assert updated["overview"] == "Updated overview"
+	assert updated["purpose"] == task["purpose"]
+	assert updated["contract"] == task["contract"]
+	assert updated["model_tier"] is None
+	assert updated["files"] == "updated.py"
+	assert updated["acceptance_criteria"] == task["acceptance_criteria"]
+	assert updated["verification"] == task["verification"]
+	assert updated["risks"] == task["risks"]
+	assert updated["status"] == task["status"]
+	assert updated["status_reason"] == task["status_reason"]
+	assert updated["position"] == task["position"]
+	assert updated["created_at"] == task["created_at"]
+	assert updated["started_at"] == task["started_at"]
+	assert updated["completed_at"] == task["completed_at"]
+	assert updated["updated_at"] == task["updated_at"]
+
+
+def test_task_edit_validates_all_values_before_writing(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = store.task_add("task", "Task", purpose="Original purpose")
+
+	with pytest.raises(ProgressError, match="must be text"):
+		store.task_edit(task["id"], overview="Updated overview", purpose=object())  # type: ignore[arg-type]
+
+	current = ReadStore(store.database, _ProjectStore(store.database)).task_get(
+		task["id"]
+	)
+
+	assert current == task
+
+
+def test_task_edit_requires_at_least_one_field(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = store.task_add("task", "Task")
+
+	with pytest.raises(ProgressError, match="requires at least one field"):
+		store.task_edit(task["id"])
+
+
+def test_task_edit_rejects_value_and_clear_for_the_same_field(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	task = store.task_add("task", "Task")
+
+	with pytest.raises(ProgressError, match="not both"):
+		store.task_edit(task["id"], overview="Updated overview", clear_overview=True)
+
+
+def test_task_edit_clears_text_fields_to_empty_strings(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = store.task_add("task", "Task", overview="Original overview")
+
+	updated = store.task_edit(task["id"], clear_overview=True)
+
+	assert updated["overview"] == ""
+
+
 def test_release_edit_updates_only_overview_and_preserves_task_references(
 	tmp_path: Path,
 ) -> None:

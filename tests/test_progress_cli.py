@@ -149,6 +149,11 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 			"task_rename",
 			"write",
 		),
+		(
+			["task", "edit", "tsk_" + "t" * 22, "--overview", "Updated"],
+			"task_edit",
+			"write",
+		),
 		(["task", "start", "tsk_" + "t" * 22], "task_start", "write"),
 		(["task", "complete", "tsk_" + "t" * 22], "task_complete", "write"),
 		(
@@ -396,6 +401,62 @@ def test_json_write_success_uses_the_changed_object_shape(
 		== 0
 	)
 
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+def test_task_edit_dispatches_values_and_clear_flags(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {"id": "tsk_test", "overview": "Updated"}
+	arguments_seen: dict[str, object] = {}
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_edit(self, task_id, **arguments):
+			arguments_seen["task_id"] = task_id
+			arguments_seen.update(arguments)
+			return data
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"edit",
+				"tsk_test",
+				"--overview",
+				"Updated",
+				"--clear-model-tier",
+				"--database",
+				str(tmp_path / "db"),
+				"--json",
+			]
+		)
+		== 0
+	)
+
+	assert arguments_seen == {
+		"task_id": "tsk_test",
+		"overview": "Updated",
+		"purpose": None,
+		"contract": None,
+		"model_tier": None,
+		"files": None,
+		"acceptance_criteria": None,
+		"verification": None,
+		"risks": None,
+		"clear_overview": False,
+		"clear_purpose": False,
+		"clear_contract": False,
+		"clear_model_tier": True,
+		"clear_files": False,
+		"clear_acceptance_criteria": False,
+		"clear_verification": False,
+		"clear_risks": False,
+	}
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 
