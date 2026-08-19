@@ -40,6 +40,62 @@ def test_json_success_uses_the_stable_envelope(
 
 
 @pytest.mark.parametrize(
+	("data", "expected_output"),
+	[
+		({"findings": [], "ok": True}, "Doctor: clean"),
+		(
+			{
+				"findings": [
+					{
+						"field": "release.overview",
+						"id": "rel_test",
+						"noun": "release",
+						"title": "Blank release",
+					}
+				],
+				"ok": False,
+			},
+			"- release.overview: Blank release (rel_test)",
+		),
+	],
+)
+def test_doctor_human_output_reports_findings_or_clean(
+	tmp_path: Path, monkeypatch, capsys, data, expected_output: str
+) -> None:
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def doctor(self):
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert cli.main(["doctor", "--database", str(tmp_path / "db")]) == 0
+
+	assert expected_output in capsys.readouterr().out
+
+
+def test_doctor_dispatches_with_the_json_envelope(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {"findings": [], "ok": True}
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def doctor(self):
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert cli.main(["doctor", "--database", str(tmp_path / "db"), "--json"]) == 0
+
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+@pytest.mark.parametrize(
 	("arguments", "method_name"),
 	[
 		(["context", "get"], "context_get"),

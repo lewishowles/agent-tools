@@ -114,6 +114,7 @@ def _add_command_specs(
 _COMMAND_SPECS = (
 	_CommandSpec("next", "show the next queued task and active chunk"),
 	_CommandSpec("current", "show the current task and active chunk"),
+	_CommandSpec("doctor", "find blank required-in-practice fields"),
 	_CommandSpec(
 		"project",
 		"manage the current project binding",
@@ -575,6 +576,7 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 	dispatch = {
 		("next", None): lambda: (ReadStore(database).next(), "next"),
 		("current", None): lambda: (ReadStore(database).current(), "current"),
+		("doctor", None): lambda: (ReadStore(database).doctor(), "doctor"),
 		("project", "init"): lambda: (_run_project(args, database), "project init"),
 		("project", "attach"): lambda: (_run_project(args, database), "project attach"),
 		("project", "current"): lambda: (

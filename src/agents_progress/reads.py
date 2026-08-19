@@ -49,6 +49,12 @@ _CONTEXT_COLUMNS = (
 
 NOTE_TYPES = frozenset({"discovery", "decision"})
 
+# Fields that should be populated for each record in the doctor check.
+REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+	"release": ("overview",),
+	"task": ("overview",),
+}
+
 
 def validate_page(limit: int = DEFAULT_LIMIT, offset: int = 0) -> tuple[int, int]:
 	"""Reject an out-of-range limit or offset and return the validated pair."""
@@ -69,6 +75,32 @@ def page_response(
 		"offset": offset,
 		"has_more": offset + len(items) < total,
 	}
+
+
+def _all_pages(
+	page_loader: Callable[[int, int], dict[str, object]],
+) -> list[dict[str, object]]:
+	"""Read every page from a bounded list query."""
+	records: list[dict[str, object]] = []
+	offset = 0
+
+	while True:
+		page = page_loader(MAX_LIMIT, offset)
+		items = page.get("items", [])
+		if isinstance(items, list):
+			records.extend(item for item in items if isinstance(item, dict))
+
+		if not page.get("has_more"):
+			break
+
+		offset += int(page.get("limit", MAX_LIMIT))
+
+	return records
+
+
+def _is_blank(value: object) -> bool:
+	"""Return whether a required field is missing or contains only whitespace."""
+	return value is None or (isinstance(value, str) and not value.strip())
 
 
 def _task_response(
@@ -179,6 +211,29 @@ class ReadStore(_StoreBase):
 		return _task_response(
 			project, task_row, chunk_row, "progress ready", dependency_ids
 		)
+
+	def doctor(self, path: str | Path | None = None) -> dict[str, object]:
+		"""Report records with blank fields from the required-in-practice list."""
+		page_loaders: dict[str, Callable[[int, int], dict[str, object]]] = {
+			"release": lambda limit, offset: self.release_list(limit, offset, path),
+			"task": lambda limit, offset: self.task_list(None, limit, offset, path),
+		}
+		findings: list[dict[str, object]] = []
+
+		for noun, fields in REQUIRED_FIELDS.items():
+			for record in _all_pages(page_loaders[noun]):
+				for field in fields:
+					if _is_blank(record.get(field)):
+						findings.append(
+							{
+								"field": f"{noun}.{field}",
+								"id": record.get("id"),
+								"noun": noun,
+								"title": record.get("title"),
+							}
+						)
+
+		return {"findings": findings, "ok": not findings}
 
 	def release_list(
 		self,

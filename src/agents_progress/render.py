@@ -5,12 +5,35 @@ def render(command: str, data: object) -> str:
 	"""Render one command's stable data for a person at a terminal."""
 	if command in {"next", "current"}:
 		return _render_next(data)
+	if command == "doctor":
+		return _render_doctor(data)
 	if isinstance(data, dict) and "items" in data:
 		return _render_list(command, data)
 	if isinstance(data, dict):
 		return _render_object(data)
 
 	return str(data)
+
+
+def _render_doctor(data: object) -> str:
+	"""Render doctor findings or the clean result."""
+	if not isinstance(data, dict):
+		return str(data)
+
+	findings = data.get("findings", [])
+	if not findings:
+		return "Doctor: clean\n"
+
+	lines = ["Doctor findings:"]
+	if isinstance(findings, list):
+		for finding in findings:
+			if not isinstance(finding, dict):
+				continue
+			field = finding.get("field", "field")
+			name = finding.get("title") or finding.get("id") or "record"
+			lines.append(f"- {field}: {name} ({finding.get('id', '')})")
+
+	return "\n".join(lines) + "\n"
 
 
 def _render_next(data: object) -> str:

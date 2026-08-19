@@ -280,6 +280,95 @@ def test_task_list_and_ready_use_position_then_object_id_and_pagination(
 	assert [item["id"] for item in ready["items"]] == [TASK_B]
 
 
+def test_doctor_reports_blank_required_fields_across_all_pages(
+	tmp_path: Path, monkeypatch
+) -> None:
+	store = _seed_store(tmp_path)
+	release_offsets: list[int] = []
+	task_offsets: list[int] = []
+	release_pages = [
+		{
+			"items": [
+				{
+					"id": "rel_" + "b" * 22,
+					"title": "Blank release",
+					"overview": "",
+				}
+			],
+			"limit": 1,
+			"offset": 0,
+			"has_more": True,
+		},
+		{
+			"items": [],
+			"limit": 1,
+			"offset": 1,
+			"has_more": False,
+		},
+	]
+	task_pages = [
+		{
+			"items": [
+				{
+					"id": "tsk_" + "c" * 22,
+					"title": "Blank task",
+					"overview": "  ",
+				}
+			],
+			"limit": 1,
+			"offset": 0,
+			"has_more": True,
+		},
+		{
+			"items": [],
+			"limit": 1,
+			"offset": 1,
+			"has_more": False,
+		},
+	]
+
+	def release_list(limit: int, offset: int, path=None):
+		release_offsets.append(offset)
+		return release_pages[offset]
+
+	def task_list(status=None, limit=50, offset=0, path=None):
+		task_offsets.append(offset)
+		return task_pages[offset]
+
+	monkeypatch.setattr(store, "release_list", release_list)
+	monkeypatch.setattr(store, "task_list", task_list)
+
+	result = store.doctor()
+
+	assert result == {
+		"findings": [
+			{
+				"field": "release.overview",
+				"id": "rel_" + "b" * 22,
+				"noun": "release",
+				"title": "Blank release",
+			},
+			{
+				"field": "task.overview",
+				"id": "tsk_" + "c" * 22,
+				"noun": "task",
+				"title": "Blank task",
+			},
+		],
+		"ok": False,
+	}
+	assert release_offsets == [0, 1]
+	assert task_offsets == [0, 1]
+
+
+def test_doctor_reports_clean_when_required_fields_are_populated(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+
+	assert store.doctor() == {"findings": [], "ok": True}
+
+
 def test_ready_excludes_unfinished_dependencies_and_includes_done_dependencies(
 	tmp_path: Path,
 ) -> None:
