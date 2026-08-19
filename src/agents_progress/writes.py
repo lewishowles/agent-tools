@@ -1007,7 +1007,7 @@ class WriteStore(_StoreBase):
 	def task_complete(
 		self, task_id: str, path: str | Path | None = None
 	) -> dict[str, object]:
-		"""Complete an in-progress task only after every chunk is finished or skipped."""
+		"""Complete an in-progress task only after every chunk is finished or skipped, and unblock any dependents whose remaining dependencies are now done."""
 		validate_object_id(task_id, TASK_PREFIX)
 		project = self.current_project(path)
 
@@ -1038,7 +1038,36 @@ class WriteStore(_StoreBase):
 				(now, now, task_id),
 			)
 
-			return _task_dict(connection, task_id, project.id)
+			unblocked_tasks = []
+			dependent_rows = connection.execute(
+				"""
+				SELECT tasks.id, tasks.slug, tasks.title
+				FROM tasks
+				JOIN task_dependencies
+					ON task_dependencies.task_id = tasks.id
+				WHERE tasks.project_id = ?
+					AND task_dependencies.depends_on_task_id = ?
+					AND tasks.status = 'blocked'
+				ORDER BY tasks.position, tasks.id
+				""",
+				(project.id, task_id),
+			).fetchall()
+			for dependent in dependent_rows:
+				if _unresolved_dependencies(connection, dependent["id"]):
+					continue
+
+				_unblock_task(connection, dependent["id"], project.id)
+				unblocked_tasks.append(
+					{
+						"id": dependent["id"],
+						"slug": dependent["slug"],
+						"title": dependent["title"],
+					}
+				)
+
+			completed_task = _task_dict(connection, task_id, project.id)
+			completed_task["unblocked_tasks"] = unblocked_tasks
+			return completed_task
 
 	def task_block(
 		self,

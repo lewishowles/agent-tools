@@ -565,6 +565,54 @@ def test_human_write_output_includes_a_next_command(
 	assert "Next: progress task start tsk_test" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+	("unblocked_tasks", "expected_output"),
+	[
+		(
+			[{"id": "tsk_dependent", "slug": "dependent", "title": "Dependent"}],
+			"- Dependent (tsk_dependent)",
+		),
+		([], "Unblocked tasks: none"),
+	],
+)
+def test_human_task_complete_output_names_unblocked_tasks(
+	tmp_path: Path, monkeypatch, capsys, unblocked_tasks, expected_output
+) -> None:
+	data = {
+		"id": "tsk_test",
+		"slug": "dependency",
+		"title": "Dependency",
+		"status": "done",
+		"unblocked_tasks": unblocked_tasks,
+	}
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_complete(self, task_id):
+			return data
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"complete",
+				"tsk_test",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+
+	output = capsys.readouterr().out
+
+	assert expected_output in output
+
+
 def test_project_init_dispatches_to_the_nested_project_command(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:

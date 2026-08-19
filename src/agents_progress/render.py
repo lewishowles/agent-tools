@@ -94,6 +94,9 @@ def _render_object(data: dict[str, object]) -> str:
 		if key == "demoted_task":
 			lines.append(f"Demoted task: {_format_demoted_task(value)}")
 			continue
+		if key == "unblocked_tasks":
+			lines.extend(_format_unblocked_tasks(value))
+			continue
 
 		label = key.replace("_", " ").capitalize()
 		if label == "Id" or label.endswith(" id"):
@@ -109,3 +112,17 @@ def _format_demoted_task(value: object) -> str:
 		return ""
 
 	return f"{value.get('title', '')} ({value.get('id', '')})"
+
+
+def _format_unblocked_tasks(value: object) -> list[str]:
+	"""Name tasks made ready when a completed task removed their last dependency, or 'none' when nothing was."""
+	if not isinstance(value, list) or not value:
+		return ["Unblocked tasks: none"]
+
+	lines = ["Unblocked tasks:"]
+	for task in value:
+		if not isinstance(task, dict):
+			continue
+		lines.append(f"- {task.get('title', '')} ({task.get('id', '')})")
+
+	return lines

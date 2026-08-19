@@ -275,7 +275,7 @@ def test_chunk_start_rejects_non_pending_chunks(tmp_path: Path, status: str) -> 
 		store.chunk_start(chunk["id"])
 
 
-def test_dependencies_block_and_unblock_tasks(tmp_path: Path) -> None:
+def test_dependencies_block_and_complete_tasks(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	dependency = store.task_add("dependency", "Dependency")
 	dependent = store.task_add("dependent", "Dependent", depends_on=[dependency["id"]])
@@ -287,10 +287,66 @@ def test_dependencies_block_and_unblock_tasks(tmp_path: Path) -> None:
 
 	store.task_start(dependency["id"])
 	store.task_complete(dependency["id"])
-	ready_dependent = store.task_unblock(dependent["id"])
+	ready_dependent = ReadStore(store.database, _ProjectStore(store.database)).task_get(
+		dependent["id"]
+	)
 
 	assert ready_dependent["status"] == "ready"
 	assert ready_dependent["status_reason"] is None
+
+
+def test_task_complete_unblocks_dependents_and_reports_them(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	dependency = store.task_add("progress-cli-release-edit", "Release edit dependency")
+	dependent = store.task_add(
+		"progress-cli-task-chunk-edit",
+		"Task chunk edit",
+		depends_on=[dependency["id"]],
+	)
+	store.task_start(dependency["id"])
+
+	completed = store.task_complete(dependency["id"])
+	ready_dependent = ReadStore(store.database, _ProjectStore(store.database)).task_get(
+		dependent["id"]
+	)
+
+	assert completed["unblocked_tasks"] == [
+		{
+			"id": dependent["id"],
+			"slug": dependent["slug"],
+			"title": dependent["title"],
+		}
+	]
+	assert ready_dependent["status"] == "ready"
+	assert ready_dependent["status_reason"] is None
+
+
+def test_task_complete_keeps_dependents_blocked_with_incomplete_dependencies(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	completed_dependency = store.task_add(
+		"completed-dependency", "Completed dependency"
+	)
+	unfinished_dependency = store.task_add(
+		"unfinished-dependency", "Unfinished dependency"
+	)
+	dependent = store.task_add(
+		"dependent",
+		"Dependent",
+		depends_on=[completed_dependency["id"], unfinished_dependency["id"]],
+	)
+	status_reason = dependent["status_reason"]
+	store.task_start(completed_dependency["id"])
+
+	completed = store.task_complete(completed_dependency["id"])
+	blocked_dependent = ReadStore(
+		store.database, _ProjectStore(store.database)
+	).task_get(dependent["id"])
+
+	assert completed["unblocked_tasks"] == []
+	assert blocked_dependent["status"] == "blocked"
+	assert blocked_dependent["status_reason"] == status_reason
 
 
 def test_starting_a_second_task_demotes_the_first_to_ready(tmp_path: Path) -> None:
@@ -379,7 +435,6 @@ def test_late_unfinished_dependency_blocks_ready_and_rejects_active(
 
 	store.task_start(dependency["id"])
 	store.task_complete(dependency["id"])
-	store.task_unblock(task["id"])
 	store.task_start(task["id"])
 	second_dependency = store.task_add("second-dependency", "Second dependency")
 
