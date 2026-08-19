@@ -366,7 +366,21 @@ progress chunk add --task <task_id> --title <title> [--description <description>
 - `--task <task_id>`: task that owns the chunk
 - `--title <title>`: display title
 - `--description <description>`: optional description
-- `--position <position>`: optional ordering position
+- `--position <position>`: optional ordering position; when omitted, the chunk
+  uses the first unused positive position in its task
+
+### `progress chunk move`
+
+Move a chunk within its task:
+
+```text
+progress chunk move <chunk_id> --before <chunk_id> [--json] [--database <path>]
+progress chunk move <chunk_id> --after <chunk_id> [--json] [--database <path>]
+```
+
+Exactly one of `--before` or `--after` is required. The move changes chunk
+positions atomically, moving the selected chunk before or after the target and
+shifting each chunk between its old and new positions by one place.
 
 ### `progress chunk start`
 

@@ -137,6 +137,62 @@ def test_task_move_rejects_tasks_from_different_releases(tmp_path: Path) -> None
 		store.task_move(first_task["id"], before_task_id=second_task["id"])
 
 
+def test_chunk_defaults_use_the_next_free_position(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = store.task_add("chunk-positions", "Chunk positions")
+	first = store.chunk_add(task["id"], "First", position=1)
+	third = store.chunk_add(task["id"], "Third", position=3)
+	second = store.chunk_add(task["id"], "Second")
+
+	assert [first["position"], second["position"], third["position"]] == [1, 2, 3]
+
+
+def test_chunk_move_reorders_only_the_task_chunks(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = store.task_add("chunk-move", "Chunk move")
+	first = store.chunk_add(task["id"], "First")
+	second = store.chunk_add(task["id"], "Second")
+	third = store.chunk_add(task["id"], "Third")
+	other_task = store.task_add("other-task", "Other task")
+	other_chunk = store.chunk_add(other_task["id"], "Other chunk")
+
+	moved = store.chunk_move(third["id"], before_chunk_id=first["id"])
+	ordered = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)
+
+	assert moved["id"] == third["id"]
+	assert moved["position"] == 1
+	assert [item["id"] for item in ordered["items"]] == [
+		third["id"],
+		first["id"],
+		second["id"],
+	]
+	assert other_chunk["position"] == 1
+
+	store.chunk_move(first["id"], after_chunk_id=second["id"])
+	ordered = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)
+
+	assert [item["id"] for item in ordered["items"]] == [
+		third["id"],
+		second["id"],
+		first["id"],
+	]
+
+
+def test_chunk_move_rejects_chunks_from_different_tasks(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first_task = store.task_add("first-task", "First task")
+	second_task = store.task_add("second-task", "Second task")
+	first_chunk = store.chunk_add(first_task["id"], "First chunk")
+	second_chunk = store.chunk_add(second_task["id"], "Second chunk")
+
+	with pytest.raises(InvalidTransitionError, match="same task"):
+		store.chunk_move(first_chunk["id"], before_chunk_id=second_chunk["id"])
+
+
 def test_creation_and_chunk_lifecycle_are_atomic(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("release", "Progress store", "Store progress.")

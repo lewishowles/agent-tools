@@ -162,6 +162,17 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 			"chunk_add",
 			"write",
 		),
+		(
+			[
+				"chunk",
+				"move",
+				"chk_" + "c" * 22,
+				"--before",
+				"chk_" + "b" * 22,
+			],
+			"chunk_move",
+			"write",
+		),
 		(["chunk", "complete", "chk_" + "c" * 22], "chunk_complete", "write"),
 		(["chunk", "start", "chk_" + "c" * 22], "chunk_start", "write"),
 		(["chunk", "remove", "chk_" + "c" * 22], "chunk_remove", "write"),

@@ -646,7 +646,7 @@ class WriteStore(_StoreBase):
 			chunk_position = (
 				position
 				if position is not None
-				else _next_position(connection, "chunks", "task_id", task_id)
+				else _next_chunk_position(connection, task_id)
 			)
 			connection.execute(
 				"""
@@ -655,6 +655,71 @@ class WriteStore(_StoreBase):
 				""",
 				(chunk_id, task_id, chunk_position, title, description),
 			)
+
+			return _chunk_dict(connection, chunk_id, project.id)
+
+	def chunk_move(
+		self,
+		chunk_id: str,
+		before_chunk_id: str | None = None,
+		after_chunk_id: str | None = None,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""Move a chunk before or after another chunk on the same task."""
+		validate_object_id(chunk_id, CHUNK_PREFIX)
+		if (before_chunk_id is None) == (after_chunk_id is None):
+			raise InvalidTransitionError(
+				"chunk move requires exactly one of before_chunk_id or after_chunk_id",
+				{"chunk_id": chunk_id},
+			)
+
+		target_chunk_id = before_chunk_id or after_chunk_id
+		validate_object_id(target_chunk_id, CHUNK_PREFIX)
+		if target_chunk_id == chunk_id:
+			raise InvalidTransitionError(
+				"a chunk cannot move relative to itself", {"chunk_id": chunk_id}
+			)
+
+		project = self.current_project(path)
+		with self.database.transaction() as connection:
+			chunk = _chunk_row(connection, chunk_id, project.id)
+			if chunk is None:
+				raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
+
+			target = _chunk_row(connection, target_chunk_id, project.id)
+			if target is None:
+				raise NotFoundError(
+					f"chunk {target_chunk_id} was not found", {"id": target_chunk_id}
+				)
+
+			if chunk["task_id"] != target["task_id"]:
+				raise InvalidTransitionError(
+					"chunks must belong to the same task",
+					{"chunk_id": chunk_id, "target_chunk_id": target_chunk_id},
+				)
+
+			chunk_rows = connection.execute(
+				"SELECT id, position FROM chunks WHERE task_id = ? ORDER BY position, id",
+				(chunk["task_id"],),
+			).fetchall()
+			ordered_ids = [row["id"] for row in chunk_rows]
+			positions = {row["id"]: row["position"] for row in chunk_rows}
+			ordered_ids.remove(chunk_id)
+			target_index = ordered_ids.index(target_chunk_id)
+			insert_index = (
+				target_index if before_chunk_id is not None else target_index + 1
+			)
+			ordered_ids.insert(insert_index, chunk_id)
+
+			first_position = min(positions.values(), default=1)
+			for index, ordered_id in enumerate(ordered_ids, start=first_position):
+				if positions[ordered_id] == index:
+					continue
+
+				connection.execute(
+					"UPDATE chunks SET position = ? WHERE id = ?",
+					(index, ordered_id),
+				)
 
 			return _chunk_dict(connection, chunk_id, project.id)
 
@@ -1198,7 +1263,7 @@ def _new_id(connection: sqlite3.Connection, prefix: str, table: str) -> str:
 def _next_position(
 	connection: sqlite3.Connection, table: str, column: str, value: str
 ) -> int:
-	"""Return the next position within one project's release, task, or chunk list."""
+	"""Return the next position within one release list."""
 	return int(
 		connection.execute(
 			f"SELECT COALESCE(MAX(position), 0) + 1 FROM {table} WHERE {column} = ?",
@@ -1222,6 +1287,19 @@ def _next_task_position(
 			(project_id, release_id),
 		).fetchall()
 
+	used_positions = {row["position"] for row in rows}
+	position = 1
+	while position in used_positions:
+		position += 1
+
+	return position
+
+
+def _next_chunk_position(connection: sqlite3.Connection, task_id: str) -> int:
+	"""Return the first unused positive position in one task's chunk list."""
+	rows = connection.execute(
+		"SELECT position FROM chunks WHERE task_id = ?", (task_id,)
+	).fetchall()
 	used_positions = {row["position"] for row in rows}
 	position = 1
 	while position in used_positions:

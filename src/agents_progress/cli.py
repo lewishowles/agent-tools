@@ -318,6 +318,15 @@ _COMMAND_SPECS = (
 				),
 			),
 			_CommandSpec(
+				"move",
+				"move a chunk before or after another chunk",
+				arguments=(
+					_argument("chunk_id"),
+					_argument("--before", help="move before CHUNK_ID"),
+					_argument("--after", help="move after CHUNK_ID"),
+				),
+			),
+			_CommandSpec(
 				"start",
 				"activate a pending chunk",
 				arguments=(_argument("chunk_id"),),
@@ -613,6 +622,7 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 			),
 			"chunk add",
 		),
+		("chunk", "move"): lambda: _run_chunk_move(args, database),
 		("chunk", "start"): lambda: (
 			WriteStore(database).chunk_start(args.chunk_id),
 			"chunk start",
@@ -694,6 +704,21 @@ def _run_task_move(args: argparse.Namespace, database: Database) -> tuple[object
 			after_task_id=args.after,
 		),
 		"task move",
+	)
+
+
+def _run_chunk_move(args: argparse.Namespace, database: Database) -> tuple[object, str]:
+	"""Run the relative chunk move command after validating its target flag."""
+	if (args.before is None) == (args.after is None):
+		raise CliUsageError("chunk move requires exactly one of --before or --after")
+
+	return (
+		WriteStore(database).chunk_move(
+			args.chunk_id,
+			before_chunk_id=args.before,
+			after_chunk_id=args.after,
+		),
+		"chunk move",
 	)
 
 
