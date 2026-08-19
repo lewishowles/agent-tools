@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .database import Database
@@ -80,6 +81,19 @@ def _add_page_options(parser: argparse.ArgumentParser) -> None:
 		default=0,
 		help="number of records to skip (default: 0)",
 	)
+
+
+def _non_empty_text_argument(flag: str) -> Callable[[str], str]:
+	"""Return an argparse converter that rejects empty flag values."""
+
+	def parse(value: str) -> str:
+		"""Reject values that contain no non-whitespace characters."""
+		if not value.strip():
+			raise argparse.ArgumentTypeError(f"{flag} must not be empty")
+
+		return value
+
+	return parse
 
 
 def _add_command_specs(
@@ -205,7 +219,11 @@ _COMMAND_SPECS = (
 				arguments=(
 					_argument("--slug", required=True),
 					_argument("--title", required=True),
-					_argument("--overview", default=""),
+					_argument(
+						"--overview",
+						required=True,
+						type=_non_empty_text_argument("--overview"),
+					),
 					_argument("--purpose", default=""),
 					_argument("--contract", default=""),
 					_argument("--model-tier", default=None),
@@ -369,7 +387,11 @@ _COMMAND_SPECS = (
 				arguments=(
 					_argument("--task", required=True, dest="task_id"),
 					_argument("--title", required=True),
-					_argument("--description", default=""),
+					_argument(
+						"--description",
+						required=True,
+						type=_non_empty_text_argument("--description"),
+					),
 					_argument("--position", type=int),
 				),
 			),

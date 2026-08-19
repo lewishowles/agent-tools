@@ -161,7 +161,16 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 			"write",
 		),
 		(
-			["task", "add", "--slug", "task", "--title", "Task"],
+			[
+				"task",
+				"add",
+				"--slug",
+				"task",
+				"--title",
+				"Task",
+				"--overview",
+				"Task overview",
+			],
 			"task_add",
 			"write",
 		),
@@ -219,7 +228,16 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 		),
 		(["task", "unblock", "tsk_" + "t" * 22], "task_unblock", "write"),
 		(
-			["chunk", "add", "--task", "tsk_" + "t" * 22, "--title", "Chunk"],
+			[
+				"chunk",
+				"add",
+				"--task",
+				"tsk_" + "t" * 22,
+				"--title",
+				"Chunk",
+				"--description",
+				"Chunk description",
+			],
 			"chunk_add",
 			"write",
 		),
@@ -454,6 +472,8 @@ def test_json_write_success_uses_the_changed_object_shape(
 				"write-surface",
 				"--title",
 				"Write surface",
+				"--overview",
+				"Write surface overview",
 				"--database",
 				str(tmp_path / "db"),
 				"--json",
@@ -463,6 +483,110 @@ def test_json_write_success_uses_the_changed_object_shape(
 	)
 
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+@pytest.mark.parametrize(
+	("command_arguments", "flag"),
+	[
+		pytest.param(
+			["task", "add", "--slug", "task", "--title", "Task"],
+			"--overview",
+			id="task-overview",
+		),
+		pytest.param(
+			["chunk", "add", "--task", "tsk_test", "--title", "Chunk"],
+			"--description",
+			id="chunk-description",
+		),
+	],
+)
+def test_add_rejects_an_omitted_planning_field(
+	tmp_path: Path,
+	capsys,
+	command_arguments: list[str],
+	flag: str,
+) -> None:
+	database_path = tmp_path / "db"
+
+	assert (
+		cli.main(
+			[
+				*command_arguments,
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 2
+	)
+
+	result = json.loads(capsys.readouterr().out)
+
+	assert result["ok"] is False
+	assert result["error"]["code"] == "usage"
+	assert flag in result["error"]["message"]
+	assert database_path.exists() is False
+
+
+@pytest.mark.parametrize(
+	("command_arguments", "flag"),
+	[
+		pytest.param(
+			[
+				"task",
+				"add",
+				"--slug",
+				"task",
+				"--title",
+				"Task",
+				"--overview",
+				" \t",
+			],
+			"--overview",
+			id="task-overview",
+		),
+		pytest.param(
+			[
+				"chunk",
+				"add",
+				"--task",
+				"tsk_test",
+				"--title",
+				"Chunk",
+				"--description",
+				" \t",
+			],
+			"--description",
+			id="chunk-description",
+		),
+	],
+)
+def test_add_rejects_a_whitespace_only_planning_field(
+	tmp_path: Path,
+	capsys,
+	command_arguments: list[str],
+	flag: str,
+) -> None:
+	database_path = tmp_path / "db"
+
+	assert (
+		cli.main(
+			[
+				*command_arguments,
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 2
+	)
+
+	result = json.loads(capsys.readouterr().out)
+
+	assert result["ok"] is False
+	assert result["error"]["code"] == "usage"
+	assert f"{flag} must not be empty" in result["error"]["message"]
+	assert database_path.exists() is False
 
 
 def test_task_edit_dispatches_values_and_clear_flags(
@@ -611,6 +735,8 @@ def test_human_write_output_includes_a_next_command(
 				"tsk_test",
 				"--title",
 				"First chunk",
+				"--description",
+				"Implement it.",
 				"--database",
 				str(tmp_path / "db"),
 			]

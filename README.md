@@ -197,12 +197,12 @@ chunks, notes, and dependencies.
 Create a task:
 
 ```text
-progress task add --slug <slug> --title <title> [--overview <overview>] [--purpose <purpose>] [--contract <contract>] [--model-tier <model_tier>] [--files <files>] [--acceptance-criteria <acceptance_criteria>] [--verification <verification>] [--risks <risks>] [--release <release_id> | --release-id <release_id>] [--depends-on <task_id> | --dependency <task_id>] [--position <position>] [--json] [--database <path>]
+progress task add --slug <slug> --title <title> --overview <overview> [--purpose <purpose>] [--contract <contract>] [--model-tier <model_tier>] [--files <files>] [--acceptance-criteria <acceptance_criteria>] [--verification <verification>] [--risks <risks>] [--release <release_id> | --release-id <release_id>] [--depends-on <task_id> | --dependency <task_id>] [--position <position>] [--json] [--database <path>]
 ```
 
 - `--slug <slug>`: stable slug stored on the task
 - `--title <title>`: display title
-- `--overview <overview>`: optional summary
+- `--overview <overview>`: non-empty task summary
 - `--purpose <purpose>`: optional purpose
 - `--contract <contract>`: optional task contract
 - `--model-tier <model_tier>`: optional model tier label; this is a freeform string
@@ -361,12 +361,12 @@ A chunk is a unit of work within a task.
 Add a pending chunk to a task:
 
 ```text
-progress chunk add --task <task_id> --title <title> [--description <description>] [--position <position>] [--json] [--database <path>]
+progress chunk add --task <task_id> --title <title> --description <description> [--position <position>] [--json] [--database <path>]
 ```
 
 - `--task <task_id>`: task that owns the chunk
 - `--title <title>`: display title
-- `--description <description>`: optional description
+- `--description <description>`: non-empty chunk description
 - `--position <position>`: optional ordering position; when omitted, the chunk
   uses the first unused positive position in its task
 

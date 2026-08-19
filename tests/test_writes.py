@@ -47,6 +47,91 @@ def _seed_store(tmp_path: Path) -> WriteStore:
 	return WriteStore(database, _ProjectStore(database))
 
 
+def _add_task(store: WriteStore, slug: str, title: str, **arguments):
+	"""Create a valid test task with a default overview."""
+	arguments.setdefault("overview", f"{title} overview")
+	return store.task_add(slug, title, **arguments)
+
+
+def _add_chunk(
+	store: WriteStore,
+	task_id: str,
+	title: str,
+	description: str = "Chunk description",
+	**arguments,
+):
+	"""Create a valid test chunk with a default description."""
+	return store.chunk_add(task_id, title, description=description, **arguments)
+
+
+@pytest.mark.parametrize(
+	"arguments",
+	[
+		pytest.param({"overview": ""}, id="empty"),
+		pytest.param({"overview": " \t"}, id="whitespace-only"),
+	],
+)
+def test_task_add_rejects_a_blank_overview(
+	tmp_path: Path, arguments: dict[str, str]
+) -> None:
+	store = _seed_store(tmp_path)
+
+	with pytest.raises(ProgressError, match="task overview"):
+		store.task_add("task", "Task", **arguments)
+
+	tasks = ReadStore(store.database, _ProjectStore(store.database)).task_list()
+
+	assert tasks["items"] == []
+
+
+def test_task_add_requires_an_overview_argument(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+
+	with pytest.raises(TypeError, match="overview"):
+		store.task_add("task", "Task")
+
+	tasks = ReadStore(store.database, _ProjectStore(store.database)).task_list()
+
+	assert tasks["items"] == []
+
+
+@pytest.mark.parametrize(
+	"arguments",
+	[
+		pytest.param({"description": ""}, id="empty"),
+		pytest.param({"description": " \t"}, id="whitespace-only"),
+	],
+)
+def test_chunk_add_rejects_a_blank_description(
+	tmp_path: Path, arguments: dict[str, str]
+) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "task", "Task")
+
+	with pytest.raises(ProgressError, match="chunk description"):
+		store.chunk_add(task["id"], "Chunk", **arguments)
+
+	chunks = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)
+
+	assert chunks["items"] == []
+
+
+def test_chunk_add_requires_a_description_argument(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "task", "Task")
+
+	with pytest.raises(TypeError, match="description"):
+		store.chunk_add(task["id"], "Chunk")
+
+	chunks = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)
+
+	assert chunks["items"] == []
+
+
 def _add_release_in_process(database_path: str, slug: str, results) -> None:
 	try:
 		database = Database(database_path)
@@ -62,10 +147,10 @@ def _add_release_in_process(database_path: str, slug: str, results) -> None:
 def test_explicit_zero_positions_are_preserved(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("zero-release", "Zero release", position=0)
-	task = store.task_add(
-		"zero-task", "Zero task", release_id=release["id"], position=0
+	task = _add_task(
+		store, "zero-task", "Zero task", release_id=release["id"], position=0
 	)
-	chunk = store.chunk_add(task["id"], "Zero chunk", position=0)
+	chunk = _add_chunk(store, task["id"], "Zero chunk", position=0)
 
 	assert release["position"] == 0
 	assert task["position"] == 0
@@ -77,12 +162,12 @@ def test_task_defaults_use_the_next_free_position_in_each_queue(
 ) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("release", "Release")
-	store.task_add("first", "First", release_id=release["id"], position=1)
-	store.task_add("third", "Third", release_id=release["id"], position=3)
-	store.task_add("unassigned-first", "Unassigned first", position=1)
+	_add_task(store, "first", "First", release_id=release["id"], position=1)
+	_add_task(store, "third", "Third", release_id=release["id"], position=3)
+	_add_task(store, "unassigned-first", "Unassigned first", position=1)
 
-	release_task = store.task_add("second", "Second", release_id=release["id"])
-	unassigned_task = store.task_add("unassigned-second", "Unassigned second")
+	release_task = _add_task(store, "second", "Second", release_id=release["id"])
+	unassigned_task = _add_task(store, "unassigned-second", "Unassigned second")
 
 	assert release_task["position"] == 2
 	assert unassigned_task["position"] == 2
@@ -91,10 +176,10 @@ def test_task_defaults_use_the_next_free_position_in_each_queue(
 def test_task_move_reorders_only_the_task_queue(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("release", "Release")
-	first = store.task_add("first", "First", release_id=release["id"])
-	second = store.task_add("second", "Second", release_id=release["id"])
-	third = store.task_add("third", "Third", release_id=release["id"])
-	unassigned = store.task_add("unassigned", "Unassigned")
+	first = _add_task(store, "first", "First", release_id=release["id"])
+	second = _add_task(store, "second", "Second", release_id=release["id"])
+	third = _add_task(store, "third", "Third", release_id=release["id"])
+	unassigned = _add_task(store, "unassigned", "Unassigned")
 
 	moved = store.task_move(third["id"], before_task_id=first["id"])
 	ordered = ReadStore(store.database, _ProjectStore(store.database)).task_list()
@@ -126,11 +211,11 @@ def test_task_move_rejects_tasks_from_different_releases(tmp_path: Path) -> None
 	store = _seed_store(tmp_path)
 	first_release = store.release_add("first-release", "First release")
 	second_release = store.release_add("second-release", "Second release")
-	first_task = store.task_add(
-		"first-task", "First task", release_id=first_release["id"]
+	first_task = _add_task(
+		store, "first-task", "First task", release_id=first_release["id"]
 	)
-	second_task = store.task_add(
-		"second-task", "Second task", release_id=second_release["id"]
+	second_task = _add_task(
+		store, "second-task", "Second task", release_id=second_release["id"]
 	)
 
 	with pytest.raises(InvalidTransitionError, match="same release"):
@@ -139,22 +224,22 @@ def test_task_move_rejects_tasks_from_different_releases(tmp_path: Path) -> None
 
 def test_chunk_defaults_use_the_next_free_position(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add("chunk-positions", "Chunk positions")
-	first = store.chunk_add(task["id"], "First", position=1)
-	third = store.chunk_add(task["id"], "Third", position=3)
-	second = store.chunk_add(task["id"], "Second")
+	task = _add_task(store, "chunk-positions", "Chunk positions")
+	first = _add_chunk(store, task["id"], "First", position=1)
+	third = _add_chunk(store, task["id"], "Third", position=3)
+	second = _add_chunk(store, task["id"], "Second")
 
 	assert [first["position"], second["position"], third["position"]] == [1, 2, 3]
 
 
 def test_chunk_move_reorders_only_the_task_chunks(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add("chunk-move", "Chunk move")
-	first = store.chunk_add(task["id"], "First")
-	second = store.chunk_add(task["id"], "Second")
-	third = store.chunk_add(task["id"], "Third")
-	other_task = store.task_add("other-task", "Other task")
-	other_chunk = store.chunk_add(other_task["id"], "Other chunk")
+	task = _add_task(store, "chunk-move", "Chunk move")
+	first = _add_chunk(store, task["id"], "First")
+	second = _add_chunk(store, task["id"], "Second")
+	third = _add_chunk(store, task["id"], "Third")
+	other_task = _add_task(store, "other-task", "Other task")
+	other_chunk = _add_chunk(store, other_task["id"], "Other chunk")
 
 	moved = store.chunk_move(third["id"], before_chunk_id=first["id"])
 	ordered = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
@@ -184,10 +269,10 @@ def test_chunk_move_reorders_only_the_task_chunks(tmp_path: Path) -> None:
 
 def test_chunk_move_rejects_chunks_from_different_tasks(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	first_task = store.task_add("first-task", "First task")
-	second_task = store.task_add("second-task", "Second task")
-	first_chunk = store.chunk_add(first_task["id"], "First chunk")
-	second_chunk = store.chunk_add(second_task["id"], "Second chunk")
+	first_task = _add_task(store, "first-task", "First task")
+	second_task = _add_task(store, "second-task", "Second task")
+	first_chunk = _add_chunk(store, first_task["id"], "First chunk")
+	second_chunk = _add_chunk(store, second_task["id"], "Second chunk")
 
 	with pytest.raises(InvalidTransitionError, match="same task"):
 		store.chunk_move(first_chunk["id"], before_chunk_id=second_chunk["id"])
@@ -196,11 +281,15 @@ def test_chunk_move_rejects_chunks_from_different_tasks(tmp_path: Path) -> None:
 def test_creation_and_chunk_lifecycle_are_atomic(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("release", "Progress store", "Store progress.")
-	task = store.task_add(
-		"lifecycle", "Lifecycle", release_id=release["id"], purpose="Run lifecycle."
+	task = _add_task(
+		store,
+		"lifecycle",
+		"Lifecycle",
+		release_id=release["id"],
+		purpose="Run lifecycle.",
 	)
-	first_chunk = store.chunk_add(task["id"], "First", "First chunk.")
-	second_chunk = store.chunk_add(task["id"], "Second", "Second chunk.")
+	first_chunk = _add_chunk(store, task["id"], "First", "First chunk.")
+	second_chunk = _add_chunk(store, task["id"], "Second", "Second chunk.")
 
 	started = store.task_start(task["id"])
 	chunks = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
@@ -229,9 +318,9 @@ def test_creation_and_chunk_lifecycle_are_atomic(tmp_path: Path) -> None:
 
 def test_chunk_start_demotes_active_chunk_and_activates_target(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add("chunk-start", "Chunk start")
-	active_chunk = store.chunk_add(task["id"], "Active chunk")
-	pending_chunk = store.chunk_add(task["id"], "Pending chunk")
+	task = _add_task(store, "chunk-start", "Chunk start")
+	active_chunk = _add_chunk(store, task["id"], "Active chunk")
+	pending_chunk = _add_chunk(store, task["id"], "Pending chunk")
 	store.task_start(task["id"])
 
 	started = store.chunk_start(pending_chunk["id"])
@@ -249,8 +338,8 @@ def test_chunk_start_demotes_active_chunk_and_activates_target(tmp_path: Path) -
 
 def test_chunk_start_requires_an_in_progress_task(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add("ready-task", "Ready task")
-	chunk = store.chunk_add(task["id"], "Pending chunk")
+	task = _add_task(store, "ready-task", "Ready task")
+	chunk = _add_chunk(store, task["id"], "Pending chunk")
 
 	with pytest.raises(InvalidTransitionError, match="progress task start"):
 		store.chunk_start(chunk["id"])
@@ -259,8 +348,8 @@ def test_chunk_start_requires_an_in_progress_task(tmp_path: Path) -> None:
 @pytest.mark.parametrize("status", ["active", "done", "skipped"])
 def test_chunk_start_rejects_non_pending_chunks(tmp_path: Path, status: str) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add(f"{status}-task", f"{status.title()} task")
-	chunk = store.chunk_add(task["id"], "Chunk")
+	task = _add_task(store, f"{status}-task", f"{status.title()} task")
+	chunk = _add_chunk(store, task["id"], "Chunk")
 	store.task_start(task["id"])
 
 	if status == "done":
@@ -277,8 +366,10 @@ def test_chunk_start_rejects_non_pending_chunks(tmp_path: Path, status: str) -> 
 
 def test_dependencies_block_and_complete_tasks(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	dependency = store.task_add("dependency", "Dependency")
-	dependent = store.task_add("dependent", "Dependent", depends_on=[dependency["id"]])
+	dependency = _add_task(store, "dependency", "Dependency")
+	dependent = _add_task(
+		store, "dependent", "Dependent", depends_on=[dependency["id"]]
+	)
 
 	assert dependent["status"] == "blocked"
 	assert "unresolved dependencies" in dependent["status_reason"]
@@ -297,8 +388,11 @@ def test_dependencies_block_and_complete_tasks(tmp_path: Path) -> None:
 
 def test_task_complete_unblocks_dependents_and_reports_them(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	dependency = store.task_add("progress-cli-release-edit", "Release edit dependency")
-	dependent = store.task_add(
+	dependency = _add_task(
+		store, "progress-cli-release-edit", "Release edit dependency"
+	)
+	dependent = _add_task(
+		store,
 		"progress-cli-task-chunk-edit",
 		"Task chunk edit",
 		depends_on=[dependency["id"]],
@@ -325,13 +419,14 @@ def test_task_complete_keeps_dependents_blocked_with_incomplete_dependencies(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
-	completed_dependency = store.task_add(
-		"completed-dependency", "Completed dependency"
+	completed_dependency = _add_task(
+		store, "completed-dependency", "Completed dependency"
 	)
-	unfinished_dependency = store.task_add(
-		"unfinished-dependency", "Unfinished dependency"
+	unfinished_dependency = _add_task(
+		store, "unfinished-dependency", "Unfinished dependency"
 	)
-	dependent = store.task_add(
+	dependent = _add_task(
+		store,
 		"dependent",
 		"Dependent",
 		depends_on=[completed_dependency["id"], unfinished_dependency["id"]],
@@ -351,9 +446,9 @@ def test_task_complete_keeps_dependents_blocked_with_incomplete_dependencies(
 
 def test_starting_a_second_task_demotes_the_first_to_ready(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	first = store.task_add("first", "First")
-	first_chunk = store.chunk_add(first["id"], "Chunk")
-	second = store.task_add("second", "Second")
+	first = _add_task(store, "first", "First")
+	first_chunk = _add_chunk(store, first["id"], "Chunk")
+	second = _add_task(store, "second", "Second")
 	store.task_start(first["id"])
 
 	started_second = store.task_start(second["id"])
@@ -378,7 +473,7 @@ def test_starting_a_second_task_demotes_the_first_to_ready(tmp_path: Path) -> No
 
 def test_starting_a_task_alone_reports_no_demotion(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add("only", "Only")
+	task = _add_task(store, "only", "Only")
 
 	started = store.task_start(task["id"])
 
@@ -387,10 +482,10 @@ def test_starting_a_task_alone_reports_no_demotion(tmp_path: Path) -> None:
 
 def test_demoting_a_task_preserves_its_completed_chunks(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	first = store.task_add("first", "First")
-	completed_chunk = store.chunk_add(first["id"], "Done chunk")
-	remaining_chunk = store.chunk_add(first["id"], "Remaining chunk")
-	second = store.task_add("second", "Second")
+	first = _add_task(store, "first", "First")
+	completed_chunk = _add_chunk(store, first["id"], "Done chunk")
+	remaining_chunk = _add_chunk(store, first["id"], "Remaining chunk")
+	second = _add_task(store, "second", "Second")
 	store.task_start(first["id"])
 	store.chunk_complete(completed_chunk["id"])
 
@@ -406,8 +501,8 @@ def test_demoting_a_task_preserves_its_completed_chunks(tmp_path: Path) -> None:
 
 def test_blocking_returns_active_chunk_to_pending(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add("blocked", "Blocked")
-	chunk = store.chunk_add(task["id"], "Chunk")
+	task = _add_task(store, "blocked", "Blocked")
+	chunk = _add_chunk(store, task["id"], "Chunk")
 	store.task_start(task["id"])
 
 	blocked = store.task_block(task["id"], "Waiting for a decision")
@@ -424,8 +519,8 @@ def test_late_unfinished_dependency_blocks_ready_and_rejects_active(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add("task", "Task")
-	dependency = store.task_add("dependency", "Dependency")
+	task = _add_task(store, "task", "Task")
+	dependency = _add_task(store, "dependency", "Dependency")
 
 	blocked = store.task_dependency_add(task["id"], dependency["id"])
 
@@ -436,7 +531,7 @@ def test_late_unfinished_dependency_blocks_ready_and_rejects_active(
 	store.task_start(dependency["id"])
 	store.task_complete(dependency["id"])
 	store.task_start(task["id"])
-	second_dependency = store.task_add("second-dependency", "Second dependency")
+	second_dependency = _add_task(store, "second-dependency", "Second dependency")
 
 	with pytest.raises(InvalidDependencyError):
 		store.task_dependency_add(task["id"], second_dependency["id"])
@@ -444,7 +539,7 @@ def test_late_unfinished_dependency_blocks_ready_and_rejects_active(
 
 def test_notes_and_context_replace_the_project_context_row(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add("notes", "Notes")
+	task = _add_task(store, "notes", "Notes")
 	discovery = store.discovery_add(task["id"], "The schema is shared.")
 	decision = store.decision_add(
 		task["id"], "Keep one context row.", supersedes_id=discovery["id"]
@@ -466,10 +561,10 @@ def test_notes_and_context_replace_the_project_context_row(tmp_path: Path) -> No
 def test_remove_rejects_every_referenced_parent_row(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("release", "Release")
-	task = store.task_add("task", "Task", release_id=release["id"])
-	chunk = store.chunk_add(task["id"], "Chunk")
-	dependent = store.task_add("dependent", "Dependent")
-	dependency = store.task_add("dependency", "Dependency")
+	task = _add_task(store, "task", "Task", release_id=release["id"])
+	chunk = _add_chunk(store, task["id"], "Chunk")
+	dependent = _add_task(store, "dependent", "Dependent")
+	dependency = _add_task(store, "dependency", "Dependency")
 	store.task_dependency_add(dependent["id"], task["id"])
 	store.task_dependency_add(task["id"], dependency["id"])
 	discovery = store.discovery_add(task["id"], "Discovery")
@@ -504,7 +599,7 @@ def test_remove_rejects_every_referenced_parent_row(tmp_path: Path) -> None:
 
 def test_remove_note_rejects_a_superseded_note(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add("task", "Task")
+	task = _add_task(store, "task", "Task")
 	discovery = store.discovery_add(task["id"], "Discovery")
 	decision = store.decision_add(task["id"], "Decision", supersedes_id=discovery["id"])
 
@@ -526,9 +621,9 @@ def test_remove_note_rejects_a_superseded_note(tmp_path: Path) -> None:
 def test_remove_childless_rows_and_dependency_edges(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("release", "Release")
-	task = store.task_add("task", "Task", release_id=release["id"])
-	dependency = store.task_add("dependency", "Dependency")
-	chunk = store.chunk_add(task["id"], "Chunk")
+	task = _add_task(store, "task", "Task", release_id=release["id"])
+	dependency = _add_task(store, "dependency", "Dependency")
+	chunk = _add_chunk(store, task["id"], "Chunk")
 	discovery = store.discovery_add(task["id"], "Discovery")
 	store.task_dependency_add(task["id"], dependency["id"])
 
@@ -563,8 +658,8 @@ def test_rename_updates_titles_without_changing_identifiers_or_slugs(
 ) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("release", "Release")
-	task = store.task_add("task", "Task", release_id=release["id"])
-	chunk = store.chunk_add(task["id"], "Chunk")
+	task = _add_task(store, "task", "Task", release_id=release["id"])
+	chunk = _add_chunk(store, task["id"], "Chunk")
 
 	renamed_release = store.release_rename(release["id"], "Renamed release")
 	renamed_task = store.task_rename(task["id"], "Renamed task")
@@ -586,7 +681,8 @@ def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
 ) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("release", "Release")
-	task = store.task_add(
+	task = _add_task(
+		store,
 		"task",
 		"Task",
 		overview="Original overview",
@@ -632,7 +728,7 @@ def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
 
 def test_task_edit_validates_all_values_before_writing(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add("task", "Task", purpose="Original purpose")
+	task = _add_task(store, "task", "Task", purpose="Original purpose")
 
 	with pytest.raises(ProgressError, match="must be text"):
 		store.task_edit(task["id"], overview="Updated overview", purpose=object())  # type: ignore[arg-type]
@@ -646,7 +742,7 @@ def test_task_edit_validates_all_values_before_writing(tmp_path: Path) -> None:
 
 def test_task_edit_requires_at_least_one_field(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add("task", "Task")
+	task = _add_task(store, "task", "Task")
 
 	with pytest.raises(ProgressError, match="requires at least one field"):
 		store.task_edit(task["id"])
@@ -656,7 +752,7 @@ def test_task_edit_rejects_value_and_clear_for_the_same_field(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add("task", "Task")
+	task = _add_task(store, "task", "Task")
 
 	with pytest.raises(ProgressError, match="not both"):
 		store.task_edit(task["id"], overview="Updated overview", clear_overview=True)
@@ -664,7 +760,7 @@ def test_task_edit_rejects_value_and_clear_for_the_same_field(
 
 def test_task_edit_clears_text_fields_to_empty_strings(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add("task", "Task", overview="Original overview")
+	task = _add_task(store, "task", "Task", overview="Original overview")
 
 	updated = store.task_edit(task["id"], clear_overview=True)
 
@@ -675,8 +771,8 @@ def test_chunk_edit_updates_description_and_preserves_lifecycle_data(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add("task", "Task")
-	chunk = store.chunk_add(task["id"], "Chunk", description="Original description")
+	task = _add_task(store, "task", "Task")
+	chunk = _add_chunk(store, task["id"], "Chunk", description="Original description")
 
 	updated = store.chunk_edit(chunk["id"], description="Updated description")
 
@@ -684,10 +780,16 @@ def test_chunk_edit_updates_description_and_preserves_lifecycle_data(
 
 
 @pytest.mark.parametrize(
-	("description", "clear_description", "initial_description"),
+	("description", "clear_description", "initial_description", "expected_description"),
 	[
-		pytest.param("Original description", False, "Original description", id="value"),
-		pytest.param(None, True, "", id="clear"),
+		pytest.param(
+			"Original description",
+			False,
+			"Original description",
+			"Original description",
+			id="value",
+		),
+		pytest.param(None, True, "Original description", "", id="clear"),
 	],
 )
 def test_chunk_edit_allows_an_unchanged_description(
@@ -695,10 +797,11 @@ def test_chunk_edit_allows_an_unchanged_description(
 	description: str | None,
 	clear_description: bool,
 	initial_description: str,
+	expected_description: str,
 ) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add("task", "Task")
-	chunk = store.chunk_add(task["id"], "Chunk", description=initial_description)
+	task = _add_task(store, "task", "Task")
+	chunk = _add_chunk(store, task["id"], "Chunk", description=initial_description)
 
 	updated = store.chunk_edit(
 		chunk["id"],
@@ -706,13 +809,13 @@ def test_chunk_edit_allows_an_unchanged_description(
 		clear_description=clear_description,
 	)
 
-	assert updated == chunk
+	assert updated == {**chunk, "description": expected_description}
 
 
 def test_chunk_edit_requires_a_description_input(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	task = store.task_add("task", "Task")
-	chunk = store.chunk_add(task["id"], "Chunk")
+	task = _add_task(store, "task", "Task")
+	chunk = _add_chunk(store, task["id"], "Chunk")
 
 	with pytest.raises(ProgressError, match="requires"):
 		store.chunk_edit(chunk["id"])
@@ -730,7 +833,7 @@ def test_release_edit_updates_only_overview_and_preserves_task_references(
 		position=3,
 	)
 	tasks = [
-		store.task_add(f"task-{number}", f"Task {number}", release_id=release["id"])
+		_add_task(store, f"task-{number}", f"Task {number}", release_id=release["id"])
 		for number in range(17)
 	]
 

@@ -261,7 +261,7 @@ class WriteStore(_StoreBase):
 		self,
 		slug: str,
 		title: str,
-		overview: str = "",
+		overview: str,
 		purpose: str = "",
 		contract: str = "",
 		model_tier: str | None = None,
@@ -277,6 +277,7 @@ class WriteStore(_StoreBase):
 		"""Create a task and derive its initial status from its dependencies."""
 		_require_text(slug, "task slug")
 		_require_text(title, "task title")
+		_require_text(overview, "task overview")
 		dependency_ids = _normalise_dependencies(depends_on)
 		for dependency_id in dependency_ids:
 			validate_object_id(dependency_id, TASK_PREFIX)
@@ -719,13 +720,14 @@ class WriteStore(_StoreBase):
 		self,
 		task_id: str,
 		title: str,
-		description: str = "",
+		description: str,
 		position: int | None = None,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
 		"""Create a pending chunk at the next position for a current-project task."""
 		validate_object_id(task_id, TASK_PREFIX)
 		_require_text(title, "chunk title")
+		_require_text(description, "chunk description")
 		project = self.current_project(path)
 
 		with self.database.transaction() as connection:

@@ -151,7 +151,11 @@ def test_next_returns_the_earliest_ready_task_when_nothing_is_in_progress(
 	store = _seed_store(tmp_path)
 	writer = WriteStore(store.database, _ProjectStore(store.database))
 	first_ready = writer.task_add(
-		"first-ready", "First ready", release_id=RELEASE_A, position=0
+		"first-ready",
+		"First ready",
+		overview="First ready overview",
+		release_id=RELEASE_A,
+		position=0,
 	)
 
 	with store.database.transaction() as connection:
@@ -176,6 +180,7 @@ def test_next_prefers_active_release_over_lower_position_planned_release(
 	writer.task_add(
 		"planned-task",
 		"Planned task",
+		overview="Planned task overview",
 		release_id=planned_release["id"],
 		position=0,
 	)
@@ -195,7 +200,12 @@ def test_next_reports_the_earliest_blocked_task_without_changing_it(
 	store = _seed_store(tmp_path)
 	writer = WriteStore(store.database, _ProjectStore(store.database))
 	blocked = writer.task_add(
-		"blocked", "Blocked", release_id=RELEASE_A, depends_on=[TASK_A], position=3
+		"blocked",
+		"Blocked",
+		overview="Blocked task overview",
+		release_id=RELEASE_A,
+		depends_on=[TASK_A],
+		position=3,
 	)
 
 	with store.database.transaction() as connection:
