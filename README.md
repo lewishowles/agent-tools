@@ -368,6 +368,18 @@ progress chunk add --task <task_id> --title <title> [--description <description>
 - `--description <description>`: optional description
 - `--position <position>`: optional ordering position
 
+### `progress chunk start`
+
+Activate a pending chunk:
+
+```text
+progress chunk start <chunk_id> [--json] [--database <path>]
+```
+
+The chunk's task must already be `in-progress`. If another chunk on the same
+task is active, it returns that chunk to `pending` before activating the
+requested chunk.
+
 ### `progress chunk complete`
 
 Complete a chunk:
@@ -536,8 +548,8 @@ field, and the command that sets or changes it.
 | `task.status`     | `blocked`        | `task add` when dependencies block work, `task dependency add` when an unfinished dependency is added to a ready task, or `task block` without `--needs-decision`             |
 | `task.status`     | `needs-decision` | `task block --needs-decision`                                                                                                                                                 |
 | `task.status`     | `done`           | `task complete`                                                                                                                                                               |
-| `chunk.status`    | `pending`        | `chunk add`, or `task block`/`task start` (demoting another task) returning an in-progress task's active chunk to pending                                                     |
-| `chunk.status`    | `active`         | `task start`, or `chunk complete` activating the next pending chunk                                                                                                           |
+| `chunk.status`    | `pending`        | `chunk add`, `chunk start`/`task block`/`task start` demoting an active chunk to pending                                                                                       |
+| `chunk.status`    | `active`         | `task start`, `chunk start`, or `chunk complete` activating the next pending chunk                                                                                             |
 | `chunk.status`    | `done`           | `chunk complete`                                                                                                                                                              |
 | `chunk.status`    | `skipped`        | Schema-legal, but currently unreachable through any CLI command                                                                                                               |
 | `note.type`       | `discovery`      | `discovery add`; immutable after creation                                                                                                                                     |
@@ -552,6 +564,7 @@ The available transitions are:
 - `task unblock`: `blocked` or `needs-decision` → `ready`; dependencies are re-checked, and unresolved dependencies reject the transition with `UnresolvedDependenciesError` naming the unfinished task IDs
 - `task complete`: an `in-progress` task with no `pending` or `active` chunks becomes `done`; pending or active chunks raise `PendingChunksError` naming their blocking chunk IDs
 - `task start`: the first pending chunk becomes `active`
+- `chunk start`: a pending chunk on an `in-progress` task becomes `active`, and another active chunk on that task returns to `pending`
 - `chunk complete`: the active chunk becomes `done`, and the next pending chunk becomes `active` when one exists
 
 ## Removal and errors

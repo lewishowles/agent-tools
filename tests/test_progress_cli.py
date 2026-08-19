@@ -163,6 +163,7 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 			"write",
 		),
 		(["chunk", "complete", "chk_" + "c" * 22], "chunk_complete", "write"),
+		(["chunk", "start", "chk_" + "c" * 22], "chunk_start", "write"),
 		(["chunk", "remove", "chk_" + "c" * 22], "chunk_remove", "write"),
 		(
 			["chunk", "rename", "chk_" + "c" * 22, "--title", "Renamed chunk"],

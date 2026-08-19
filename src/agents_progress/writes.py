@@ -658,6 +658,48 @@ class WriteStore(_StoreBase):
 
 			return _chunk_dict(connection, chunk_id, project.id)
 
+	def chunk_start(
+		self, chunk_id: str, path: str | Path | None = None
+	) -> dict[str, object]:
+		"""Activate a pending chunk on an in-progress task atomically."""
+		validate_object_id(chunk_id, CHUNK_PREFIX)
+		project = self.current_project(path)
+
+		with self.database.transaction() as connection:
+			chunk = _chunk_row(connection, chunk_id, project.id)
+			if chunk is None:
+				raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
+			if chunk["status"] != "pending":
+				raise InvalidTransitionError(
+					f"chunk {chunk_id} must be pending before it can start",
+					{"id": chunk_id, "status": chunk["status"]},
+				)
+
+			task = _task_row(connection, chunk["task_id"], project.id)
+			if task["status"] != "in-progress":
+				raise InvalidTransitionError(
+					f"task {task['id']} must be in progress before a chunk can start; "
+					f"run progress task start {task['id']} first",
+					{
+						"id": task["id"],
+						"status": task["status"],
+						"chunk_id": chunk_id,
+					},
+				)
+
+			now = utc_timestamp()
+			connection.execute(
+				"UPDATE chunks SET status = 'pending', started_at = NULL "
+				"WHERE task_id = ? AND status = 'active'",
+				(chunk["task_id"],),
+			)
+			connection.execute(
+				"UPDATE chunks SET status = 'active', started_at = ? WHERE id = ?",
+				(now, chunk_id),
+			)
+
+			return _chunk_dict(connection, chunk_id, project.id)
+
 	def chunk_remove(
 		self, chunk_id: str, path: str | Path | None = None
 	) -> dict[str, object]:

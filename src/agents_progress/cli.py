@@ -318,6 +318,11 @@ _COMMAND_SPECS = (
 				),
 			),
 			_CommandSpec(
+				"start",
+				"activate a pending chunk",
+				arguments=(_argument("chunk_id"),),
+			),
+			_CommandSpec(
 				"complete",
 				"complete an active chunk",
 				arguments=(_argument("chunk_id"),),
@@ -607,6 +612,10 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 				position=args.position,
 			),
 			"chunk add",
+		),
+		("chunk", "start"): lambda: (
+			WriteStore(database).chunk_start(args.chunk_id),
+			"chunk start",
 		),
 		("chunk", "complete"): lambda: (
 			WriteStore(database).chunk_complete(args.chunk_id),

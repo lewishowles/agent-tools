@@ -171,6 +171,54 @@ def test_creation_and_chunk_lifecycle_are_atomic(tmp_path: Path) -> None:
 	assert completed_task["completed_at"] is not None
 
 
+def test_chunk_start_demotes_active_chunk_and_activates_target(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = store.task_add("chunk-start", "Chunk start")
+	active_chunk = store.chunk_add(task["id"], "Active chunk")
+	pending_chunk = store.chunk_add(task["id"], "Pending chunk")
+	store.task_start(task["id"])
+
+	started = store.chunk_start(pending_chunk["id"])
+	chunks = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)
+	chunks_by_id = {chunk["id"]: chunk for chunk in chunks["items"]}
+
+	assert started["id"] == pending_chunk["id"]
+	assert started["status"] == "active"
+	assert chunks_by_id[active_chunk["id"]]["status"] == "pending"
+	assert chunks_by_id[active_chunk["id"]]["started_at"] is None
+	assert chunks_by_id[pending_chunk["id"]]["started_at"] is not None
+
+
+def test_chunk_start_requires_an_in_progress_task(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = store.task_add("ready-task", "Ready task")
+	chunk = store.chunk_add(task["id"], "Pending chunk")
+
+	with pytest.raises(InvalidTransitionError, match="progress task start"):
+		store.chunk_start(chunk["id"])
+
+
+@pytest.mark.parametrize("status", ["active", "done", "skipped"])
+def test_chunk_start_rejects_non_pending_chunks(tmp_path: Path, status: str) -> None:
+	store = _seed_store(tmp_path)
+	task = store.task_add(f"{status}-task", f"{status.title()} task")
+	chunk = store.chunk_add(task["id"], "Chunk")
+	store.task_start(task["id"])
+
+	if status == "done":
+		store.chunk_complete(chunk["id"])
+	elif status == "skipped":
+		with store.database.transaction() as connection:
+			connection.execute(
+				"UPDATE chunks SET status = 'skipped' WHERE id = ?", (chunk["id"],)
+			)
+
+	with pytest.raises(InvalidTransitionError, match="must be pending"):
+		store.chunk_start(chunk["id"])
+
+
 def test_dependencies_block_and_unblock_tasks(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	dependency = store.task_add("dependency", "Dependency")
