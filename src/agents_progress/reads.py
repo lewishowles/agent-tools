@@ -30,6 +30,12 @@ _TASK_COLUMNS = (
 	"status_reason, position, created_at, started_at, completed_at, updated_at"
 )
 
+# _TASK_COLUMNS qualified with the tasks table alias, for queries that join
+# another table sharing column names (e.g. releases).
+_TASK_COLUMNS_QUALIFIED = ", ".join(
+	f"tasks.{column.strip()}" for column in _TASK_COLUMNS.split(",")
+)
+
 _CHUNK_COLUMNS = (
 	"id, task_id, position, title, description, status, started_at, completed_at"
 )
@@ -132,10 +138,18 @@ class ReadStore(_StoreBase):
 		with self.database.connection() as connection:
 			task_row, chunk_row = _in_progress_task_and_chunk(connection, project.id)
 			if task_row is None:
+				# An active release's tasks outrank a planned release's, and
+				# release position breaks ties before falling back to task order.
 				task_row = connection.execute(
-					f"SELECT {_TASK_COLUMNS} FROM tasks "
-					"WHERE project_id = ? AND status IN ('ready', 'blocked', 'needs-decision') "
-					"ORDER BY position, id LIMIT 1",
+					f"SELECT {_TASK_COLUMNS_QUALIFIED} FROM tasks "
+					"LEFT JOIN releases ON releases.id = tasks.release_id "
+					"AND releases.project_id = tasks.project_id "
+					"WHERE tasks.project_id = ? "
+					"AND tasks.status IN ('ready', 'blocked', 'needs-decision') "
+					"ORDER BY CASE releases.status "
+					"WHEN 'active' THEN 0 "
+					"WHEN 'planned' THEN 1 "
+					"ELSE 2 END, releases.position, tasks.position, tasks.id LIMIT 1",
 					(project.id,),
 				).fetchone()
 				if task_row is not None:

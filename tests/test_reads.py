@@ -165,6 +165,30 @@ def test_next_returns_the_earliest_ready_task_when_nothing_is_in_progress(
 	assert result["hint_command"] == f"progress task start {first_ready['id']}"
 
 
+def test_next_prefers_active_release_over_lower_position_planned_release(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	writer = WriteStore(store.database, _ProjectStore(store.database))
+	planned_release = writer.release_add(
+		"planned", "Planned", status="planned", position=0
+	)
+	writer.task_add(
+		"planned-task",
+		"Planned task",
+		release_id=planned_release["id"],
+		position=0,
+	)
+
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (TASK_A,))
+
+	result = store.next()
+
+	assert result["task"]["id"] == TASK_B
+	assert result["task"]["release_id"] == RELEASE_A
+
+
 def test_next_reports_the_earliest_blocked_task_without_changing_it(
 	tmp_path: Path,
 ) -> None:
