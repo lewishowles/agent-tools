@@ -890,6 +890,44 @@ class WriteStore(_StoreBase):
 			)
 			return _chunk_dict(connection, chunk_id, project.id)
 
+	def chunk_edit(
+		self,
+		chunk_id: str,
+		description: str | None = None,
+		clear_description: bool = False,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""Update a chunk description without changing chunk lifecycle data."""
+		validate_object_id(chunk_id, CHUNK_PREFIX)
+		if description is None and not clear_description:
+			raise ProgressError(
+				"chunk edit requires --description or --clear-description",
+				{"id": chunk_id},
+			)
+		if description is not None and clear_description:
+			raise ProgressError(
+				"chunk edit accepts either --description or --clear-description, not both",
+				{"id": chunk_id},
+			)
+		if description is not None and not isinstance(description, str):
+			raise ProgressError(
+				"chunk description must be text",
+				{"id": chunk_id, "field": "description"},
+			)
+
+		description_value = "" if clear_description else description
+		project = self.current_project(path)
+
+		with self.database.transaction() as connection:
+			chunk = _chunk_row(connection, chunk_id, project.id)
+			if chunk is None:
+				raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
+			connection.execute(
+				"UPDATE chunks SET description = ? WHERE id = ?",
+				(description_value, chunk_id),
+			)
+			return _chunk_dict(connection, chunk_id, project.id)
+
 	def task_start(
 		self, task_id: str, path: str | Path | None = None
 	) -> dict[str, object]:

@@ -187,6 +187,11 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 			"write",
 		),
 		(
+			["chunk", "edit", "chk_" + "c" * 22, "--description", "Updated"],
+			"chunk_edit",
+			"write",
+		),
+		(
 			["discovery", "add", "--task", "tsk_" + "t" * 22, "A", "discovery"],
 			"discovery_add",
 			"write",
@@ -456,6 +461,64 @@ def test_task_edit_dispatches_values_and_clear_flags(
 		"clear_acceptance_criteria": False,
 		"clear_verification": False,
 		"clear_risks": False,
+	}
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+@pytest.mark.parametrize(
+	("edit_arguments", "expected_arguments"),
+	[
+		pytest.param(
+			["--clear-description"],
+			{"description": None, "clear_description": True},
+			id="clear-description",
+		),
+		pytest.param(
+			["--description", "Updated"],
+			{"description": "Updated", "clear_description": False},
+			id="description",
+		),
+	],
+)
+def test_chunk_edit_dispatches_description_and_clear_flag(
+	tmp_path: Path,
+	monkeypatch,
+	capsys,
+	edit_arguments: list[str],
+	expected_arguments: dict[str, object],
+) -> None:
+	data = {"id": "chk_test", "description": "Updated"}
+	arguments_seen: dict[str, object] = {}
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def chunk_edit(self, chunk_id, **arguments):
+			arguments_seen["chunk_id"] = chunk_id
+			arguments_seen.update(arguments)
+			return data
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				"chunk",
+				"edit",
+				"chk_test",
+				*edit_arguments,
+				"--database",
+				str(tmp_path / "db"),
+				"--json",
+			]
+		)
+		== 0
+	)
+
+	assert arguments_seen == {
+		"chunk_id": "chk_test",
+		**expected_arguments,
 	}
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 

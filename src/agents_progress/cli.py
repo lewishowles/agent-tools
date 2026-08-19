@@ -402,6 +402,19 @@ _COMMAND_SPECS = (
 				arguments=(_argument("chunk_id"), _argument("--title", required=True)),
 			),
 			_CommandSpec(
+				"edit",
+				"edit chunk planning fields",
+				arguments=(
+					_argument("chunk_id"),
+					_argument("--description", default=argparse.SUPPRESS),
+					_argument(
+						"--clear-description",
+						action="store_true",
+						default=argparse.SUPPRESS,
+					),
+				),
+			),
+			_CommandSpec(
 				"get",
 				"show one chunk",
 				arguments=(_argument("chunk_id"),),
@@ -695,6 +708,7 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 			WriteStore(database).chunk_rename(args.chunk_id, args.title),
 			"chunk rename",
 		),
+		("chunk", "edit"): lambda: _run_chunk_edit(args, database),
 		("ready", None): lambda: (
 			ReadStore(database).ready(args.limit, args.offset),
 			"ready",
@@ -801,6 +815,18 @@ def _run_chunk_move(args: argparse.Namespace, database: Database) -> tuple[objec
 			after_chunk_id=args.after,
 		),
 		"chunk move",
+	)
+
+
+def _run_chunk_edit(args: argparse.Namespace, database: Database) -> tuple[object, str]:
+	"""Run chunk edit with omitted flags separated from explicit empty values."""
+	return (
+		WriteStore(database).chunk_edit(
+			args.chunk_id,
+			description=getattr(args, "description", None),
+			clear_description=getattr(args, "clear_description", False),
+		),
+		"chunk edit",
 	)
 
 

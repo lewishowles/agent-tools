@@ -614,6 +614,53 @@ def test_task_edit_clears_text_fields_to_empty_strings(tmp_path: Path) -> None:
 	assert updated["overview"] == ""
 
 
+def test_chunk_edit_updates_description_and_preserves_lifecycle_data(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	task = store.task_add("task", "Task")
+	chunk = store.chunk_add(task["id"], "Chunk", description="Original description")
+
+	updated = store.chunk_edit(chunk["id"], description="Updated description")
+
+	assert updated == {**chunk, "description": "Updated description"}
+
+
+@pytest.mark.parametrize(
+	("description", "clear_description", "initial_description"),
+	[
+		pytest.param("Original description", False, "Original description", id="value"),
+		pytest.param(None, True, "", id="clear"),
+	],
+)
+def test_chunk_edit_allows_an_unchanged_description(
+	tmp_path: Path,
+	description: str | None,
+	clear_description: bool,
+	initial_description: str,
+) -> None:
+	store = _seed_store(tmp_path)
+	task = store.task_add("task", "Task")
+	chunk = store.chunk_add(task["id"], "Chunk", description=initial_description)
+
+	updated = store.chunk_edit(
+		chunk["id"],
+		description=description,
+		clear_description=clear_description,
+	)
+
+	assert updated == chunk
+
+
+def test_chunk_edit_requires_a_description_input(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = store.task_add("task", "Task")
+	chunk = store.chunk_add(task["id"], "Chunk")
+
+	with pytest.raises(ProgressError, match="requires"):
+		store.chunk_edit(chunk["id"])
+
+
 def test_release_edit_updates_only_overview_and_preserves_task_references(
 	tmp_path: Path,
 ) -> None:
