@@ -131,12 +131,12 @@ status.
 Create a release:
 
 ```text
-progress release add --slug <slug> --title <title> [--overview <overview>] [--status {planned,active,done}] [--position <position>] [--json] [--database <path>]
+progress release add --slug <slug> --title <title> --overview <overview> [--status {planned,active,done}] [--position <position>] [--json] [--database <path>]
 ```
 
 - `--slug <slug>`: stable slug stored on the release
 - `--title <title>`: display title
-- `--overview <overview>`: optional description
+- `--overview <overview>`: non-empty release overview
 - `--status {planned,active,done}`: initial release status
 - `--position <position>`: optional ordering position
 
@@ -176,6 +176,19 @@ progress release rename <release_id> --title <title> [--json] [--database <path>
 
 - `--title <title>`: replacement display title
 
+### `progress release edit`
+
+Replace a release overview:
+
+```text
+progress release edit <release_id> --overview <overview> [--json] [--database <path>]
+```
+
+- `--overview <overview>`: non-empty replacement overview
+
+Release overviews are required and cannot be cleared. Pass replacement text
+when the overview needs changing.
+
 ### `progress release complete`
 
 Move a planned or active release to `done`:
@@ -197,14 +210,14 @@ chunks, notes, and dependencies.
 Create a task:
 
 ```text
-progress task add --slug <slug> --title <title> --overview <overview> [--purpose <purpose>] [--contract <contract>] [--model-tier <model_tier>] [--files <files>] [--acceptance-criteria <acceptance_criteria>] [--verification <verification>] [--risks <risks>] [--release <release_id> | --release-id <release_id>] [--depends-on <task_id> | --dependency <task_id>] [--position <position>] [--json] [--database <path>]
+progress task add --slug <slug> --title <title> --overview <overview> --purpose <purpose> --contract <contract> [--model-tier <model_tier>] [--files <files>] [--acceptance-criteria <acceptance_criteria>] [--verification <verification>] [--risks <risks>] [--release <release_id> | --release-id <release_id>] [--depends-on <task_id> | --dependency <task_id>] [--position <position>] [--json] [--database <path>]
 ```
 
 - `--slug <slug>`: stable slug stored on the task
 - `--title <title>`: display title
 - `--overview <overview>`: non-empty task summary
-- `--purpose <purpose>`: optional purpose
-- `--contract <contract>`: optional task contract
+- `--purpose <purpose>`: non-empty task purpose
+- `--contract <contract>`: non-empty task contract
 - `--model-tier <model_tier>`: optional model tier label; this is a freeform string
 - `--files <files>`: optional files covered by the task
 - `--acceptance-criteria <acceptance_criteria>`: optional completion conditions
@@ -278,6 +291,18 @@ progress task rename <task_id> --title <title> [--json] [--database <path>]
 ```
 
 - `--title <title>`: replacement display title
+
+### `progress task edit`
+
+Update task planning fields:
+
+```text
+progress task edit <task_id> [--overview <overview>] [--purpose <purpose>] [--contract <contract>] [--model-tier <model_tier>] [--files <files>] [--acceptance-criteria <acceptance_criteria>] [--verification <verification>] [--risks <risks>] [--clear-model-tier] [--clear-files] [--clear-acceptance-criteria] [--clear-verification] [--clear-risks] [--json] [--database <path>]
+```
+
+`--overview`, `--purpose`, and `--contract` must contain text. These fields
+are required and cannot be cleared. Pass replacement text when one needs
+changing.
 
 ### `progress task start`
 
@@ -426,6 +451,19 @@ progress chunk rename <chunk_id> --title <title> [--json] [--database <path>]
 ```
 
 - `--title <title>`: replacement display title
+
+### `progress chunk edit`
+
+Replace a chunk description:
+
+```text
+progress chunk edit <chunk_id> --description <description> [--json] [--database <path>]
+```
+
+- `--description <description>`: non-empty replacement description
+
+Chunk descriptions are required and cannot be cleared. Pass replacement text
+when the description needs changing.
 
 ### `progress chunk list`
 

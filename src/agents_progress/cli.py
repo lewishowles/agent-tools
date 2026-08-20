@@ -179,7 +179,11 @@ _COMMAND_SPECS = (
 				arguments=(
 					_argument("--slug", required=True),
 					_argument("--title", required=True),
-					_argument("--overview", default=""),
+					_argument(
+						"--overview",
+						required=True,
+						type=_non_empty_text_argument("--overview"),
+					),
 					_argument(
 						"--status",
 						choices=("planned", "active", "done"),
@@ -212,11 +216,10 @@ _COMMAND_SPECS = (
 				"edit a release overview",
 				arguments=(
 					_argument("release_id"),
-					_argument("--overview", default=argparse.SUPPRESS),
 					_argument(
-						"--clear-overview",
-						action="store_true",
+						"--overview",
 						default=argparse.SUPPRESS,
+						type=_non_empty_text_argument("--overview"),
 					),
 				),
 			),
@@ -243,8 +246,16 @@ _COMMAND_SPECS = (
 						required=True,
 						type=_non_empty_text_argument("--overview"),
 					),
-					_argument("--purpose", default=""),
-					_argument("--contract", default=""),
+					_argument(
+						"--purpose",
+						required=True,
+						type=_non_empty_text_argument("--purpose"),
+					),
+					_argument(
+						"--contract",
+						required=True,
+						type=_non_empty_text_argument("--contract"),
+					),
 					_argument("--model-tier", default=None),
 					_argument("--files", default=None),
 					_argument("--acceptance-criteria", default=""),
@@ -308,29 +319,26 @@ _COMMAND_SPECS = (
 				"edit task planning fields",
 				arguments=(
 					_argument("task_id"),
-					_argument("--overview", default=argparse.SUPPRESS),
-					_argument("--purpose", default=argparse.SUPPRESS),
-					_argument("--contract", default=argparse.SUPPRESS),
+					_argument(
+						"--overview",
+						default=argparse.SUPPRESS,
+						type=_non_empty_text_argument("--overview"),
+					),
+					_argument(
+						"--purpose",
+						default=argparse.SUPPRESS,
+						type=_non_empty_text_argument("--purpose"),
+					),
+					_argument(
+						"--contract",
+						default=argparse.SUPPRESS,
+						type=_non_empty_text_argument("--contract"),
+					),
 					_argument("--model-tier", default=argparse.SUPPRESS),
 					_argument("--files", default=argparse.SUPPRESS),
 					_argument("--acceptance-criteria", default=argparse.SUPPRESS),
 					_argument("--verification", default=argparse.SUPPRESS),
 					_argument("--risks", default=argparse.SUPPRESS),
-					_argument(
-						"--clear-overview",
-						action="store_true",
-						default=argparse.SUPPRESS,
-					),
-					_argument(
-						"--clear-purpose",
-						action="store_true",
-						default=argparse.SUPPRESS,
-					),
-					_argument(
-						"--clear-contract",
-						action="store_true",
-						default=argparse.SUPPRESS,
-					),
 					_argument(
 						"--clear-model-tier",
 						action="store_true",
@@ -448,11 +456,10 @@ _COMMAND_SPECS = (
 				"edit chunk planning fields",
 				arguments=(
 					_argument("chunk_id"),
-					_argument("--description", default=argparse.SUPPRESS),
 					_argument(
-						"--clear-description",
-						action="store_true",
+						"--description",
 						default=argparse.SUPPRESS,
+						type=_non_empty_text_argument("--description"),
 					),
 				),
 			),
@@ -661,7 +668,6 @@ def _run_command(
 			WriteStore(database).release_edit(
 				args.release_id,
 				overview=getattr(args, "overview", None),
-				clear_overview=getattr(args, "clear_overview", False),
 			),
 			"release edit",
 		),
@@ -833,7 +839,7 @@ def _run_task_move(args: argparse.Namespace, database: Database) -> tuple[object
 
 
 def _run_task_edit(args: argparse.Namespace, database: Database) -> tuple[object, str]:
-	"""Run task edit with omitted flags separated from explicit empty values."""
+	"""Run task edit while leaving omitted fields unchanged."""
 	return (
 		WriteStore(database).task_edit(
 			args.task_id,
@@ -845,9 +851,6 @@ def _run_task_edit(args: argparse.Namespace, database: Database) -> tuple[object
 			acceptance_criteria=getattr(args, "acceptance_criteria", None),
 			verification=getattr(args, "verification", None),
 			risks=getattr(args, "risks", None),
-			clear_overview=getattr(args, "clear_overview", False),
-			clear_purpose=getattr(args, "clear_purpose", False),
-			clear_contract=getattr(args, "clear_contract", False),
 			clear_model_tier=getattr(args, "clear_model_tier", False),
 			clear_files=getattr(args, "clear_files", False),
 			clear_acceptance_criteria=getattr(args, "clear_acceptance_criteria", False),
@@ -874,12 +877,11 @@ def _run_chunk_move(args: argparse.Namespace, database: Database) -> tuple[objec
 
 
 def _run_chunk_edit(args: argparse.Namespace, database: Database) -> tuple[object, str]:
-	"""Run chunk edit with omitted flags separated from explicit empty values."""
+	"""Run chunk edit while leaving the description unchanged when omitted."""
 	return (
 		WriteStore(database).chunk_edit(
 			args.chunk_id,
 			description=getattr(args, "description", None),
-			clear_description=getattr(args, "clear_description", False),
 		),
 		"chunk edit",
 	)

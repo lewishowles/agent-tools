@@ -111,6 +111,11 @@ def _plain_hint(message: str) -> str:
 	return f"i Hint: {message}"
 
 
+def _plain_labelled_line(label: str, message: str) -> str:
+	"""Render a labelled line without ANSI styling."""
+	return f"i {label}: {message}"
+
+
 def status(result_type: str, label: str = "", detail: str = "") -> str:
 	"""Render a status line using cli-style or plain text."""
 	return _render_or_plain(
@@ -127,6 +132,14 @@ def hint(message: str) -> str:
 	)
 
 
+def labelled_line(label: str, message: str) -> str:
+	"""Render a labelled line using cli-style or plain text."""
+	return _render_or_plain(
+		lambda: render_generic("labelled-line", {"label": label, "message": message}),
+		lambda: _plain_labelled_line(label, message),
+	)
+
+
 def row(label: str, value: str, result: str = "") -> str:
 	"""Render a labelled row using cli-style or plain text."""
 	return _render_or_plain(
@@ -136,9 +149,9 @@ def row(label: str, value: str, result: str = "") -> str:
 
 
 def row_group(rows: list[dict[str, str]]) -> str:
-	"""Render aligned labelled rows using cli-style or plain text."""
+	"""Render aligned labelled rows using cli-style or plain text; the cli-style path wraps values at 72 columns."""
 	return _render_or_plain(
-		lambda: render_generic("row-group", {"rows": rows}),
+		lambda: render_generic("row-group", {"rows": rows, "wrapWidth": 72}),
 		lambda: _plain_row_group(rows),
 	)
 

@@ -2,6 +2,7 @@
 
 from .style import (
 	hint as render_hint,
+	labelled_line as render_labelled_line,
 	row as render_row,
 	row_group as render_row_group,
 	span as render_span,
@@ -24,6 +25,13 @@ _STATUS_RESULT_TYPES = {
 }
 
 
+# Keys whose values _render_object wraps at 72 columns via row_group, per command.
+_OBJECT_ROW_GROUP_FIELDS = {
+	"chunk get": {"description"},
+	"task get": {"contract", "overview", "purpose"},
+}
+
+
 def render(command: str, data: object) -> str:
 	"""Render one command's stable data for a person at a terminal."""
 	if command in {"next", "current"}:
@@ -33,7 +41,7 @@ def render(command: str, data: object) -> str:
 	if isinstance(data, dict) and "items" in data:
 		return _render_list(command, data)
 	if isinstance(data, dict):
-		return _render_object(data)
+		return _render_object(command, data)
 
 	return str(data)
 
@@ -128,7 +136,7 @@ def _render_next(data: object) -> str:
 
 	hint_command = data.get("hint_command")
 	if hint_command:
-		blocks.append(render_hint(str(hint_command)))
+		blocks.append(render_labelled_line("Next action", str(hint_command)))
 
 	return "\n\n".join(blocks)
 
@@ -153,12 +161,10 @@ def _render_list(command: str, data: dict[str, object]) -> str:
 		status = item.get("status")
 		identifier = str(item.get("id", ""))
 		value = f"{status} ({identifier})" if status else f"({identifier})"
-		blocks.append(
-			render_row(
-				str(name),
-				value,
-				_status_result_type(status) if status else "",
-			)
+		item_block = render_row(
+			str(name),
+			value,
+			_status_result_type(status) if status else "",
 		)
 		description = item.get("description")
 		if command == "chunk list" and description:
@@ -175,6 +181,7 @@ def _render_list(command: str, data: dict[str, object]) -> str:
 					),
 				]
 			)
+		blocks.append(item_block)
 
 	if data.get("has_more"):
 		next_offset = int(data.get("offset", 0)) + int(data.get("limit", 0))
@@ -184,13 +191,13 @@ def _render_list(command: str, data: dict[str, object]) -> str:
 
 
 def _render_task_list(data: dict[str, object]) -> str:
-	"""Render task rows grouped by release with status and follow-up hints."""
+	"""Render task rows grouped by release with status and the next available action."""
 	get_command = render_span("progress task get TASK_ID", weight="bold")
 	move_command = render_span(
 		"progress task move TASK_ID --before/--after TASK_ID", weight="bold"
 	)
-	hint_message = f"View a task with {get_command}; reorder with {move_command}."
-	blocks = [render_hint(hint_message)]
+	action_message = f"View a task with {get_command}; reorder with {move_command}."
+	blocks = [render_labelled_line("Next action", action_message)]
 	columns = [
 		{"key": "title", "label": "Title"},
 		{"key": "status", "label": "Status"},
@@ -251,10 +258,26 @@ def _status_result_type(status: object) -> str:
 	return _STATUS_RESULT_TYPES.get(str(status), "info")
 
 
-def _render_object(data: dict[str, object]) -> str:
+def _render_object(command: str, data: dict[str, object]) -> str:
 	"""Render one stable public object as labelled rows."""
 	lines = []
+	grouped_rows = []
+	row_group_fields = _OBJECT_ROW_GROUP_FIELDS.get(command, set())
 	for key, value in data.items():
+		if key in row_group_fields:
+			label = key.replace("_", " ").capitalize()
+			grouped_rows.append(
+				{
+					"label": label,
+					"value": "" if value is None else str(value),
+				}
+			)
+			continue
+
+		if grouped_rows:
+			lines.append(render_row_group(grouped_rows))
+			grouped_rows = []
+
 		if key == "demoted_task":
 			lines.append(f"Demoted task: {_format_demoted_task(value)}")
 			continue
@@ -266,6 +289,9 @@ def _render_object(data: dict[str, object]) -> str:
 		if label == "Id" or label.endswith(" id"):
 			label = label[:-2] + "ID"
 		lines.append(f"{label}: {'' if value is None else value}")
+
+	if grouped_rows:
+		lines.append(render_row_group(grouped_rows))
 
 	return "\n".join(lines) + "\n"
 

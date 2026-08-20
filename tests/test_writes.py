@@ -48,8 +48,10 @@ def _seed_store(tmp_path: Path) -> WriteStore:
 
 
 def _add_task(store: WriteStore, slug: str, title: str, **arguments):
-	"""Create a valid test task with a default overview."""
+	"""Create a valid test task with default planning text."""
 	arguments.setdefault("overview", f"{title} overview")
+	arguments.setdefault("purpose", f"{title} purpose")
+	arguments.setdefault("contract", f"{title} contract")
 	return store.task_add(slug, title, **arguments)
 
 
@@ -98,6 +100,52 @@ def test_task_add_requires_an_overview_argument(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
 	"arguments",
 	[
+		pytest.param({"purpose": ""}, id="empty-purpose"),
+		pytest.param({"purpose": " \t"}, id="whitespace-purpose"),
+		pytest.param({"contract": ""}, id="empty-contract"),
+		pytest.param({"contract": " \t"}, id="whitespace-contract"),
+	],
+)
+def test_task_add_rejects_blank_purpose_and_contract(
+	tmp_path: Path, arguments: dict[str, str]
+) -> None:
+	store = _seed_store(tmp_path)
+
+	with pytest.raises(ProgressError, match="task (purpose|contract)"):
+		store.task_add(
+			"task",
+			"Task",
+			overview="Task overview",
+			purpose=arguments.get("purpose", "Task purpose"),
+			contract=arguments.get("contract", "Task contract"),
+		)
+
+	tasks = ReadStore(store.database, _ProjectStore(store.database)).task_list()
+
+	assert tasks["items"] == []
+
+
+@pytest.mark.parametrize(
+	"overview",
+	[
+		pytest.param("", id="empty"),
+		pytest.param(" \t", id="whitespace-only"),
+	],
+)
+def test_release_add_rejects_a_blank_overview(tmp_path: Path, overview: str) -> None:
+	store = _seed_store(tmp_path)
+
+	with pytest.raises(ProgressError, match="release overview"):
+		store.release_add("release", "Release", overview=overview)
+
+	releases = ReadStore(store.database, _ProjectStore(store.database)).release_list()
+
+	assert releases["items"] == []
+
+
+@pytest.mark.parametrize(
+	"arguments",
+	[
 		pytest.param({"description": ""}, id="empty"),
 		pytest.param({"description": " \t"}, id="whitespace-only"),
 	],
@@ -136,7 +184,7 @@ def _add_release_in_process(database_path: str, slug: str, results) -> None:
 	try:
 		database = Database(database_path)
 		result = WriteStore(database, _ProjectStore(database)).release_add(
-			slug, slug.title()
+			slug, slug.title(), overview=f"{slug} overview"
 		)
 	except Exception as error:
 		results.put(("error", getattr(error, "code", type(error).__name__)))
@@ -146,7 +194,9 @@ def _add_release_in_process(database_path: str, slug: str, results) -> None:
 
 def test_explicit_zero_positions_are_preserved(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	release = store.release_add("zero-release", "Zero release", position=0)
+	release = store.release_add(
+		"zero-release", "Zero release", overview="Zero release overview", position=0
+	)
 	task = _add_task(
 		store, "zero-task", "Zero task", release_id=release["id"], position=0
 	)
@@ -161,7 +211,7 @@ def test_task_defaults_use_the_next_free_position_in_each_queue(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
-	release = store.release_add("release", "Release")
+	release = store.release_add("release", "Release", overview="Release overview")
 	_add_task(store, "first", "First", release_id=release["id"], position=1)
 	_add_task(store, "third", "Third", release_id=release["id"], position=3)
 	_add_task(store, "unassigned-first", "Unassigned first", position=1)
@@ -175,7 +225,7 @@ def test_task_defaults_use_the_next_free_position_in_each_queue(
 
 def test_task_move_reorders_only_the_task_queue(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	release = store.release_add("release", "Release")
+	release = store.release_add("release", "Release", overview="Release overview")
 	first = _add_task(store, "first", "First", release_id=release["id"])
 	second = _add_task(store, "second", "Second", release_id=release["id"])
 	third = _add_task(store, "third", "Third", release_id=release["id"])
@@ -209,8 +259,12 @@ def test_task_move_reorders_only_the_task_queue(tmp_path: Path) -> None:
 
 def test_task_move_rejects_tasks_from_different_releases(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	first_release = store.release_add("first-release", "First release")
-	second_release = store.release_add("second-release", "Second release")
+	first_release = store.release_add(
+		"first-release", "First release", overview="First release overview"
+	)
+	second_release = store.release_add(
+		"second-release", "Second release", overview="Second release overview"
+	)
 	first_task = _add_task(
 		store, "first-task", "First task", release_id=first_release["id"]
 	)
@@ -560,7 +614,7 @@ def test_notes_and_context_replace_the_project_context_row(tmp_path: Path) -> No
 
 def test_remove_rejects_every_referenced_parent_row(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	release = store.release_add("release", "Release")
+	release = store.release_add("release", "Release", overview="Release overview")
 	task = _add_task(store, "task", "Task", release_id=release["id"])
 	chunk = _add_chunk(store, task["id"], "Chunk")
 	dependent = _add_task(store, "dependent", "Dependent")
@@ -620,7 +674,7 @@ def test_remove_note_rejects_a_superseded_note(tmp_path: Path) -> None:
 
 def test_remove_childless_rows_and_dependency_edges(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	release = store.release_add("release", "Release")
+	release = store.release_add("release", "Release", overview="Release overview")
 	task = _add_task(store, "task", "Task", release_id=release["id"])
 	dependency = _add_task(store, "dependency", "Dependency")
 	chunk = _add_chunk(store, task["id"], "Chunk")
@@ -657,7 +711,7 @@ def test_rename_updates_titles_without_changing_identifiers_or_slugs(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
-	release = store.release_add("release", "Release")
+	release = store.release_add("release", "Release", overview="Release overview")
 	task = _add_task(store, "task", "Task", release_id=release["id"])
 	chunk = _add_chunk(store, task["id"], "Chunk")
 
@@ -680,7 +734,7 @@ def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
-	release = store.release_add("release", "Release")
+	release = store.release_add("release", "Release", overview="Release overview")
 	task = _add_task(
 		store,
 		"task",
@@ -748,23 +802,22 @@ def test_task_edit_requires_at_least_one_field(tmp_path: Path) -> None:
 		store.task_edit(task["id"])
 
 
-def test_task_edit_rejects_value_and_clear_for_the_same_field(
-	tmp_path: Path,
+@pytest.mark.parametrize(
+	("field", "value"),
+	[
+		("overview", ""),
+		("purpose", " \t"),
+		("contract", ""),
+	],
+)
+def test_task_edit_rejects_blank_required_text(
+	tmp_path: Path, field: str, value: str
 ) -> None:
 	store = _seed_store(tmp_path)
 	task = _add_task(store, "task", "Task")
 
-	with pytest.raises(ProgressError, match="not both"):
-		store.task_edit(task["id"], overview="Updated overview", clear_overview=True)
-
-
-def test_task_edit_clears_text_fields_to_empty_strings(tmp_path: Path) -> None:
-	store = _seed_store(tmp_path)
-	task = _add_task(store, "task", "Task", overview="Original overview")
-
-	updated = store.task_edit(task["id"], clear_overview=True)
-
-	assert updated["overview"] == ""
+	with pytest.raises(ProgressError, match=f"task {field}"):
+		store.task_edit(task["id"], **{field: value})
 
 
 def test_chunk_edit_updates_description_and_preserves_lifecycle_data(
@@ -779,37 +832,14 @@ def test_chunk_edit_updates_description_and_preserves_lifecycle_data(
 	assert updated == {**chunk, "description": "Updated description"}
 
 
-@pytest.mark.parametrize(
-	("description", "clear_description", "initial_description", "expected_description"),
-	[
-		pytest.param(
-			"Original description",
-			False,
-			"Original description",
-			"Original description",
-			id="value",
-		),
-		pytest.param(None, True, "Original description", "", id="clear"),
-	],
-)
-def test_chunk_edit_allows_an_unchanged_description(
-	tmp_path: Path,
-	description: str | None,
-	clear_description: bool,
-	initial_description: str,
-	expected_description: str,
-) -> None:
+def test_chunk_edit_allows_an_unchanged_description(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	task = _add_task(store, "task", "Task")
-	chunk = _add_chunk(store, task["id"], "Chunk", description=initial_description)
+	chunk = _add_chunk(store, task["id"], "Chunk", description="Original description")
 
-	updated = store.chunk_edit(
-		chunk["id"],
-		description=description,
-		clear_description=clear_description,
-	)
+	updated = store.chunk_edit(chunk["id"], description="Original description")
 
-	assert updated == {**chunk, "description": expected_description}
+	assert updated == chunk
 
 
 def test_chunk_edit_requires_a_description_input(tmp_path: Path) -> None:
@@ -819,6 +849,16 @@ def test_chunk_edit_requires_a_description_input(tmp_path: Path) -> None:
 
 	with pytest.raises(ProgressError, match="requires"):
 		store.chunk_edit(chunk["id"])
+
+
+@pytest.mark.parametrize("description", ["", " \t"])
+def test_chunk_edit_rejects_blank_description(tmp_path: Path, description: str) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "task", "Task")
+	chunk = _add_chunk(store, task["id"], "Chunk")
+
+	with pytest.raises(ProgressError, match="chunk description"):
+		store.chunk_edit(chunk["id"], description=description)
 
 
 def test_release_edit_updates_only_overview_and_preserves_task_references(
@@ -860,22 +900,13 @@ def test_release_edit_updates_only_overview_and_preserves_task_references(
 	assert release_ids == [release["id"]] * 17
 
 
-@pytest.mark.parametrize(
-	"edit_arguments",
-	[
-		pytest.param({"overview": ""}, id="empty-overview"),
-		pytest.param({"clear_overview": True}, id="clear-flag"),
-	],
-)
-def test_release_edit_can_clear_the_overview(
-	tmp_path: Path, edit_arguments: dict[str, object]
-) -> None:
+@pytest.mark.parametrize("overview", ["", " \t"])
+def test_release_edit_rejects_blank_overview(tmp_path: Path, overview: str) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("release", "Release", overview="Overview")
 
-	updated = store.release_edit(release["id"], **edit_arguments)
-
-	assert updated["overview"] == ""
+	with pytest.raises(ProgressError, match="release overview"):
+		store.release_edit(release["id"], overview=overview)
 
 
 def test_release_edit_rejects_an_unchanged_overview(tmp_path: Path) -> None:
@@ -888,7 +919,7 @@ def test_release_edit_rejects_an_unchanged_overview(tmp_path: Path) -> None:
 
 def test_release_edit_requires_one_overview_input(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	release = store.release_add("release", "Release")
+	release = store.release_add("release", "Release", overview="Release overview")
 
 	with pytest.raises(ProgressError, match="requires"):
 		store.release_edit(release["id"])
@@ -899,7 +930,12 @@ def test_release_complete_moves_planned_or_active_releases_to_done(
 	tmp_path: Path, initial_status: str
 ) -> None:
 	store = _seed_store(tmp_path)
-	release = store.release_add("release", "Release", status=initial_status)
+	release = store.release_add(
+		"release",
+		"Release",
+		overview="Release overview",
+		status=initial_status,
+	)
 
 	completed = store.release_complete(release["id"])
 
@@ -909,7 +945,9 @@ def test_release_complete_moves_planned_or_active_releases_to_done(
 
 def test_release_complete_rejects_an_already_done_release(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	release = store.release_add("release", "Release", status="done")
+	release = store.release_add(
+		"release", "Release", overview="Release overview", status="done"
+	)
 
 	with pytest.raises(InvalidTransitionError, match="done"):
 		store.release_complete(release["id"])
@@ -934,7 +972,9 @@ def test_two_short_writes_complete_with_the_configured_database_locking(
 
 	def add_release(number: int) -> dict[str, object]:
 		return WriteStore(database, _ProjectStore(database)).release_add(
-			f"release-{number}", f"Release {number}"
+			f"release-{number}",
+			f"Release {number}",
+			overview=f"Release {number} overview",
 		)
 
 	with ThreadPoolExecutor(max_workers=2) as executor:

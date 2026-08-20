@@ -62,6 +62,7 @@ class WriteStore(_StoreBase):
 		"""Create a release at the next position in the current project."""
 		_require_text(slug, "release slug")
 		_require_text(title, "release title")
+		_require_text(overview, "release overview")
 		if status not in _RELEASE_STATUSES:
 			raise InvalidStatusError(
 				f"unknown release status {status!r}",
@@ -210,23 +211,22 @@ class WriteStore(_StoreBase):
 		self,
 		release_id: str,
 		overview: str | None = None,
-		clear_overview: bool = False,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
 		"""Update only the overview of a current-project release."""
 		validate_object_id(release_id, RELEASE_PREFIX)
-		if overview is None and not clear_overview:
+		if overview is None:
 			raise ProgressError(
-				"release edit requires --overview or --clear-overview",
+				"release edit requires --overview",
 				{"id": release_id},
 			)
-		if overview is not None and clear_overview:
+		if not isinstance(overview, str):
 			raise ProgressError(
-				"release edit accepts either --overview or --clear-overview, not both",
-				{"id": release_id},
+				"release overview must be text",
+				{"id": release_id, "field": "overview"},
 			)
+		_require_text(overview, "release overview")
 
-		overview_value = overview if overview is not None else ""
 		project = self.current_project(path)
 
 		with self.database.transaction() as connection:
@@ -239,7 +239,7 @@ class WriteStore(_StoreBase):
 				raise NotFoundError(
 					f"release {release_id} was not found", {"id": release_id}
 				)
-			if release["overview"] == overview_value:
+			if release["overview"] == overview:
 				raise ProgressError(
 					f"release {release_id} overview is already unchanged",
 					{"id": release_id},
@@ -247,7 +247,7 @@ class WriteStore(_StoreBase):
 
 			connection.execute(
 				"UPDATE releases SET overview = ? WHERE id = ?",
-				(overview_value, release_id),
+				(overview, release_id),
 			)
 			return Release.from_row(
 				connection.execute(
@@ -278,6 +278,8 @@ class WriteStore(_StoreBase):
 		_require_text(slug, "task slug")
 		_require_text(title, "task title")
 		_require_text(overview, "task overview")
+		_require_text(purpose, "task purpose")
+		_require_text(contract, "task contract")
 		dependency_ids = _normalise_dependencies(depends_on)
 		for dependency_id in dependency_ids:
 			validate_object_id(dependency_id, TASK_PREFIX)
@@ -458,9 +460,6 @@ class WriteStore(_StoreBase):
 		acceptance_criteria: str | None = None,
 		verification: str | None = None,
 		risks: str | None = None,
-		clear_overview: bool = False,
-		clear_purpose: bool = False,
-		clear_contract: bool = False,
 		clear_model_tier: bool = False,
 		clear_files: bool = False,
 		clear_acceptance_criteria: bool = False,
@@ -482,9 +481,6 @@ class WriteStore(_StoreBase):
 			"risks": risks,
 		}
 		clear_fields = {
-			"overview": clear_overview,
-			"purpose": clear_purpose,
-			"contract": clear_contract,
 			"model_tier": clear_model_tier,
 			"files": clear_files,
 			"acceptance_criteria": clear_acceptance_criteria,
@@ -493,15 +489,21 @@ class WriteStore(_StoreBase):
 		}
 
 		if not any(
-			value is not None or clear_fields[field] for field, value in values.items()
+			value is not None or clear_fields.get(field, False)
+			for field, value in values.items()
 		):
 			raise ProgressError(
 				"task edit requires at least one field",
 				{"id": task_id},
 			)
 
+		required_text_labels = {
+			"overview": "task overview",
+			"purpose": "task purpose",
+			"contract": "task contract",
+		}
 		for field, value in values.items():
-			if clear_fields[field] and value is not None:
+			if clear_fields.get(field, False) and value is not None:
 				raise ProgressError(
 					f"task edit accepts either --{field.replace('_', '-')} or "
 					f"--clear-{field.replace('_', '-')}, not both",
@@ -512,16 +514,18 @@ class WriteStore(_StoreBase):
 					f"task {field} must be text",
 					{"id": task_id, "field": field},
 				)
+			if value is not None and field in required_text_labels:
+				_require_text(value, required_text_labels[field])
 
 		project = self.current_project(path)
 		nullable_fields = {"model_tier", "files"}
 		updates = []
 		parameters: list[object] = []
 		for field, value in values.items():
-			if value is None and not clear_fields[field]:
+			if value is None and not clear_fields.get(field, False):
 				continue
 
-			if clear_fields[field]:
+			if clear_fields.get(field, False):
 				value = None if field in nullable_fields else ""
 
 			updates.append(f"{field} = ?")
@@ -896,28 +900,22 @@ class WriteStore(_StoreBase):
 		self,
 		chunk_id: str,
 		description: str | None = None,
-		clear_description: bool = False,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
 		"""Update a chunk description without changing chunk lifecycle data."""
 		validate_object_id(chunk_id, CHUNK_PREFIX)
-		if description is None and not clear_description:
+		if description is None:
 			raise ProgressError(
-				"chunk edit requires --description or --clear-description",
+				"chunk edit requires --description",
 				{"id": chunk_id},
 			)
-		if description is not None and clear_description:
-			raise ProgressError(
-				"chunk edit accepts either --description or --clear-description, not both",
-				{"id": chunk_id},
-			)
-		if description is not None and not isinstance(description, str):
+		if not isinstance(description, str):
 			raise ProgressError(
 				"chunk description must be text",
 				{"id": chunk_id, "field": "description"},
 			)
+		_require_text(description, "chunk description")
 
-		description_value = "" if clear_description else description
 		project = self.current_project(path)
 
 		with self.database.transaction() as connection:
@@ -926,7 +924,7 @@ class WriteStore(_StoreBase):
 				raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
 			connection.execute(
 				"UPDATE chunks SET description = ? WHERE id = ?",
-				(description_value, chunk_id),
+				(description, chunk_id),
 			)
 			return _chunk_dict(connection, chunk_id, project.id)
 

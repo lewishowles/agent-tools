@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 import agents_progress.render as render_module
+import agents_progress.style as style_module
 from agents_progress import cli
 from agents_progress.errors import AlreadyExistsError, DuplicateDependencyError
 from agents_progress.render import _status_result_type
@@ -196,7 +197,16 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 			"project",
 		),
 		(
-			["release", "add", "--slug", "release", "--title", "Release"],
+			[
+				"release",
+				"add",
+				"--slug",
+				"release",
+				"--title",
+				"Release",
+				"--overview",
+				"Release overview",
+			],
 			"release_add",
 			"write",
 		),
@@ -210,6 +220,10 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 				"Task",
 				"--overview",
 				"Task overview",
+				"--purpose",
+				"Task purpose",
+				"--contract",
+				"Task contract",
 			],
 			"task_add",
 			"write",
@@ -245,6 +259,11 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 		(
 			["release", "rename", "rel_" + "r" * 22, "--title", "Renamed release"],
 			"release_rename",
+			"write",
+		),
+		(
+			["release", "edit", "rel_" + "r" * 22, "--overview", "Updated overview"],
+			"release_edit",
 			"write",
 		),
 		(["release", "complete", "rel_" + "r" * 22], "release_complete", "write"),
@@ -402,6 +421,8 @@ def test_write_errors_use_the_stable_json_error_envelope(
 				"release",
 				"--title",
 				"Release",
+				"--overview",
+				"Release overview",
 				"--database",
 				str(tmp_path / "db"),
 				"--json",
@@ -480,7 +501,23 @@ def test_human_success_renders_readable_output(
 	assert "Task status" in output.out and "in-progress" in output.out
 	assert "Blocking reason" in output.out and "Waiting for a decision" in output.out
 	assert "Dependency IDs" in output.out and "tsk_dependency" in output.out
-	assert "i Hint: progress chunk complete chk_test" in output.out
+	assert "Next action: progress chunk complete chk_test" in output.out
+	assert "i Hint: progress chunk complete chk_test" not in output.out
+
+
+def test_row_group_requests_72_column_wrap(monkeypatch) -> None:
+	rows = [{"label": "Overview", "value": "A long task overview."}]
+	calls: list[tuple[str, dict[str, object]]] = []
+
+	def fake_render(renderer: str, data: dict[str, object]) -> str:
+		calls.append((renderer, data))
+		return "rendered"
+
+	monkeypatch.setattr(style_module, "render_generic", fake_render)
+
+	assert style_module.row_group(rows) == "rendered"
+
+	assert calls == [("row-group", {"rows": rows, "wrapWidth": 72})]
 
 
 def test_human_task_list_groups_rows_and_renders_hints(
@@ -554,7 +591,7 @@ def test_human_task_list_groups_rows_and_renders_hints(
 	assert output.out.startswith("\n")
 	assert output.out.endswith("\n\n")
 	assert output.out.count("progress task get TASK_ID") == 1
-	assert output.out.count("progress task move TASK_ID --before/--after TASK_ID") == 1
+	assert "Next action: View a task with" in output.out
 	assert "Title" in output.out
 	assert "Status" in output.out
 	assert "ID" in output.out
@@ -566,11 +603,15 @@ def test_human_task_list_groups_rows_and_renders_hints(
 	assert "! Blocked task" in output.out
 	assert "(tsk_ready)" in output.out
 	assert "(tsk_done)" in output.out
+	assert "i Hint: View a task with" not in output.out
 	assert "i Hint: More results: use --offset 4." in output.out
 
 
-def test_task_list_hint_styles_embedded_commands(monkeypatch) -> None:
+def test_chunk_list_renders_descriptions_in_wrapped_rows(monkeypatch) -> None:
 	descriptions: list[list[dict[str, str]]] = []
+
+	monkeypatch.setattr(render_module, "render_span", lambda value, *args: value)
+	monkeypatch.setattr(
 		render_module,
 		"render_row",
 		lambda label, value, result="": f"{label}: {value}",
@@ -642,6 +683,15 @@ def test_chunk_list_omits_empty_descriptions(description, monkeypatch) -> None:
 					"description": description,
 				}
 			],
+			"has_more": False,
+		},
+	)
+
+	assert "Render output: ready (chk_test)" in output
+	assert "Description" not in output
+
+
+def test_task_list_action_styles_embedded_commands(monkeypatch) -> None:
 	spans: list[tuple[str, str, str | None]] = []
 
 	def fake_span(value: str, tone: str = "info", weight: str | None = None) -> str:
@@ -649,7 +699,9 @@ def test_chunk_list_omits_empty_descriptions(description, monkeypatch) -> None:
 		return f"<{value}>"
 
 	monkeypatch.setattr(render_module, "render_span", fake_span)
-	monkeypatch.setattr(render_module, "render_hint", lambda message: message)
+	monkeypatch.setattr(
+		render_module, "render_labelled_line", lambda label, message: message
+	)
 
 	output = render_module._render_task_list({"items": [], "has_more": False})
 
@@ -665,6 +717,55 @@ def test_chunk_list_omits_empty_descriptions(description, monkeypatch) -> None:
 			"bold",
 		),
 	]
+
+
+@pytest.mark.parametrize(
+	("command", "data", "expected_rows"),
+	[
+		(
+			"task get",
+			{
+				"id": "tsk_test",
+				"overview": "A task overview.",
+				"purpose": "A task purpose.",
+				"contract": "A task contract.",
+				"status": "ready",
+			},
+			[
+				{"label": "Overview", "value": "A task overview."},
+				{"label": "Purpose", "value": "A task purpose."},
+				{"label": "Contract", "value": "A task contract."},
+			],
+		),
+		(
+			"chunk get",
+			{
+				"id": "chk_test",
+				"description": "A chunk description.",
+				"status": "pending",
+			},
+			[{"label": "Description", "value": "A chunk description."}],
+		),
+	],
+)
+def test_object_planning_fields_use_row_group(
+	command: str,
+	data: dict[str, object],
+	expected_rows: list[dict[str, str]],
+	monkeypatch,
+) -> None:
+	groups: list[list[dict[str, str]]] = []
+
+	def fake_row_group(rows: list[dict[str, str]]) -> str:
+		groups.append(rows)
+		return "Grouped planning fields"
+
+	monkeypatch.setattr(render_module, "render_row_group", fake_row_group)
+
+	output = render_module.render(command, data)
+
+	assert "Grouped planning fields" in output
+	assert groups == [expected_rows]
 
 
 def test_human_next_renders_done_chunk_with_success_status(
@@ -850,6 +951,10 @@ def test_json_write_success_uses_the_changed_object_shape(
 				"Write surface",
 				"--overview",
 				"Write surface overview",
+				"--purpose",
+				"Write surface purpose",
+				"--contract",
+				"Write surface contract",
 				"--database",
 				str(tmp_path / "db"),
 				"--json",
@@ -868,6 +973,43 @@ def test_json_write_success_uses_the_changed_object_shape(
 			["task", "add", "--slug", "task", "--title", "Task"],
 			"--overview",
 			id="task-overview",
+		),
+		pytest.param(
+			[
+				"task",
+				"add",
+				"--slug",
+				"task",
+				"--title",
+				"Task",
+				"--overview",
+				"Task overview",
+				"--contract",
+				"Task contract",
+			],
+			"--purpose",
+			id="task-purpose",
+		),
+		pytest.param(
+			[
+				"task",
+				"add",
+				"--slug",
+				"task",
+				"--title",
+				"Task",
+				"--overview",
+				"Task overview",
+				"--purpose",
+				"Task purpose",
+			],
+			"--contract",
+			id="task-contract",
+		),
+		pytest.param(
+			["release", "add", "--slug", "release", "--title", "Release"],
+			"--overview",
+			id="release-overview",
 		),
 		pytest.param(
 			["chunk", "add", "--task", "tsk_test", "--title", "Chunk"],
@@ -923,6 +1065,56 @@ def test_add_rejects_an_omitted_planning_field(
 		),
 		pytest.param(
 			[
+				"task",
+				"add",
+				"--slug",
+				"task",
+				"--title",
+				"Task",
+				"--overview",
+				"Task overview",
+				"--purpose",
+				" \t",
+				"--contract",
+				"Task contract",
+			],
+			"--purpose",
+			id="task-purpose",
+		),
+		pytest.param(
+			[
+				"task",
+				"add",
+				"--slug",
+				"task",
+				"--title",
+				"Task",
+				"--overview",
+				"Task overview",
+				"--purpose",
+				"Task purpose",
+				"--contract",
+				" \t",
+			],
+			"--contract",
+			id="task-contract",
+		),
+		pytest.param(
+			[
+				"release",
+				"add",
+				"--slug",
+				"release",
+				"--title",
+				"Release",
+				"--overview",
+				" \t",
+			],
+			"--overview",
+			id="release-overview",
+		),
+		pytest.param(
+			[
 				"chunk",
 				"add",
 				"--task",
@@ -965,7 +1157,123 @@ def test_add_rejects_a_whitespace_only_planning_field(
 	assert database_path.exists() is False
 
 
-def test_task_edit_dispatches_values_and_clear_flags(
+@pytest.mark.parametrize(
+	("command_arguments", "flag"),
+	[
+		pytest.param(
+			["task", "edit", "tsk_test", "--clear-overview"],
+			"--clear-overview",
+			id="task-overview",
+		),
+		pytest.param(
+			["task", "edit", "tsk_test", "--clear-purpose"],
+			"--clear-purpose",
+			id="task-purpose",
+		),
+		pytest.param(
+			["task", "edit", "tsk_test", "--clear-contract"],
+			"--clear-contract",
+			id="task-contract",
+		),
+		pytest.param(
+			["chunk", "edit", "chk_test", "--clear-description"],
+			"--clear-description",
+			id="chunk-description",
+		),
+		pytest.param(
+			["release", "edit", "rel_test", "--clear-overview"],
+			"--clear-overview",
+			id="release-overview",
+		),
+	],
+)
+def test_edit_rejects_removed_clear_flags(
+	tmp_path: Path,
+	capsys,
+	command_arguments: list[str],
+	flag: str,
+) -> None:
+	database_path = tmp_path / "db"
+
+	assert (
+		cli.main(
+			[
+				*command_arguments,
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 2
+	)
+
+	result = json.loads(capsys.readouterr().out)
+
+	assert result["ok"] is False
+	assert result["error"]["code"] == "usage"
+	assert flag in result["error"]["message"]
+	assert database_path.exists() is False
+
+
+@pytest.mark.parametrize(
+	("command_arguments", "flag"),
+	[
+		pytest.param(
+			["task", "edit", "tsk_test", "--overview", ""],
+			"--overview",
+			id="task-overview-empty",
+		),
+		pytest.param(
+			["task", "edit", "tsk_test", "--purpose", " \t"],
+			"--purpose",
+			id="task-purpose-whitespace",
+		),
+		pytest.param(
+			["task", "edit", "tsk_test", "--contract", ""],
+			"--contract",
+			id="task-contract-empty",
+		),
+		pytest.param(
+			["chunk", "edit", "chk_test", "--description", " \t"],
+			"--description",
+			id="chunk-description-whitespace",
+		),
+		pytest.param(
+			["release", "edit", "rel_test", "--overview", ""],
+			"--overview",
+			id="release-overview-empty",
+		),
+	],
+)
+def test_edit_rejects_blank_planning_text(
+	tmp_path: Path,
+	capsys,
+	command_arguments: list[str],
+	flag: str,
+) -> None:
+	database_path = tmp_path / "db"
+
+	assert (
+		cli.main(
+			[
+				*command_arguments,
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 2
+	)
+
+	result = json.loads(capsys.readouterr().out)
+
+	assert result["ok"] is False
+	assert result["error"]["code"] == "usage"
+	assert f"{flag} must not be empty" in result["error"]["message"]
+	assert database_path.exists() is False
+
+
+def test_task_edit_dispatches_values_and_optional_clear_flags(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
 	data = {"id": "tsk_test", "overview": "Updated"}
@@ -1009,9 +1317,6 @@ def test_task_edit_dispatches_values_and_clear_flags(
 		"acceptance_criteria": None,
 		"verification": None,
 		"risks": None,
-		"clear_overview": False,
-		"clear_purpose": False,
-		"clear_contract": False,
 		"clear_model_tier": True,
 		"clear_files": False,
 		"clear_acceptance_criteria": False,
@@ -1021,27 +1326,10 @@ def test_task_edit_dispatches_values_and_clear_flags(
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 
-@pytest.mark.parametrize(
-	("edit_arguments", "expected_arguments"),
-	[
-		pytest.param(
-			["--clear-description"],
-			{"description": None, "clear_description": True},
-			id="clear-description",
-		),
-		pytest.param(
-			["--description", "Updated"],
-			{"description": "Updated", "clear_description": False},
-			id="description",
-		),
-	],
-)
-def test_chunk_edit_dispatches_description_and_clear_flag(
+def test_chunk_edit_dispatches_description(
 	tmp_path: Path,
 	monkeypatch,
 	capsys,
-	edit_arguments: list[str],
-	expected_arguments: dict[str, object],
 ) -> None:
 	data = {"id": "chk_test", "description": "Updated"}
 	arguments_seen: dict[str, object] = {}
@@ -1063,7 +1351,8 @@ def test_chunk_edit_dispatches_description_and_clear_flag(
 				"chunk",
 				"edit",
 				"chk_test",
-				*edit_arguments,
+				"--description",
+				"Updated",
 				"--database",
 				str(tmp_path / "db"),
 				"--json",
@@ -1074,7 +1363,7 @@ def test_chunk_edit_dispatches_description_and_clear_flag(
 
 	assert arguments_seen == {
 		"chunk_id": "chk_test",
-		**expected_arguments,
+		"description": "Updated",
 	}
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 

@@ -52,7 +52,8 @@ NOTE_TYPES = frozenset({"discovery", "decision"})
 # Fields that should be populated for each record in the doctor check.
 REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
 	"release": ("overview",),
-	"task": ("overview",),
+	"task": ("overview", "purpose", "contract"),
+	"chunk": ("description",),
 }
 
 
@@ -246,6 +247,9 @@ class ReadStore(_StoreBase):
 		page_loaders: dict[str, Callable[[int, int], dict[str, object]]] = {
 			"release": lambda limit, offset: self.release_list(limit, offset, path),
 			"task": lambda limit, offset: self.task_list(None, limit, offset, path),
+			"chunk": lambda limit, offset: self._chunk_list_for_project(
+				limit, offset, path
+			),
 		}
 		findings: list[dict[str, object]] = []
 
@@ -263,6 +267,31 @@ class ReadStore(_StoreBase):
 						)
 
 		return {"findings": findings, "ok": not findings}
+
+	def _chunk_list_for_project(
+		self,
+		limit: int = DEFAULT_LIMIT,
+		offset: int = 0,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""List every chunk in the current project for cross-task checks."""
+		limit, offset = validate_page(limit, offset)
+		project = self.current_project(path)
+		where = "task_id IN (SELECT id FROM tasks WHERE project_id = ?)"
+
+		with self.database.connection() as connection:
+			return self._paged_query(
+				connection,
+				f"SELECT {_CHUNK_COLUMNS} FROM chunks WHERE {where} "
+				"ORDER BY position, id",
+				(project.id,),
+				Chunk.from_row,
+				limit,
+				offset,
+				"chunks",
+				where,
+				(project.id,),
+			)
 
 	def release_list(
 		self,

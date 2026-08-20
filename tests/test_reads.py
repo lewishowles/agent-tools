@@ -154,6 +154,8 @@ def test_next_returns_the_earliest_ready_task_when_nothing_is_in_progress(
 		"first-ready",
 		"First ready",
 		overview="First ready overview",
+		purpose="First ready purpose",
+		contract="First ready contract",
 		release_id=RELEASE_A,
 		position=0,
 	)
@@ -175,12 +177,18 @@ def test_next_prefers_active_release_over_lower_position_planned_release(
 	store = _seed_store(tmp_path)
 	writer = WriteStore(store.database, _ProjectStore(store.database))
 	planned_release = writer.release_add(
-		"planned", "Planned", status="planned", position=0
+		"planned",
+		"Planned",
+		overview="Planned release overview",
+		status="planned",
+		position=0,
 	)
 	writer.task_add(
 		"planned-task",
 		"Planned task",
 		overview="Planned task overview",
+		purpose="Planned task purpose",
+		contract="Planned task contract",
 		release_id=planned_release["id"],
 		position=0,
 	)
@@ -203,6 +211,8 @@ def test_next_reports_the_earliest_blocked_task_without_changing_it(
 		"blocked",
 		"Blocked",
 		overview="Blocked task overview",
+		purpose="Blocked task purpose",
+		contract="Blocked task contract",
 		release_id=RELEASE_A,
 		depends_on=[TASK_A],
 		position=3,
@@ -316,6 +326,7 @@ def test_doctor_reports_blank_required_fields_across_all_pages(
 	store = _seed_store(tmp_path)
 	release_offsets: list[int] = []
 	task_offsets: list[int] = []
+	chunk_offsets: list[int] = []
 	release_pages = [
 		{
 			"items": [
@@ -343,6 +354,28 @@ def test_doctor_reports_blank_required_fields_across_all_pages(
 					"id": "tsk_" + "c" * 22,
 					"title": "Blank task",
 					"overview": "  ",
+					"purpose": "",
+					"contract": " \t",
+				}
+			],
+			"limit": 1,
+			"offset": 0,
+			"has_more": True,
+		},
+		{
+			"items": [],
+			"limit": 1,
+			"offset": 1,
+			"has_more": False,
+		},
+	]
+	chunk_pages = [
+		{
+			"items": [
+				{
+					"id": "chk_" + "d" * 22,
+					"title": "Blank chunk",
+					"description": "",
 				}
 			],
 			"limit": 1,
@@ -365,8 +398,13 @@ def test_doctor_reports_blank_required_fields_across_all_pages(
 		task_offsets.append(offset)
 		return task_pages[offset]
 
+	def chunk_list(limit, offset, path=None):
+		chunk_offsets.append(offset)
+		return chunk_pages[offset]
+
 	monkeypatch.setattr(store, "release_list", release_list)
 	monkeypatch.setattr(store, "task_list", task_list)
+	monkeypatch.setattr(store, "_chunk_list_for_project", chunk_list)
 
 	result = store.doctor()
 
@@ -384,11 +422,30 @@ def test_doctor_reports_blank_required_fields_across_all_pages(
 				"noun": "task",
 				"title": "Blank task",
 			},
+			{
+				"field": "task.purpose",
+				"id": "tsk_" + "c" * 22,
+				"noun": "task",
+				"title": "Blank task",
+			},
+			{
+				"field": "task.contract",
+				"id": "tsk_" + "c" * 22,
+				"noun": "task",
+				"title": "Blank task",
+			},
+			{
+				"field": "chunk.description",
+				"id": "chk_" + "d" * 22,
+				"noun": "chunk",
+				"title": "Blank chunk",
+			},
 		],
 		"ok": False,
 	}
 	assert release_offsets == [0, 1]
 	assert task_offsets == [0, 1]
+	assert chunk_offsets == [0, 1]
 
 
 def test_doctor_reports_clean_when_required_fields_are_populated(
