@@ -17,7 +17,6 @@ from .writes import WriteStore
 # Human output for these commands gets leading/trailing blank-line framing.
 _FRAMED_HUMAN_COMMANDS = {
 	"chunk list",
-	"current",
 	"next",
 	"ready",
 	"release list",
@@ -146,7 +145,6 @@ def _add_command_specs(
 # Every CLI command and its nested subcommands, in the order they should appear in --help.
 _COMMAND_SPECS = (
 	_CommandSpec("next", "show the next queued task and active chunk"),
-	_CommandSpec("current", "show the current task and active chunk"),
 	_CommandSpec("doctor", "find blank required-in-practice fields"),
 	_CommandSpec(
 		"project",
@@ -630,7 +628,6 @@ def _run_command(
 	subcommand_name = getattr(args, f"{command_name}_command", None)
 	dispatch = {
 		("next", None): lambda: (ReadStore(database).next(), "next"),
-		("current", None): lambda: (ReadStore(database).current(), "current"),
 		("doctor", None): lambda: (ReadStore(database).doctor(), "doctor"),
 		("project", "init"): lambda: (_run_project(args, database), "project init"),
 		("project", "attach"): lambda: (_run_project(args, database), "project attach"),

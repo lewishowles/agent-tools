@@ -259,19 +259,6 @@ def test_next_keeps_a_manually_blocked_task_without_dependencies_blocked(
 	assert task["status_reason"] == "Waiting for a decision"
 
 
-def test_current_stays_in_progress_only_when_ready_tasks_exist(tmp_path: Path) -> None:
-	store = _seed_store(tmp_path)
-
-	with store.database.transaction() as connection:
-		connection.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (TASK_A,))
-
-	result = store.current()
-
-	assert result["task"] is None
-	assert result["chunk"] is None
-	assert result["hint_command"] == "progress ready"
-
-
 def test_next_points_to_task_list_when_no_actionable_task_exists(
 	tmp_path: Path,
 ) -> None:

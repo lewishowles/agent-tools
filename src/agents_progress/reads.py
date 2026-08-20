@@ -140,7 +140,7 @@ def _task_response(
 	empty_hint: str,
 	dependency_ids: Sequence[str],
 ) -> dict[str, object]:
-	"""Build the stable response shared by the current and next commands."""
+	"""Build the stable response used by the next command."""
 	task = Task.from_row(task_row) if task_row is not None else None
 	chunk = Chunk.from_row(chunk_row) if chunk_row is not None else None
 
@@ -224,22 +224,6 @@ class ReadStore(_StoreBase):
 
 		return _task_response(
 			project, task_row, chunk_row, "progress task list", dependency_ids
-		)
-
-	def current(self, path: str | Path | None = None) -> dict[str, object]:
-		"""Return the current project's in-progress task and its active chunk."""
-		project = self.current_project(path)
-
-		with self.database.connection() as connection:
-			task_row, chunk_row = _in_progress_task_and_chunk(connection, project.id)
-			dependency_ids = (
-				_dependency_ids(connection, task_row["id"])
-				if task_row is not None
-				else []
-			)
-
-		return _task_response(
-			project, task_row, chunk_row, "progress ready", dependency_ids
 		)
 
 	def doctor(self, path: str | Path | None = None) -> dict[str, object]:

@@ -35,7 +35,7 @@ the database and another Git checkout needs to use it.
 The complete command shape is:
 
 ```text
-progress [--json] [--database <path>] {next,current,project,release,task,chunk,ready,discovery,decision,context}
+progress [--json] [--database <path>] {next,project,release,task,chunk,ready,discovery,decision,context}
 ```
 
 Throughout this reference, commands use:
@@ -67,14 +67,6 @@ move, or revise the task.
 
 ```bash
 progress next
-```
-
-### `progress current`
-
-Show the current task and chunk for the current project.
-
-```bash
-progress current
 ```
 
 ### `progress ready`
