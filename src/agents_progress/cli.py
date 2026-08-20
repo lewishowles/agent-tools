@@ -61,36 +61,52 @@ def _argument(*names: str, **kwargs: object) -> _ArgumentSpec:
 	return _ArgumentSpec(names, kwargs)
 
 
+def _output_argument_specs() -> tuple[_ArgumentSpec, ...]:
+	"""Return the --json/--database argument specs shared by the parser and the command manifest, so they cannot drift apart."""
+	return (
+		_argument(
+			"--json",
+			action="store_true",
+			default=argparse.SUPPRESS,
+			help="write the stable agent response envelope",
+		),
+		_argument(
+			"--database",
+			metavar="PATH",
+			default=argparse.SUPPRESS,
+			help="use PATH instead of $AGENTS_PROGRESS_DATABASE or ~/.agents/progress.db",
+		),
+	)
+
+
 def _add_output_options(parser: argparse.ArgumentParser) -> None:
 	"""Add the shared --json and --database options to a command parser."""
-	parser.add_argument(
-		"--json",
-		action="store_true",
-		default=argparse.SUPPRESS,
-		help="write the stable agent response envelope",
-	)
-	parser.add_argument(
-		"--database",
-		metavar="PATH",
-		default=argparse.SUPPRESS,
-		help="use PATH instead of $AGENTS_PROGRESS_DATABASE or ~/.agents/progress.db",
+	for argument in _output_argument_specs():
+		parser.add_argument(*argument.names, **argument.kwargs)
+
+
+def _page_argument_specs() -> tuple[_ArgumentSpec, ...]:
+	"""Return the --limit/--offset argument specs shared by the parser and the command manifest, so they cannot drift apart."""
+	return (
+		_argument(
+			"--limit",
+			type=_page_number,
+			default=DEFAULT_LIMIT,
+			help=f"maximum records to show, 1-{MAX_LIMIT} (default: {DEFAULT_LIMIT})",
+		),
+		_argument(
+			"--offset",
+			type=_offset_number,
+			default=0,
+			help="number of records to skip (default: 0)",
+		),
 	)
 
 
 def _add_page_options(parser: argparse.ArgumentParser) -> None:
 	"""Add the shared --limit and --offset options to a list command parser."""
-	parser.add_argument(
-		"--limit",
-		type=_page_number,
-		default=DEFAULT_LIMIT,
-		help=f"maximum records to show, 1-{MAX_LIMIT} (default: {DEFAULT_LIMIT})",
-	)
-	parser.add_argument(
-		"--offset",
-		type=_offset_number,
-		default=0,
-		help="number of records to skip (default: 0)",
-	)
+	for argument in _page_argument_specs():
+		parser.add_argument(*argument.names, **argument.kwargs)
 
 
 def _non_empty_text_argument(flag: str) -> Callable[[str], str]:
@@ -146,6 +162,7 @@ def _add_command_specs(
 _COMMAND_SPECS = (
 	_CommandSpec("next", "show the next queued task and active chunk"),
 	_CommandSpec("doctor", "find blank required-in-practice fields"),
+	_CommandSpec("commands", "list all available commands"),
 	_CommandSpec(
 		"project",
 		"manage the current project binding",
@@ -552,6 +569,52 @@ _COMMAND_SPECS = (
 )
 
 
+def _manifest_argument_is_required(argument: _ArgumentSpec) -> bool:
+	"""Return whether an argument is required: positionals are required unless their nargs allows an empty value, flags only when explicitly marked."""
+	if argument.names[0].startswith("-"):
+		return bool(argument.kwargs.get("required", False))
+
+	return argument.kwargs.get("nargs") not in {"?", "*"}
+
+
+def _manifest_flags(spec: _CommandSpec) -> list[dict[str, object]]:
+	"""Return the flags attached to one leaf command's parser; a noun with children returns none, since flags live on its subcommands."""
+	if spec.children:
+		return []
+
+	argument_specs = list(spec.arguments)
+	if spec.page_options:
+		argument_specs.extend(_page_argument_specs())
+	argument_specs.extend(_output_argument_specs())
+
+	return [
+		{
+			"names": list(argument.names),
+			"required": _manifest_argument_is_required(argument),
+		}
+		for argument in argument_specs
+	]
+
+
+def _command_manifest(
+	specs: tuple[_CommandSpec, ...], parent_path: str = ""
+) -> list[dict[str, object]]:
+	"""Flatten the command registry into path-addressable records so `commands` can describe the whole CLI in one call without a hand-maintained duplicate."""
+	manifest = []
+	for spec in specs:
+		path = f"{parent_path} {spec.name}".strip()
+		manifest.append(
+			{
+				"path": path,
+				"help": spec.help_text,
+				"flags": _manifest_flags(spec),
+			}
+		)
+		manifest.extend(_command_manifest(spec.children, path))
+
+	return manifest
+
+
 def build_parser() -> argparse.ArgumentParser:
 	"""Build the full progress command parser with read and write subcommands."""
 	parser = ProgressArgumentParser(
@@ -623,8 +686,11 @@ def _run_command(
 	args: argparse.Namespace, *, include_release_titles: bool = False
 ) -> tuple[object, str]:
 	"""Dispatch parsed arguments to the matching read or write store call."""
-	database = Database(getattr(args, "database", None))
 	command_name = args.command
+	if command_name == "commands":
+		return _command_manifest(_COMMAND_SPECS), "commands"
+
+	database = Database(getattr(args, "database", None))
 	subcommand_name = getattr(args, f"{command_name}_command", None)
 	dispatch = {
 		("next", None): lambda: (ReadStore(database).next(), "next"),

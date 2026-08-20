@@ -34,6 +34,8 @@ _OBJECT_ROW_GROUP_FIELDS = {
 
 def render(command: str, data: object) -> str:
 	"""Render one command's stable data for a person at a terminal."""
+	if command == "commands":
+		return _render_commands(data)
 	if command in {"next", "current"}:
 		return _render_next(data)
 	if command == "doctor":
@@ -44,6 +46,47 @@ def render(command: str, data: object) -> str:
 		return _render_object(command, data)
 
 	return str(data)
+
+
+def _render_commands(data: object) -> str:
+	"""Render the command manifest as a table of paths, descriptions, and flags."""
+	if not isinstance(data, list):
+		return str(data)
+
+	rows = []
+	for command in data:
+		if not isinstance(command, dict):
+			continue
+
+		flags = []
+		for flag in command.get("flags", []):
+			if not isinstance(flag, dict):
+				continue
+
+			names = flag.get("names", [])
+			if not isinstance(names, list):
+				continue
+
+			required = "required" if flag.get("required") else "optional"
+			flags.append(f"{' / '.join(str(name) for name in names)} ({required})")
+
+		rows.append(
+			{
+				"command": str(command.get("path", "")),
+				"description": str(command.get("help", "")),
+				"flags": ", ".join(flags),
+			}
+		)
+
+	table = render_table(
+		[
+			{"key": "command", "label": "Command"},
+			{"key": "description", "label": "Description"},
+			{"key": "flags", "label": "Flags"},
+		],
+		rows,
+	)
+	return f"{table}\n" if table else ""
 
 
 def _render_doctor(data: object) -> str:

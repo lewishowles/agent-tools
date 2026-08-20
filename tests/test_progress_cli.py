@@ -56,6 +56,52 @@ def test_top_level_help_uses_a_short_usage_placeholder() -> None:
 	assert "    task           read task records" in help_text
 
 
+def test_commands_json_lists_the_registry_with_required_flags(
+	capsys,
+) -> None:
+	assert cli.main(["commands", "--json"]) == 0
+
+	response = json.loads(capsys.readouterr().out)
+	manifest = response["data"]
+	commands = {item["path"]: item for item in manifest}
+
+	assert response["ok"] is True
+	assert commands["task"]["help"] == "read task records"
+	assert commands["task"]["flags"] == []
+	assert commands["task dependency add"]["flags"] == [
+		{"names": ["task_id"], "required": True},
+		{"names": ["depends_on_task_id"], "required": True},
+		{"names": ["--json"], "required": False},
+		{"names": ["--database"], "required": False},
+	]
+	assert commands["discovery add"]["flags"][1] == {
+		"names": ["body"],
+		"required": True,
+	}
+	assert commands["task add"]["flags"][10] == {
+		"names": ["--release", "--release-id"],
+		"required": False,
+	}
+	assert commands["release list"]["flags"][-4:] == [
+		{"names": ["--limit"], "required": False},
+		{"names": ["--offset"], "required": False},
+		{"names": ["--json"], "required": False},
+		{"names": ["--database"], "required": False},
+	]
+
+
+def test_commands_human_output_lists_paths_and_flag_requirements(capsys) -> None:
+	assert cli.main(["commands"]) == 0
+
+	output = capsys.readouterr().out
+
+	assert "Command" in output
+	assert "Description" in output
+	assert "task dependency add" in output
+	assert "task_id (required)" in output
+	assert "--json (optional)" in output
+
+
 def test_json_success_uses_the_stable_envelope(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
