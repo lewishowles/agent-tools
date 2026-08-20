@@ -2,11 +2,14 @@ import json
 from pathlib import Path
 
 import pytest
+from agents_progress.database import Database
 import agents_progress.render as render_module
 import agents_progress.style as style_module
 from agents_progress import cli
 from agents_progress.errors import AlreadyExistsError, DuplicateDependencyError
+from agents_progress.projects import Project, ProjectStore
 from agents_progress.render import _status_result_type
+from agents_progress.writes import WriteStore
 
 
 def test_bare_invocation_prints_help_and_succeeds(capsys) -> None:
@@ -651,6 +654,83 @@ def test_human_task_list_groups_rows_and_renders_hints(
 	assert "(tsk_done)" in output.out
 	assert "i Hint: View a task with" not in output.out
 	assert "i Hint: More results: use --offset 4." in output.out
+
+
+def test_task_list_uses_release_priority_for_json_and_table_output(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	database_path = tmp_path / "progress.db"
+	project = Project(
+		"prj_" + "p" * 22,
+		"agents",
+		"Agent configuration",
+		"2026-01-01T00:00:00+00:00",
+	)
+	database = Database(database_path)
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(project.id, project.slug, project.name, project.created_at),
+		)
+
+	monkeypatch.setattr(ProjectStore, "current", lambda self, path=None: project)
+	writer = WriteStore(database)
+	later_release = writer.release_add(
+		"project-review",
+		"Project review",
+		overview="Review the project.",
+		status="planned",
+		position=4,
+	)
+	active_release = writer.release_add(
+		"progress-cli",
+		"Progress CLI",
+		overview="Improve the progress CLI.",
+		status="active",
+		position=1,
+	)
+	later_task = writer.task_add(
+		"project-review-context",
+		"Project review context",
+		overview="Review context.",
+		purpose="Review project context.",
+		contract="Review context contract.",
+		release_id=later_release["id"],
+		position=1,
+	)
+	active_task = writer.task_add(
+		"progress-cli-read-parity",
+		"Progress CLI read parity",
+		overview="Keep read commands aligned.",
+		purpose="Keep CLI reads aligned.",
+		contract="Keep read ordering aligned.",
+		release_id=active_release["id"],
+		position=1,
+	)
+	unassigned_task = writer.task_add(
+		"unassigned-task",
+		"Unassigned task",
+		overview="An unassigned task.",
+		purpose="Check unassigned ordering.",
+		contract="Unassigned tasks use the final queue bucket.",
+		position=1,
+	)
+
+	assert cli.main(["task", "list", "--json", "--database", str(database_path)]) == 0
+	json_response = json.loads(capsys.readouterr().out)
+	json_ids = [item["id"] for item in json_response["data"]["items"]]
+
+	assert json_ids == [active_task["id"], later_task["id"], unassigned_task["id"]]
+
+	assert cli.main(["task", "list", "--database", str(database_path)]) == 0
+	human_output = capsys.readouterr().out
+
+	assert human_output.index("Progress CLI read parity") < human_output.index(
+		"Project review context"
+	)
+	assert human_output.index("Project review context") < human_output.index(
+		"Unassigned task"
+	)
 
 
 def test_chunk_list_renders_descriptions_in_wrapped_rows(monkeypatch) -> None:

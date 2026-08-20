@@ -36,6 +36,15 @@ _TASK_COLUMNS_QUALIFIED = ", ".join(
 	f"tasks.{column.strip()}" for column in _TASK_COLUMNS.split(",")
 )
 
+# Unassigned tasks use the final release-priority bucket. Their NULL release
+# position sorts before done releases in that bucket, matching `next`.
+_TASK_QUEUE_ORDER = (
+	"CASE releases.status "
+	"WHEN 'active' THEN 0 "
+	"WHEN 'planned' THEN 1 "
+	"ELSE 2 END, releases.position, tasks.position, tasks.id"
+)
+
 _CHUNK_COLUMNS = (
 	"id, task_id, position, title, description, status, started_at, completed_at"
 )
@@ -208,10 +217,7 @@ class ReadStore(_StoreBase):
 					"AND releases.project_id = tasks.project_id "
 					"WHERE tasks.project_id = ? "
 					"AND tasks.status IN ('ready', 'blocked', 'needs-decision') "
-					"ORDER BY CASE releases.status "
-					"WHEN 'active' THEN 0 "
-					"WHEN 'planned' THEN 1 "
-					"ELSE 2 END, releases.position, tasks.position, tasks.id LIMIT 1",
+					f"ORDER BY {_TASK_QUEUE_ORDER} LIMIT 1",
 					(project.id,),
 				).fetchone()
 				if task_row is not None:
@@ -353,7 +359,7 @@ class ReadStore(_StoreBase):
 		*,
 		include_release_titles: bool = False,
 	) -> dict[str, object]:
-		"""List the current project's tasks in position order, optionally filtered by status."""
+		"""List tasks in the same release-priority order used by `next`."""
 		limit, offset = validate_page(limit, offset)
 		if status is not None and status not in TASK_STATUSES:
 			raise InvalidStatusError(
@@ -362,17 +368,19 @@ class ReadStore(_StoreBase):
 			)
 
 		project = self.current_project(path)
-		where = "project_id = ?"
+		where = "tasks.project_id = ?"
 		parameters: tuple[object, ...] = (project.id,)
 		if status is not None:
-			where += " AND status = ?"
+			where += " AND tasks.status = ?"
 			parameters += (status,)
 
 		with self.database.connection() as connection:
 			response = self._paged_query(
 				connection,
-				f"SELECT {_TASK_COLUMNS} FROM tasks WHERE {where} "
-				"ORDER BY position, id",
+				f"SELECT {_TASK_COLUMNS_QUALIFIED} FROM tasks "
+				"LEFT JOIN releases ON releases.id = tasks.release_id "
+				"AND releases.project_id = tasks.project_id "
+				f"WHERE {where} ORDER BY {_TASK_QUEUE_ORDER}",
 				parameters,
 				Task.from_row,
 				limit,
