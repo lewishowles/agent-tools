@@ -160,6 +160,21 @@ def _render_list(command: str, data: dict[str, object]) -> str:
 				_status_result_type(status) if status else "",
 			)
 		)
+		description = item.get("description")
+		if command == "chunk list" and description:
+			item_block = "\n".join(
+				[
+					item_block,
+					render_row_group(
+						[
+							{
+								"label": "Description",
+								"value": str(description),
+							}
+						]
+					),
+				]
+			)
 
 	if data.get("has_more"):
 		next_offset = int(data.get("offset", 0)) + int(data.get("limit", 0))

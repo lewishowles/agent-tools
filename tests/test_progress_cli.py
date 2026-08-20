@@ -570,6 +570,78 @@ def test_human_task_list_groups_rows_and_renders_hints(
 
 
 def test_task_list_hint_styles_embedded_commands(monkeypatch) -> None:
+	descriptions: list[list[dict[str, str]]] = []
+		render_module,
+		"render_row",
+		lambda label, value, result="": f"{label}: {value}",
+	)
+
+	def fake_row_group(rows: list[dict[str, str]]) -> str:
+		descriptions.append(rows)
+		return f"Description: {rows[0]['value']}"
+
+	monkeypatch.setattr(render_module, "render_row_group", fake_row_group)
+
+	description = "A long description explains the full scope of this chunk."
+	output = render_module._render_list(
+		"chunk list",
+		{
+			"items": [
+				{
+					"id": "chk_test",
+					"title": "Render output",
+					"status": "ready",
+					"description": description,
+				},
+				{
+					"id": "chk_other",
+					"title": "Other output",
+					"status": "pending",
+					"description": "Another chunk description.",
+				},
+			],
+			"has_more": False,
+		},
+	)
+
+	assert output == (
+		"Chunks\n\n"
+		"Render output: ready (chk_test)\n"
+		f"Description: {description}\n\n"
+		"Other output: pending (chk_other)\n"
+		"Description: Another chunk description."
+	)
+	assert descriptions == [
+		[{"label": "Description", "value": description}],
+		[
+			{
+				"label": "Description",
+				"value": "Another chunk description.",
+			}
+		],
+	]
+
+
+@pytest.mark.parametrize("description", [None, ""])
+def test_chunk_list_omits_empty_descriptions(description, monkeypatch) -> None:
+	monkeypatch.setattr(render_module, "render_span", lambda value, *args: value)
+	monkeypatch.setattr(
+		render_module,
+		"render_row",
+		lambda label, value, result="": f"{label}: {value}",
+	)
+
+	output = render_module._render_list(
+		"chunk list",
+		{
+			"items": [
+				{
+					"id": "chk_test",
+					"title": "Render output",
+					"status": "ready",
+					"description": description,
+				}
+			],
 	spans: list[tuple[str, str, str | None]] = []
 
 	def fake_span(value: str, tone: str = "info", weight: str | None = None) -> str:
