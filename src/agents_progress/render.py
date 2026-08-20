@@ -1,5 +1,25 @@
 """Human-readable rendering for progress read responses."""
 
+from .style import (
+	hint as render_hint,
+	row as render_row,
+	row_group as render_row_group,
+	span as render_span,
+	status as render_status,
+)
+
+
+# Maps a progress status string to the cli-style result type that colours it.
+_STATUS_RESULT_TYPES = {
+	"active": "info",
+	"blocked": "warning",
+	"complete": "success",
+	"completed": "success",
+	"in-progress": "info",
+	"pending": "skipped",
+	"ready": "info",
+}
+
 
 def render(command: str, data: object) -> str:
 	"""Render one command's stable data for a person at a terminal."""
@@ -37,55 +57,81 @@ def _render_doctor(data: object) -> str:
 
 
 def _render_next(data: object) -> str:
-	"""Render the selected task and its active chunk as prose lines."""
+	"""Render the selected task and its active chunk with cli-style primitives."""
 	if not isinstance(data, dict):
 		return str(data)
 
+	project = data.get("project")
+	project_name = project.get("name", "") if isinstance(project, dict) else ""
+	blocks = [render_row("Project", str(project_name))]
 	task = data.get("task")
 	chunk = data.get("chunk")
-	lines = [f"Project: {data.get('project', {}).get('name', '')}", ""]
 	if not isinstance(task, dict):
-		lines.extend(["No task is selected.", ""])
+		blocks.append(render_row("Task", "No task is selected."))
 	else:
-		lines.extend(
-			[
-				f"Task: {task.get('title', '')}",
-				f"Status: {task.get('status', '')}",
-				f"Overview: {task.get('overview') or task.get('purpose') or ''}",
-				f"ID: {task.get('id', '')}",
-			]
-		)
+		task_status = task.get("status", "")
+		task_rows = [
+			{"label": "Task", "value": str(task.get("title", ""))},
+			{
+				"label": "Overview",
+				"value": str(task.get("overview") or task.get("purpose") or ""),
+			},
+			{"label": "ID", "value": str(task.get("id", ""))},
+		]
 		status_reason = task.get("status_reason")
 		if status_reason:
-			lines.append(f"Blocking reason: {status_reason}")
+			task_rows.append({"label": "Blocking reason", "value": str(status_reason)})
 
 		dependency_ids = data.get("dependency_ids")
 		if isinstance(dependency_ids, list) and dependency_ids:
-			lines.append(
-				f"Dependency IDs: {', '.join(str(item) for item in dependency_ids)}"
+			task_rows.append(
+				{
+					"label": "Dependency IDs",
+					"value": ", ".join(str(item) for item in dependency_ids),
+				}
 			)
 
-		lines.append("")
+		blocks.extend(
+			[
+				render_row_group(task_rows),
+				render_status(
+					_status_result_type(task_status),
+					"Task status",
+					str(task_status),
+				),
+			]
+		)
 		if isinstance(chunk, dict):
-			lines.extend(
+			chunk_status = chunk.get("status", "")
+			blocks.extend(
 				[
-					f"Chunk: {chunk.get('title', '')}",
-					f"Description: {chunk.get('description', '')}",
-					f"Status: {chunk.get('status', '')}",
-					f"ID: {chunk.get('id', '')}",
-					"",
+					render_row_group(
+						[
+							{"label": "Chunk", "value": str(chunk.get("title", ""))},
+							{
+								"label": "Description",
+								"value": str(chunk.get("description", "")),
+							},
+							{"label": "ID", "value": str(chunk.get("id", ""))},
+						]
+					),
+					render_status(
+						_status_result_type(chunk_status),
+						"Chunk status",
+						str(chunk_status),
+					),
 				]
 			)
 
-	hint = data.get("hint_command")
-	if hint:
-		lines.extend([f"Next: {hint}", ""])
+	hint_command = data.get("hint_command")
+	if hint_command:
+		blocks.append(render_hint(str(hint_command)))
 
-	return "\n".join(lines)
+	return "\n\n".join(blocks)
 
 
 def _render_list(command: str, data: dict[str, object]) -> str:
-	"""Render one bounded page of records with a pagination hint when more exist."""
+	"""Render one bounded page with cli-style rows and a pagination hint."""
 	items = data.get("items", [])
 	labels = {
 		"release list": "Releases",
@@ -94,20 +140,32 @@ def _render_list(command: str, data: dict[str, object]) -> str:
 		"ready": "Ready tasks",
 	}
 	title = labels.get(command, "Results")
-	lines = [f"{title}:"]
+	blocks = [render_span(title)]
 	for item in items:
 		if not isinstance(item, dict):
 			continue
 		name = item.get("title") or item.get("id") or "item"
 		status = item.get("status")
-		status_text = f" [{status}]" if status else ""
-		lines.append(f"- {name}{status_text} ({item.get('id', '')})")
+		identifier = str(item.get("id", ""))
+		value = f"{status} ({identifier})" if status else f"({identifier})"
+		blocks.append(
+			render_row(
+				str(name),
+				value,
+				_status_result_type(status) if status else "",
+			)
+		)
 
 	if data.get("has_more"):
 		next_offset = int(data.get("offset", 0)) + int(data.get("limit", 0))
-		lines.extend(["", f"More results: use --offset {next_offset}."])
+		blocks.append(render_hint(f"More results: use --offset {next_offset}."))
 
-	return "\n".join(lines) + "\n"
+	return "\n\n".join(blocks)
+
+
+def _status_result_type(status: object) -> str:
+	"""Map a progress status to the cli-style result type for its tone."""
+	return _STATUS_RESULT_TYPES.get(str(status), "info")
 
 
 def _render_object(data: dict[str, object]) -> str:

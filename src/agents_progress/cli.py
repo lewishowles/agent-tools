@@ -14,6 +14,17 @@ from .render import render
 from .writes import WriteStore
 
 
+# Human output for these commands gets leading/trailing blank-line framing.
+_FRAMED_HUMAN_COMMANDS = {
+	"chunk list",
+	"current",
+	"next",
+	"ready",
+	"release list",
+	"task list",
+}
+
+
 class CliUsageError(Exception):
 	"""Signal a parser error to format through the stable JSON envelope."""
 
@@ -590,7 +601,12 @@ def main(argv: list[str] | None = None) -> int:
 	if json_mode:
 		_write_json({"ok": True, "data": data})
 	else:
-		sys.stdout.write(render(command, data))
+		human_output = render(command, data)
+		if command in _FRAMED_HUMAN_COMMANDS:
+			framed_output = human_output.rstrip("\n")
+			sys.stdout.write(f"\n{framed_output}\n\n")
+		else:
+			sys.stdout.write(human_output)
 		hint = _human_hint(command, data)
 		if hint:
 			sys.stdout.write(f"Next: {hint}\n")

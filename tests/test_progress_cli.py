@@ -471,12 +471,105 @@ def test_human_success_renders_readable_output(
 	output = capsys.readouterr()
 
 	assert output.err == ""
-	assert "Project: Agents" in output.out
-	assert "Task: Read surface" in output.out
-	assert "Status: in-progress" in output.out
-	assert "Blocking reason: Waiting for a decision" in output.out
-	assert "Dependency IDs: tsk_dependency" in output.out
-	assert "Next: progress chunk complete chk_test" in output.out
+	assert output.out.startswith("\n")
+	assert output.out.endswith("\n\n")
+	assert "Project" in output.out and "Agents" in output.out
+	assert "Task" in output.out and "Read surface" in output.out
+	assert "Task status" in output.out and "in-progress" in output.out
+	assert "Blocking reason" in output.out and "Waiting for a decision" in output.out
+	assert "Dependency IDs" in output.out and "tsk_dependency" in output.out
+	assert "i Hint: progress chunk complete chk_test" in output.out
+
+
+def test_human_task_list_renders_cli_style_rows_and_pagination_hint(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {
+		"items": [{"id": "tsk_test", "title": "Read surface", "status": "ready"}],
+		"limit": 1,
+		"offset": 0,
+		"has_more": True,
+	}
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_list(self, status, limit, offset):
+			assert status is None
+			assert limit == 1
+			assert offset == 0
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"list",
+				"--limit",
+				"1",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+
+	output = capsys.readouterr()
+
+	assert output.err == ""
+	assert output.out.startswith("\n")
+	assert output.out.endswith("\n\n")
+	assert "Tasks" in output.out
+	assert "Read surface" in output.out
+	assert "ready (tsk_test)" in output.out
+	assert "i Hint: More results: use --offset 1." in output.out
+
+
+def test_human_release_list_keeps_trailing_blank_line(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {
+		"items": [{"id": "rel_test", "title": "First release", "status": "active"}],
+		"limit": 1,
+		"offset": 0,
+		"has_more": False,
+	}
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def release_list(self, limit, offset):
+			assert limit == 1
+			assert offset == 0
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert (
+		cli.main(
+			[
+				"release",
+				"list",
+				"--limit",
+				"1",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+
+	output = capsys.readouterr()
+
+	assert output.err == ""
+	assert output.out.startswith("\n")
+	assert output.out.endswith("\n\n")
+	assert "Releases" in output.out
+	assert "First release" in output.out
 
 
 def test_json_write_success_uses_the_changed_object_shape(
