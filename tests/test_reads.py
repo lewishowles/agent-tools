@@ -274,20 +274,18 @@ def test_next_points_to_task_list_when_no_actionable_task_exists(
 	assert result["hint_command"] == "progress task list"
 
 
-def test_task_list_and_ready_use_position_then_object_id_and_pagination(
+def test_task_list_uses_position_then_object_id_and_pagination(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
 
 	result = store.task_list(limit=1)
 	with_titles = store.task_list(include_release_titles=True)
-	ready = store.ready()
 
 	assert [item["id"] for item in result["items"]] == [TASK_A]
 	assert "release_title" not in result["items"][0]
 	assert with_titles["items"][0]["release_title"] == "Progress store"
 	assert result["has_more"] is True
-	assert [item["id"] for item in ready["items"]] == [TASK_B]
 
 
 def test_task_list_leaves_unassigned_tasks_without_release_titles(
@@ -441,28 +439,6 @@ def test_doctor_reports_clean_when_required_fields_are_populated(
 	store = _seed_store(tmp_path)
 
 	assert store.doctor() == {"findings": [], "ok": True}
-
-
-def test_ready_excludes_unfinished_dependencies_and_includes_done_dependencies(
-	tmp_path: Path,
-) -> None:
-	store = _seed_store(tmp_path)
-
-	with store.database.transaction() as connection:
-		connection.execute(
-			"INSERT INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)",
-			(TASK_B, TASK_A),
-		)
-
-	assert store.ready()["items"] == []
-
-	with store.database.transaction() as connection:
-		connection.execute(
-			"UPDATE tasks SET status = 'done' WHERE id = ?",
-			(TASK_A,),
-		)
-
-	assert [item["id"] for item in store.ready()["items"]] == [TASK_B]
 
 
 def test_task_get_rejects_a_wrong_object_type_before_lookup(tmp_path: Path) -> None:

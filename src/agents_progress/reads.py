@@ -523,37 +523,6 @@ class ReadStore(_StoreBase):
 
 		return Context.from_row(row).to_dict()
 
-	def ready(
-		self,
-		limit: int = DEFAULT_LIMIT,
-		offset: int = 0,
-		path: str | Path | None = None,
-	) -> dict[str, object]:
-		"""List the current project's ready tasks whose dependencies are all done."""
-		limit, offset = validate_page(limit, offset)
-		project = self.current_project(path)
-		where = (
-			"project_id = ? AND status = 'ready' AND NOT EXISTS ("
-			"SELECT 1 FROM task_dependencies AS dependencies "
-			"JOIN tasks AS dependency ON dependency.id = dependencies.depends_on_task_id "
-			"WHERE dependencies.task_id = tasks.id AND dependency.status != 'done'"
-			")"
-		)
-
-		with self.database.connection() as connection:
-			return self._paged_query(
-				connection,
-				f"SELECT {_TASK_COLUMNS} FROM tasks WHERE {where} "
-				"ORDER BY position, id",
-				(project.id,),
-				Task.from_row,
-				limit,
-				offset,
-				"tasks",
-				where,
-				(project.id,),
-			)
-
 	def _paged_query(
 		self,
 		connection: sqlite3.Connection,

@@ -193,7 +193,6 @@ def _render_list(command: str, data: dict[str, object]) -> str:
 	labels = {
 		"release list": "Releases",
 		"chunk list": "Chunks",
-		"ready": "Ready tasks",
 	}
 	title = labels.get(command, "Results")
 	blocks = [render_span(title)]

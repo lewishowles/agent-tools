@@ -112,7 +112,7 @@ def test_json_success_uses_the_stable_envelope(
 		"project": {"id": "prj_test", "slug": "agents", "name": "Agents"},
 		"task": None,
 		"chunk": None,
-		"hint_command": "progress ready",
+		"hint_command": "progress next",
 	}
 
 	class _ReadStore:
@@ -927,7 +927,6 @@ def test_human_next_renders_done_chunk_with_success_status(
 @pytest.mark.parametrize(
 	("status", "result_type"),
 	[
-		("ready", "skipped"),
 		("in-progress", "info"),
 		("blocked", "failed"),
 		("needs-decision", "warning"),

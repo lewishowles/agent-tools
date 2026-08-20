@@ -18,7 +18,6 @@ from .writes import WriteStore
 _FRAMED_HUMAN_COMMANDS = {
 	"chunk list",
 	"next",
-	"ready",
 	"release list",
 	"task list",
 }
@@ -492,7 +491,6 @@ _COMMAND_SPECS = (
 		),
 		destination="chunk_command",
 	),
-	_CommandSpec("ready", "list tasks ready to start", page_options=True),
 	_CommandSpec(
 		"discovery",
 		"record a discovery note",
@@ -833,10 +831,6 @@ def _run_command(
 			"chunk rename",
 		),
 		("chunk", "edit"): lambda: _run_chunk_edit(args, database),
-		("ready", None): lambda: (
-			ReadStore(database).ready(args.limit, args.offset),
-			"ready",
-		),
 		("discovery", "add"): lambda: (
 			WriteStore(database).discovery_add(args.task_id, " ".join(args.body)),
 			"discovery add",
@@ -1051,7 +1045,7 @@ def _human_hint(command: str, data: object) -> str | None:
 			f"progress task start {object_id}" if object_id else None
 		),
 		"task start": "progress next" if object_id else None,
-		"task complete": "progress ready",
+		"task complete": "progress next",
 		"task block": (f"progress task unblock {object_id}" if object_id else None),
 		"task unblock": (f"progress task start {object_id}" if object_id else None),
 		"chunk add": f"progress task start {task_id}" if task_id else None,

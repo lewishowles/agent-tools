@@ -35,7 +35,7 @@ the database and another Git checkout needs to use it.
 The complete command shape is:
 
 ```text
-progress [--json] [--database <path>] {next,project,release,task,chunk,ready,discovery,decision,context}
+progress [--json] [--database <path>] {next,project,release,task,chunk,discovery,decision,context}
 ```
 
 Throughout this reference, commands use:
@@ -68,17 +68,6 @@ move, or revise the task.
 ```bash
 progress next
 ```
-
-### `progress ready`
-
-List tasks that are ready to start:
-
-```text
-progress ready [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
-```
-
-- `--limit <limit>`: maximum number of tasks to return
-- `--offset <offset>`: number of tasks to skip before returning results
 
 ## Projects
 
@@ -568,14 +557,6 @@ Tasks:
 $ progress chunk list --task tsk_nIHyevhUxTyEDLbyfXPhRQ --limit 20 --offset 0
 Chunks:
 - First chunk [pending] (chk_KkjpMXgs5qkPeUsEuNDIDg)
-```
-
-### Ready tasks
-
-```text
-$ progress ready --limit 20 --offset 0
-Ready tasks:
-- First task [ready] (tsk_nIHyevhUxTyEDLbyfXPhRQ)
 ```
 
 ## Statuses, note types, and model tiers
