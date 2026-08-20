@@ -283,11 +283,31 @@ def test_task_list_and_ready_use_position_then_object_id_and_pagination(
 	store = _seed_store(tmp_path)
 
 	result = store.task_list(limit=1)
+	with_titles = store.task_list(include_release_titles=True)
 	ready = store.ready()
 
 	assert [item["id"] for item in result["items"]] == [TASK_A]
+	assert "release_title" not in result["items"][0]
+	assert with_titles["items"][0]["release_title"] == "Progress store"
 	assert result["has_more"] is True
 	assert [item["id"] for item in ready["items"]] == [TASK_B]
+
+
+def test_task_list_leaves_unassigned_tasks_without_release_titles(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE tasks SET release_id = NULL WHERE id = ?", (TASK_B,))
+
+	result = store.task_list(include_release_titles=True)
+	assigned = next(item for item in result["items"] if item["id"] == TASK_A)
+	unassigned = next(item for item in result["items"] if item["id"] == TASK_B)
+
+	assert assigned["release_title"] == "Progress store"
+	assert unassigned["release_id"] is None
+	assert "release_title" not in unassigned
 
 
 def test_doctor_reports_blank_required_fields_across_all_pages(

@@ -75,6 +75,30 @@ def _plain_row_group(rows: list[dict[str, str]]) -> str:
 	)
 
 
+def _plain_table(columns: list[dict[str, str]], rows: list[dict[str, str]]) -> str:
+	"""Render columns and rows as a plain-text table, padding each column to its widest value."""
+	if not columns or not rows:
+		return ""
+
+	keys = [column["key"] for column in columns]
+	labels = [column["label"] for column in columns]
+	widths = [
+		max(len(label), *(len(row.get(key, "")) for row in rows))
+		for key, label in zip(keys, labels, strict=True)
+	]
+
+	def render_line(values: list[str]) -> str:
+		return "  ".join(
+			value.ljust(width) if index < len(values) - 1 else value
+			for index, (value, width) in enumerate(zip(values, widths, strict=True))
+		)
+
+	header = render_line(labels)
+	rule = render_line(["-" * width for width in widths])
+	body = [render_line([row.get(key, "") for key in keys]) for row in rows]
+	return "\n".join([header, rule, *body])
+
+
 def _plain_status(result_type: str, label: str, detail: str) -> str:
 	"""Render a status line without ANSI styling."""
 	marker = _plain_result_marker(result_type)
@@ -119,9 +143,17 @@ def row_group(rows: list[dict[str, str]]) -> str:
 	)
 
 
-def span(value: str, tone: str = "info") -> str:
+def table(columns: list[dict[str, str]], rows: list[dict[str, str]]) -> str:
+	"""Render column-aligned rows using cli-style or plain text; a row missing a column key renders that cell blank."""
+	return _render_or_plain(
+		lambda: render_generic("table", {"columns": columns, "rows": rows}),
+		lambda: _plain_table(columns, rows),
+	)
+
+
+def span(value: str, tone: str = "info", weight: str | None = None) -> str:
 	"""Render an inline span using cli-style or plain text."""
 	return _render_or_plain(
-		lambda: render_span(value, tone),
+		lambda: render_span(value, tone, weight=weight),
 		lambda: value,
 	)

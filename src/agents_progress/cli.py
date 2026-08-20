@@ -586,7 +586,7 @@ def main(argv: list[str] | None = None) -> int:
 			parser.print_help()
 			return 0
 
-		data, command = _run_command(args)
+		data, command = _run_command(args, include_release_titles=not json_mode)
 	except CliUsageError as error:
 		return _write_error(
 			"usage",
@@ -614,7 +614,9 @@ def main(argv: list[str] | None = None) -> int:
 	return 0
 
 
-def _run_command(args: argparse.Namespace) -> tuple[object, str]:
+def _run_command(
+	args: argparse.Namespace, *, include_release_titles: bool = False
+) -> tuple[object, str]:
 	"""Dispatch parsed arguments to the matching read or write store call."""
 	database = Database(getattr(args, "database", None))
 	command_name = args.command
@@ -719,7 +721,12 @@ def _run_command(args: argparse.Namespace) -> tuple[object, str]:
 			"task get",
 		),
 		("task", "list"): lambda: (
-			ReadStore(database).task_list(args.status, args.limit, args.offset),
+			ReadStore(database).task_list(
+				args.status,
+				args.limit,
+				args.offset,
+				include_release_titles=include_release_titles,
+			),
 			"task list",
 		),
 		("chunk", "list"): lambda: (

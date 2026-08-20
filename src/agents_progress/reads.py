@@ -103,6 +103,35 @@ def _is_blank(value: object) -> bool:
 	return value is None or (isinstance(value, str) and not value.strip())
 
 
+def _add_release_titles(
+	connection: sqlite3.Connection,
+	project_id: str,
+	items: list[dict[str, object]],
+) -> None:
+	"""Add the matching release title to each task-list item with one bounded query."""
+	release_ids = list(
+		dict.fromkeys(
+			str(item["release_id"])
+			for item in items
+			if item.get("release_id") is not None
+		)
+	)
+	if not release_ids:
+		return
+
+	placeholders = ", ".join("?" for _ in release_ids)
+	rows = connection.execute(
+		f"SELECT id, title FROM releases WHERE project_id = ? AND id IN ({placeholders})",
+		(project_id, *release_ids),
+	).fetchall()
+	titles = {str(row["id"]): str(row["title"]) for row in rows}
+
+	for item in items:
+		release_id = item.get("release_id")
+		if release_id is not None:
+			item["release_title"] = titles.get(str(release_id))
+
+
 def _task_response(
 	project: Project,
 	task_row: sqlite3.Row | None,
@@ -308,6 +337,8 @@ class ReadStore(_StoreBase):
 		limit: int = DEFAULT_LIMIT,
 		offset: int = 0,
 		path: str | Path | None = None,
+		*,
+		include_release_titles: bool = False,
 	) -> dict[str, object]:
 		"""List the current project's tasks in position order, optionally filtered by status."""
 		limit, offset = validate_page(limit, offset)
@@ -325,7 +356,7 @@ class ReadStore(_StoreBase):
 			parameters += (status,)
 
 		with self.database.connection() as connection:
-			return self._paged_query(
+			response = self._paged_query(
 				connection,
 				f"SELECT {_TASK_COLUMNS} FROM tasks WHERE {where} "
 				"ORDER BY position, id",
@@ -337,6 +368,12 @@ class ReadStore(_StoreBase):
 				where,
 				parameters,
 			)
+			if include_release_titles:
+				items = response["items"]
+				if isinstance(items, list):
+					_add_release_titles(connection, project.id, items)
+
+			return response
 
 	def chunk_get(
 		self,

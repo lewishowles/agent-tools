@@ -2,8 +2,10 @@ import json
 from pathlib import Path
 
 import pytest
+import agents_progress.render as render_module
 from agents_progress import cli
 from agents_progress.errors import AlreadyExistsError, DuplicateDependencyError
+from agents_progress.render import _status_result_type
 
 
 def test_bare_invocation_prints_help_and_succeeds(capsys) -> None:
@@ -481,12 +483,40 @@ def test_human_success_renders_readable_output(
 	assert "i Hint: progress chunk complete chk_test" in output.out
 
 
-def test_human_task_list_renders_cli_style_rows_and_pagination_hint(
+def test_human_task_list_groups_rows_and_renders_hints(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
 	data = {
-		"items": [{"id": "tsk_test", "title": "Read surface", "status": "ready"}],
-		"limit": 1,
+		"items": [
+			{
+				"id": "tsk_ready",
+				"title": "Ready task",
+				"status": "ready",
+				"release_id": "rel_first",
+				"release_title": "First release",
+			},
+			{
+				"id": "tsk_unassigned",
+				"title": "Unassigned task",
+				"status": "ready",
+				"release_id": None,
+			},
+			{
+				"id": "tsk_done",
+				"title": "Done task",
+				"status": "done",
+				"release_id": "rel_second",
+				"release_title": "Second release",
+			},
+			{
+				"id": "tsk_blocked",
+				"title": "Blocked task",
+				"status": "blocked",
+				"release_id": "rel_first",
+				"release_title": "First release",
+			},
+		],
+		"limit": 4,
 		"offset": 0,
 		"has_more": True,
 	}
@@ -495,10 +525,11 @@ def test_human_task_list_renders_cli_style_rows_and_pagination_hint(
 		def __init__(self, database) -> None:
 			pass
 
-		def task_list(self, status, limit, offset):
+		def task_list(self, status, limit, offset, *, include_release_titles):
 			assert status is None
-			assert limit == 1
+			assert limit == 4
 			assert offset == 0
+			assert include_release_titles is True
 			return data
 
 	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
@@ -509,7 +540,7 @@ def test_human_task_list_renders_cli_style_rows_and_pagination_hint(
 				"task",
 				"list",
 				"--limit",
-				"1",
+				"4",
 				"--database",
 				str(tmp_path / "db"),
 			]
@@ -522,10 +553,152 @@ def test_human_task_list_renders_cli_style_rows_and_pagination_hint(
 	assert output.err == ""
 	assert output.out.startswith("\n")
 	assert output.out.endswith("\n\n")
-	assert "Tasks" in output.out
-	assert "Read surface" in output.out
-	assert "ready (tsk_test)" in output.out
-	assert "i Hint: More results: use --offset 1." in output.out
+	assert output.out.count("progress task get TASK_ID") == 1
+	assert output.out.count("progress task move TASK_ID --before/--after TASK_ID") == 1
+	assert "Title" in output.out
+	assert "Status" in output.out
+	assert "ID" in output.out
+	assert output.out.index("First release") < output.out.index("Ready task")
+	assert output.out.index("Ready task") < output.out.index("Blocked task")
+	assert output.out.index("Second release") < output.out.index("Done task")
+	assert "Unassigned" in output.out
+	assert "Unassigned task" in output.out
+	assert "! Blocked task" in output.out
+	assert "(tsk_ready)" in output.out
+	assert "(tsk_done)" in output.out
+	assert "i Hint: More results: use --offset 4." in output.out
+
+
+def test_task_list_hint_styles_embedded_commands(monkeypatch) -> None:
+	spans: list[tuple[str, str, str | None]] = []
+
+	def fake_span(value: str, tone: str = "info", weight: str | None = None) -> str:
+		spans.append((value, tone, weight))
+		return f"<{value}>"
+
+	monkeypatch.setattr(render_module, "render_span", fake_span)
+	monkeypatch.setattr(render_module, "render_hint", lambda message: message)
+
+	output = render_module._render_task_list({"items": [], "has_more": False})
+
+	assert output == (
+		"View a task with <progress task get TASK_ID>; reorder with "
+		"<progress task move TASK_ID --before/--after TASK_ID>."
+	)
+	assert spans == [
+		("progress task get TASK_ID", "info", "bold"),
+		(
+			"progress task move TASK_ID --before/--after TASK_ID",
+			"info",
+			"bold",
+		),
+	]
+
+
+def test_human_next_renders_done_chunk_with_success_status(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {
+		"project": {"id": "prj_test", "slug": "agents", "name": "Agents"},
+		"task": {"id": "tsk_test", "title": "Read surface", "status": "ready"},
+		"chunk": {
+			"id": "chk_test",
+			"title": "CLI output",
+			"description": "Render readable output.",
+			"status": "done",
+		},
+	}
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def next(self):
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert cli.main(["next", "--database", str(tmp_path / "db")]) == 0
+
+	output = capsys.readouterr()
+
+	assert "✓ Chunk status done" in output.out or "OK Chunk status done" in output.out
+
+
+@pytest.mark.parametrize(
+	("status", "result_type"),
+	[
+		("ready", "skipped"),
+		("in-progress", "info"),
+		("blocked", "failed"),
+		("needs-decision", "warning"),
+		("done", "success"),
+	],
+)
+def test_task_rows_use_distinct_cli_style_results(
+	status: str, result_type: str, monkeypatch
+) -> None:
+	monkeypatch.setattr(
+		render_module,
+		"render_status",
+		lambda rendered_type, label: f"{rendered_type}:{label}",
+	)
+	monkeypatch.setattr(
+		render_module,
+		"render_span",
+		lambda value, *args, **kwargs: value,
+	)
+
+	row = render_module._render_task_item(
+		{"id": "tsk_test", "title": "Task", "status": status}
+	)
+
+	assert _status_result_type(status) == result_type
+	assert row["status"] == f"{result_type}:{status}"
+	assert row["title"] == ("! Task" if status == "blocked" else "Task")
+	assert row["id"] == "(tsk_test)"
+
+
+def test_json_task_list_does_not_request_release_titles(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {
+		"items": [{"id": "tsk_test", "title": "Read surface", "status": "ready"}],
+		"limit": 50,
+		"offset": 0,
+		"has_more": False,
+	}
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_list(self, status, limit, offset, *, include_release_titles):
+			assert status is None
+			assert limit == 50
+			assert offset == 0
+			assert include_release_titles is False
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"list",
+				"--json",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+
+	assert capsys.readouterr().out == (
+		'{"ok":true,"data":{"items":[{"id":"tsk_test","title":"Read surface",'
+		'"status":"ready"}],"limit":50,"offset":0,"has_more":false}}\n'
+	)
 
 
 def test_human_release_list_keeps_trailing_blank_line(
