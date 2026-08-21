@@ -1,3 +1,4 @@
+import dataclasses
 import json
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import agents_progress.render as render_module
 import agents_progress.style as style_module
 from agents_progress import cli
 from agents_progress.errors import AlreadyExistsError, DuplicateDependencyError
+from agents_progress.models import Task
 from agents_progress.projects import Project, ProjectStore
 from agents_progress.render import _status_result_type
 from agents_progress.writes import WriteStore
@@ -852,15 +854,47 @@ def test_task_list_action_styles_embedded_commands(monkeypatch) -> None:
 			"task get",
 			{
 				"id": "tsk_test",
+				"project_id": "prj_test",
+				"slug": "test-task",
+				"release_id": "",
+				"title": "Test task",
 				"overview": "A task overview.",
 				"purpose": "A task purpose.",
 				"contract": "A task contract.",
+				"model_tier": "standard",
+				"files": "src/task.py",
+				"acceptance_criteria": "Task output is readable.",
+				"verification": "Run focused tests.",
+				"risks": "Low risk.",
 				"status": "ready",
+				"status_reason": None,
+				"position": 2,
+				"created_at": "2026-08-21T10:00:00+00:00",
+				"started_at": "2026-08-21T10:05:00+00:00",
+				"completed_at": "",
+				"updated_at": "2026-08-21T10:10:00+00:00",
 			},
 			[
+				{"label": "ID", "value": "tsk_test"},
+				{"label": "Slug", "value": "test-task"},
+				{"label": "Title", "value": "Test task"},
+				{"label": "Project ID", "value": "prj_test"},
 				{"label": "Overview", "value": "A task overview."},
 				{"label": "Purpose", "value": "A task purpose."},
 				{"label": "Contract", "value": "A task contract."},
+				{"label": "Model tier", "value": "standard"},
+				{"label": "Files", "value": "src/task.py"},
+				{
+					"label": "Acceptance criteria",
+					"value": "Task output is readable.",
+				},
+				{"label": "Verification", "value": "Run focused tests."},
+				{"label": "Risks", "value": "Low risk."},
+				{"label": "Status", "value": "ready"},
+				{"label": "Position", "value": "2"},
+				{"label": "Created at", "value": "2026-08-21T10:00:00+00:00"},
+				{"label": "Started at", "value": "2026-08-21T10:05:00+00:00"},
+				{"label": "Updated at", "value": "2026-08-21T10:10:00+00:00"},
 			],
 		),
 		(
@@ -892,6 +926,12 @@ def test_object_planning_fields_use_row_group(
 
 	assert "Grouped planning fields" in output
 	assert groups == [expected_rows]
+
+
+def test_task_get_field_order_matches_task_dataclass() -> None:
+	expected_fields = {field.name for field in dataclasses.fields(Task)}
+
+	assert set(render_module._TASK_GET_FIELD_ORDER) == expected_fields
 
 
 def test_human_next_renders_done_chunk_with_success_status(

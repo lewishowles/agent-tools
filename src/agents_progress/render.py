@@ -28,8 +28,34 @@ _STATUS_RESULT_TYPES = {
 # Keys whose values _render_object wraps at 72 columns via row_group, per command.
 _OBJECT_ROW_GROUP_FIELDS = {
 	"chunk get": {"description"},
-	"task get": {"contract", "overview", "purpose"},
 }
+
+# Commands whose row-grouped fields omit blank values.
+_DROP_BLANK_ROW_GROUPS = frozenset({"task get"})
+
+# Canonical field order for task get output.
+_TASK_GET_FIELD_ORDER = (
+	"id",
+	"slug",
+	"title",
+	"project_id",
+	"release_id",
+	"overview",
+	"purpose",
+	"contract",
+	"model_tier",
+	"files",
+	"acceptance_criteria",
+	"verification",
+	"risks",
+	"status",
+	"status_reason",
+	"position",
+	"created_at",
+	"started_at",
+	"completed_at",
+	"updated_at",
+)
 
 
 def render(command: str, data: object) -> str:
@@ -304,13 +330,25 @@ def _render_object(command: str, data: dict[str, object]) -> str:
 	"""Render one stable public object as labelled rows."""
 	lines = []
 	grouped_rows = []
-	row_group_fields = _OBJECT_ROW_GROUP_FIELDS.get(command, set())
-	for key, value in data.items():
+	row_group_fields = (
+		set(data)
+		if command in _DROP_BLANK_ROW_GROUPS
+		else _OBJECT_ROW_GROUP_FIELDS.get(command, set())
+	)
+	field_order = _TASK_GET_FIELD_ORDER if command in _DROP_BLANK_ROW_GROUPS else data
+	for key in field_order:
+		if key not in data:
+			continue
+
+		value = data[key]
 		if key in row_group_fields:
-			label = key.replace("_", " ").capitalize()
+			if command in _DROP_BLANK_ROW_GROUPS and (
+				value is None or (isinstance(value, str) and not value.strip())
+			):
+				continue
 			grouped_rows.append(
 				{
-					"label": label,
+					"label": _format_label(key),
 					"value": "" if value is None else str(value),
 				}
 			)
@@ -327,15 +365,21 @@ def _render_object(command: str, data: dict[str, object]) -> str:
 			lines.extend(_format_unblocked_tasks(value))
 			continue
 
-		label = key.replace("_", " ").capitalize()
-		if label == "Id" or label.endswith(" id"):
-			label = label[:-2] + "ID"
-		lines.append(f"{label}: {'' if value is None else value}")
+		lines.append(f"{_format_label(key)}: {'' if value is None else value}")
 
 	if grouped_rows:
 		lines.append(render_row_group(grouped_rows))
 
 	return "\n".join(lines) + "\n"
+
+
+def _format_label(key: str) -> str:
+	"""Title-case a snake_case data key, keeping an id suffix as ID rather than Id."""
+	label = key.replace("_", " ").capitalize()
+	if label == "Id" or label.endswith(" id"):
+		return label[:-2] + "ID"
+
+	return label
 
 
 def _format_demoted_task(value: object) -> str:
