@@ -301,9 +301,17 @@ _COMMAND_SPECS = (
 			),
 			_CommandSpec(
 				"move",
-				"move a task before or after another task",
+				"move a task within a queue or to a release",
 				arguments=(
 					_argument("task_id"),
+					_argument(
+						"--release",
+						dest="release_id",
+						nargs="?",
+						const="",
+						metavar="RELEASE_ID",
+						help="move to RELEASE_ID; use without a value for unassigned",
+					),
 					_argument("--before", help="move before TASK_ID"),
 					_argument("--after", help="move after TASK_ID"),
 				),
@@ -1005,13 +1013,17 @@ def _run_command(
 
 
 def _run_task_move(args: argparse.Namespace, database: Database) -> tuple[object, str]:
-	"""Run the relative task move command after validating its target flag."""
-	if (args.before is None) == (args.after is None):
-		raise CliUsageError("task move requires exactly one of --before or --after")
+	"""Run task move after validating relative and release target flags."""
+	if args.release_id is None:
+		if (args.before is None) == (args.after is None):
+			raise CliUsageError("task move requires exactly one of --before or --after")
+	elif args.before is not None and args.after is not None:
+		raise CliUsageError("task move accepts at most one of --before or --after")
 
 	return (
 		WriteStore(database).task_move(
 			args.task_id,
+			release_id=args.release_id,
 			before_task_id=args.before,
 			after_task_id=args.after,
 		),

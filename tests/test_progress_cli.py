@@ -431,6 +431,8 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 				"task",
 				"move",
 				"tsk_" + "t" * 22,
+				"--release",
+				"rel_" + "r" * 22,
 				"--before",
 				"tsk_" + "b" * 22,
 			],
@@ -588,6 +590,50 @@ def test_write_commands_dispatch_to_the_matching_store_method(
 	assert cli.main([*arguments, "--database", str(tmp_path / "db"), "--json"]) == 0
 
 	assert calls == [(store_name, method_name)]
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+@pytest.mark.parametrize("release_arguments", [["--release", ""], ["--release"]])
+def test_task_move_passes_empty_release_as_unassigned(
+	tmp_path: Path, monkeypatch, capsys, release_arguments: list[str]
+) -> None:
+	data = {"id": "tsk_test", "release_id": None, "position": 2}
+	arguments_seen: dict[str, object] = {}
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_move(self, task_id, **arguments):
+			arguments_seen["task_id"] = task_id
+			arguments_seen.update(arguments)
+			return data
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"move",
+				"tsk_" + "t" * 22,
+				*release_arguments,
+				"--after",
+				"tsk_" + "a" * 22,
+				"--database",
+				str(tmp_path / "db"),
+				"--json",
+			]
+		)
+		== 0
+	)
+
+	assert arguments_seen == {
+		"task_id": "tsk_" + "t" * 22,
+		"release_id": "",
+		"before_task_id": None,
+		"after_task_id": "tsk_" + "a" * 22,
+	}
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 

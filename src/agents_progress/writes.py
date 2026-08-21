@@ -541,27 +541,83 @@ class WriteStore(_StoreBase):
 		before_task_id: str | None = None,
 		after_task_id: str | None = None,
 		path: str | Path | None = None,
+		release_id: str | None = None,
 	) -> dict[str, object]:
-		"""Move a task before or after another task in the same queue."""
+		"""Move a task within its queue or reassign it to another queue."""
 		validate_object_id(task_id, TASK_PREFIX)
-		if (before_task_id is None) == (after_task_id is None):
-			raise InvalidTransitionError(
-				"task move requires exactly one of before_task_id or after_task_id",
-				{"task_id": task_id},
-			)
+		release_reassignment = release_id is not None
+		if release_reassignment:
+			release_id = release_id or None
+			if release_id is not None:
+				validate_object_id(release_id, RELEASE_PREFIX)
+			if before_task_id is not None and after_task_id is not None:
+				raise InvalidTransitionError(
+					"task move accepts at most one of before_task_id or after_task_id",
+					{"task_id": task_id},
+				)
+		else:
+			if (before_task_id is None) == (after_task_id is None):
+				raise InvalidTransitionError(
+					"task move requires exactly one of before_task_id or after_task_id",
+					{"task_id": task_id},
+				)
 
 		target_task_id = before_task_id or after_task_id
-		validate_object_id(target_task_id, TASK_PREFIX)
-		if target_task_id == task_id:
-			raise InvalidTransitionError(
-				"a task cannot move relative to itself", {"task_id": task_id}
-			)
+		if target_task_id is not None:
+			validate_object_id(target_task_id, TASK_PREFIX)
+			if target_task_id == task_id:
+				raise InvalidTransitionError(
+					"a task cannot move relative to itself", {"task_id": task_id}
+				)
 
 		project = self.current_project(path)
 		with self.database.transaction() as connection:
 			task = _task_row(connection, task_id, project.id)
 			if task is None:
 				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
+
+			if release_reassignment:
+				if release_id is not None:
+					release = connection.execute(
+						"SELECT 1 FROM releases WHERE id = ? AND project_id = ?",
+						(release_id, project.id),
+					).fetchone()
+					if release is None:
+						raise NotFoundError(
+							f"release {release_id} was not found", {"id": release_id}
+						)
+
+				if target_task_id is not None:
+					target = _task_row(connection, target_task_id, project.id)
+					if target is None:
+						raise NotFoundError(
+							f"task {target_task_id} was not found",
+							{"id": target_task_id},
+						)
+					if target["release_id"] != release_id:
+						raise InvalidTransitionError(
+							"target task must belong to the target release or unassigned queue",
+							{"task_id": task_id, "target_task_id": target_task_id},
+						)
+
+				task_position = _next_task_position(connection, project.id, release_id)
+				connection.execute(
+					"UPDATE tasks SET release_id = ?, position = ? WHERE id = ?",
+					(release_id, task_position, task_id),
+				)
+
+				if target_task_id is not None:
+					_reorder_task_queue(
+						connection,
+						project.id,
+						release_id,
+						task_id,
+						target_task_id,
+						before_task_id,
+						after_task_id,
+					)
+
+				return _task_dict(connection, task_id, project.id)
 
 			target = _task_row(connection, target_task_id, project.id)
 			if target is None:
@@ -575,36 +631,15 @@ class WriteStore(_StoreBase):
 					{"task_id": task_id, "target_task_id": target_task_id},
 				)
 
-			if task["release_id"] is None:
-				queue_filter = "release_id IS NULL"
-				queue_parameters = (project.id,)
-			else:
-				queue_filter = "release_id = ?"
-				queue_parameters = (project.id, task["release_id"])
-
-			queue_rows = connection.execute(
-				f"SELECT id, position FROM tasks WHERE project_id = ? AND {queue_filter} "
-				"ORDER BY position, id",
-				queue_parameters,
-			).fetchall()
-			ordered_ids = [row["id"] for row in queue_rows]
-			positions = {row["id"]: row["position"] for row in queue_rows}
-			ordered_ids.remove(task_id)
-			target_index = ordered_ids.index(target_task_id)
-			insert_index = (
-				target_index if before_task_id is not None else target_index + 1
+			_reorder_task_queue(
+				connection,
+				project.id,
+				task["release_id"],
+				task_id,
+				target_task_id,
+				before_task_id,
+				after_task_id,
 			)
-			ordered_ids.insert(insert_index, task_id)
-
-			first_position = min(positions.values(), default=1)
-			for index, ordered_id in enumerate(ordered_ids, start=first_position):
-				if positions[ordered_id] == index:
-					continue
-
-				connection.execute(
-					"UPDATE tasks SET position = ? WHERE id = ?",
-					(index, ordered_id),
-				)
 
 			return _task_dict(connection, task_id, project.id)
 
@@ -1444,6 +1479,46 @@ def _next_task_position(
 		position += 1
 
 	return position
+
+
+def _reorder_task_queue(
+	connection: sqlite3.Connection,
+	project_id: str,
+	release_id: str | None,
+	task_id: str,
+	target_task_id: str,
+	before_task_id: str | None,
+	after_task_id: str | None,
+) -> None:
+	"""Place one task before or after another task in the selected queue."""
+	if release_id is None:
+		queue_filter = "release_id IS NULL"
+		queue_parameters = (project_id,)
+	else:
+		queue_filter = "release_id = ?"
+		queue_parameters = (project_id, release_id)
+
+	queue_rows = connection.execute(
+		f"SELECT id, position FROM tasks WHERE project_id = ? AND {queue_filter} "
+		"ORDER BY position, id",
+		queue_parameters,
+	).fetchall()
+	ordered_ids = [row["id"] for row in queue_rows]
+	positions = {row["id"]: row["position"] for row in queue_rows}
+	ordered_ids.remove(task_id)
+	target_index = ordered_ids.index(target_task_id)
+	insert_index = target_index if before_task_id is not None else target_index + 1
+	ordered_ids.insert(insert_index, task_id)
+
+	first_position = min(positions.values(), default=1)
+	for index, ordered_id in enumerate(ordered_ids, start=first_position):
+		if positions[ordered_id] == index:
+			continue
+
+		connection.execute(
+			"UPDATE tasks SET position = ? WHERE id = ?",
+			(index, ordered_id),
+		)
 
 
 def _next_chunk_position(connection: sqlite3.Connection, task_id: str) -> int:

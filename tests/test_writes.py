@@ -11,6 +11,7 @@ from agents_progress.errors import (
 	DatabaseBusyError,
 	InvalidDependencyError,
 	InvalidTransitionError,
+	NotFoundError,
 	PendingChunksError,
 	ProgressError,
 	StillReferencedError,
@@ -274,6 +275,207 @@ def test_task_move_rejects_tasks_from_different_releases(tmp_path: Path) -> None
 
 	with pytest.raises(InvalidTransitionError, match="same release"):
 		store.task_move(first_task["id"], before_task_id=second_task["id"])
+
+
+def test_task_move_rehomes_and_unassigns_tasks_in_queue_order(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	source_release = store.release_add(
+		"source-release", "Source release", overview="Source release overview"
+	)
+	target_release = store.release_add(
+		"target-release", "Target release", overview="Target release overview"
+	)
+	source_first = _add_task(
+		store, "source-first", "Source first", release_id=source_release["id"]
+	)
+	source_second = _add_task(
+		store, "source-second", "Source second", release_id=source_release["id"]
+	)
+	target_first = _add_task(
+		store, "target-first", "Target first", release_id=target_release["id"]
+	)
+	target_second = _add_task(
+		store, "target-second", "Target second", release_id=target_release["id"]
+	)
+	unassigned_existing = _add_task(store, "unassigned-existing", "Unassigned existing")
+
+	moved = store.task_move(source_first["id"], release_id=target_release["id"])
+	ordered = ReadStore(store.database, _ProjectStore(store.database)).task_list()
+
+	assert moved["release_id"] == target_release["id"]
+	assert moved["position"] == 3
+	assert [
+		item["id"]
+		for item in ordered["items"]
+		if item["release_id"] == target_release["id"]
+	] == [target_first["id"], target_second["id"], source_first["id"]]
+
+	precisely_moved = store.task_move(
+		source_second["id"],
+		release_id=target_release["id"],
+		before_task_id=target_second["id"],
+	)
+	assert precisely_moved["position"] == 2
+	ordered = ReadStore(store.database, _ProjectStore(store.database)).task_list()
+
+	assert [
+		item["id"]
+		for item in ordered["items"]
+		if item["release_id"] == target_release["id"]
+	] == [
+		target_first["id"],
+		source_second["id"],
+		target_second["id"],
+		source_first["id"],
+	]
+
+	unassigned = store.task_move(source_first["id"], release_id="")
+	assert unassigned["release_id"] is None
+	assert unassigned["position"] == 2
+	ordered = ReadStore(store.database, _ProjectStore(store.database)).task_list()
+
+	assert [item["id"] for item in ordered["items"] if item["release_id"] is None] == [
+		unassigned_existing["id"],
+		source_first["id"],
+	]
+
+
+def test_task_move_reassigns_before_an_unassigned_task(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Release overview")
+	assigned = _add_task(store, "assigned", "Assigned", release_id=release["id"])
+	unassigned_first = _add_task(store, "unassigned-first", "Unassigned first")
+	unassigned_second = _add_task(store, "unassigned-second", "Unassigned second")
+
+	moved = store.task_move(
+		assigned["id"],
+		release_id="",
+		before_task_id=unassigned_second["id"],
+	)
+	ordered = ReadStore(store.database, _ProjectStore(store.database)).task_list()
+
+	assert moved["release_id"] is None
+	assert moved["position"] == 2
+	assert [item["id"] for item in ordered["items"] if item["release_id"] is None] == [
+		unassigned_first["id"],
+		assigned["id"],
+		unassigned_second["id"],
+	]
+
+
+def test_task_move_preserves_children_notes_and_dependencies(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	source_release = store.release_add(
+		"source-release", "Source release", overview="Source release overview"
+	)
+	target_release = store.release_add(
+		"target-release", "Target release", overview="Target release overview"
+	)
+	dependency = _add_task(store, "dependency", "Dependency")
+	task = _add_task(
+		store,
+		"task",
+		"Task",
+		release_id=source_release["id"],
+		depends_on=(dependency["id"],),
+	)
+	chunk = _add_chunk(store, task["id"], "Chunk")
+	discovery = store.discovery_add(task["id"], "Discovery")
+	decision = store.decision_add(task["id"], "Decision", supersedes_id=discovery["id"])
+
+	with store.database.connection() as connection:
+		children_before = {
+			"chunks": [
+				tuple(row)
+				for row in connection.execute(
+					"SELECT id, task_id, position, title, description, status "
+					"FROM chunks WHERE task_id = ?",
+					(task["id"],),
+				)
+			],
+			"notes": [
+				tuple(row)
+				for row in connection.execute(
+					"SELECT id, task_id, type, body, supersedes_id FROM notes "
+					"WHERE task_id = ? ORDER BY id",
+					(task["id"],),
+				)
+			],
+			"dependencies": [
+				tuple(row)
+				for row in connection.execute(
+					"SELECT task_id, depends_on_task_id FROM task_dependencies "
+					"WHERE task_id = ?",
+					(task["id"],),
+				)
+			],
+		}
+
+	moved = store.task_move(task["id"], release_id=target_release["id"])
+
+	assert moved["release_id"] == target_release["id"]
+	assert chunk["id"] in {row[0] for row in children_before["chunks"]}
+	assert discovery["id"] in {row[0] for row in children_before["notes"]}
+	assert decision["id"] in {row[0] for row in children_before["notes"]}
+	assert dependency["id"] == children_before["dependencies"][0][1]
+
+	with store.database.connection() as connection:
+		children_after = {
+			"chunks": [
+				tuple(row)
+				for row in connection.execute(
+					"SELECT id, task_id, position, title, description, status "
+					"FROM chunks WHERE task_id = ?",
+					(task["id"],),
+				)
+			],
+			"notes": [
+				tuple(row)
+				for row in connection.execute(
+					"SELECT id, task_id, type, body, supersedes_id FROM notes "
+					"WHERE task_id = ? ORDER BY id",
+					(task["id"],),
+				)
+			],
+			"dependencies": [
+				tuple(row)
+				for row in connection.execute(
+					"SELECT task_id, depends_on_task_id FROM task_dependencies "
+					"WHERE task_id = ?",
+					(task["id"],),
+				)
+			],
+		}
+
+	assert children_after == children_before
+
+
+def test_task_move_validates_release_and_position_target(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	source_release = store.release_add(
+		"source-release", "Source release", overview="Source release overview"
+	)
+	other_release = store.release_add(
+		"other-release", "Other release", overview="Other release overview"
+	)
+	task = _add_task(store, "task", "Task", release_id=source_release["id"])
+	target = _add_task(store, "target", "Target", release_id=other_release["id"])
+
+	with pytest.raises(NotFoundError, match="release rel_"):
+		store.task_move(task["id"], release_id="rel_" + "r" * 22)
+
+	with pytest.raises(InvalidTransitionError, match="target release"):
+		store.task_move(
+			task["id"],
+			release_id=source_release["id"],
+			before_task_id=target["id"],
+		)
 
 
 def test_chunk_defaults_use_the_next_free_position(tmp_path: Path) -> None:

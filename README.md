@@ -220,16 +220,35 @@ when it still has unresolved dependencies.
 
 ### `progress task move`
 
-Move a task within its release or unassigned queue:
+Move a task within its current release or unassigned queue:
 
 ```text
 progress task move <task_id> --before <task_id> [--json] [--database <path>]
 progress task move <task_id> --after <task_id> [--json] [--database <path>]
 ```
 
-Exactly one of `--before` or `--after` is required. The move changes task
-positions atomically, moving the selected task before or after the target and
-shifting each task between its old and new positions by one place.
+Exactly one of `--before` or `--after` is required when `--release` is not
+used. The move changes task positions atomically, moving the selected task
+before or after the target and shifting each task between its old and new
+positions by one place.
+
+Reassign a task to a release or the unassigned queue with the same command:
+
+```text
+progress task move <task_id> --release <release_id> [--before <task_id> | --after <task_id>] [--json] [--database <path>]
+progress task move <task_id> --release [--before <task_id> | --after <task_id>] [--json] [--database <path>]
+```
+
+- `--release <release_id>`: target release; `--release` without a value, or
+  `--release ""`, uses the unassigned queue
+- `--before <task_id>` or `--after <task_id>`: optional position within the
+  target release or unassigned queue; at most one may be provided when
+  `--release` is used
+
+When `--release` is used without a position target, the task is appended at
+the first unused positive position in the target queue. A position target must
+already belong to that release or the unassigned queue. The task's chunks,
+notes, and dependency edges stay attached to it.
 
 ### `progress task dependency add`
 
