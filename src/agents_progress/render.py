@@ -58,7 +58,6 @@ _TASK_GET_FIELD_ORDER = (
 	"overview",
 	"purpose",
 	"contract",
-	"model_tier",
 	"files",
 	"acceptance_criteria",
 	"verification",

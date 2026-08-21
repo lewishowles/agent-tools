@@ -26,7 +26,7 @@ _RELEASE_COLUMNS = "id, project_id, slug, title, overview, status, position"
 
 _TASK_COLUMNS = (
 	"id, project_id, slug, release_id, title, overview, purpose, contract, "
-	"model_tier, files, acceptance_criteria, verification, risks, status, "
+	"files, acceptance_criteria, verification, risks, status, "
 	"status_reason, position, created_at, started_at, completed_at, updated_at"
 )
 

@@ -264,7 +264,6 @@ class WriteStore(_StoreBase):
 		overview: str,
 		purpose: str = "",
 		contract: str = "",
-		model_tier: str | None = None,
 		files: str | None = None,
 		acceptance_criteria: str = "",
 		verification: str = "",
@@ -330,11 +329,11 @@ class WriteStore(_StoreBase):
 			try:
 				connection.execute(
 					"""
-					INSERT INTO tasks (
-						id, project_id, slug, release_id, title, overview, purpose, contract,
-						model_tier, files, acceptance_criteria, verification, risks, status,
-						status_reason, position, created_at, started_at, completed_at, updated_at
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+						INSERT INTO tasks (
+							id, project_id, slug, release_id, title, overview, purpose, contract,
+							files, acceptance_criteria, verification, risks, status,
+							status_reason, position, created_at, started_at, completed_at, updated_at
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 					""",
 					(
 						task_id,
@@ -345,7 +344,6 @@ class WriteStore(_StoreBase):
 						overview,
 						purpose,
 						contract,
-						model_tier,
 						files,
 						acceptance_criteria,
 						verification,
@@ -455,12 +453,10 @@ class WriteStore(_StoreBase):
 		overview: str | None = None,
 		purpose: str | None = None,
 		contract: str | None = None,
-		model_tier: str | None = None,
 		files: str | None = None,
 		acceptance_criteria: str | None = None,
 		verification: str | None = None,
 		risks: str | None = None,
-		clear_model_tier: bool = False,
 		clear_files: bool = False,
 		clear_acceptance_criteria: bool = False,
 		clear_verification: bool = False,
@@ -474,14 +470,12 @@ class WriteStore(_StoreBase):
 			"overview": overview,
 			"purpose": purpose,
 			"contract": contract,
-			"model_tier": model_tier,
 			"files": files,
 			"acceptance_criteria": acceptance_criteria,
 			"verification": verification,
 			"risks": risks,
 		}
 		clear_fields = {
-			"model_tier": clear_model_tier,
 			"files": clear_files,
 			"acceptance_criteria": clear_acceptance_criteria,
 			"verification": clear_verification,
@@ -518,7 +512,7 @@ class WriteStore(_StoreBase):
 				_require_text(value, required_text_labels[field])
 
 		project = self.current_project(path)
-		nullable_fields = {"model_tier", "files"}
+		nullable_fields = {"files"}
 		updates = []
 		parameters: list[object] = []
 		for field, value in values.items():

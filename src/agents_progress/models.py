@@ -36,7 +36,6 @@ class Task:
 	overview: str
 	purpose: str
 	contract: str
-	model_tier: str | None
 	files: str | None
 	acceptance_criteria: str
 	verification: str

@@ -58,9 +58,9 @@ def _seed_store(tmp_path: Path) -> ReadStore:
 			connection.execute(
 				"INSERT INTO tasks ("
 				"id, project_id, slug, release_id, title, overview, purpose, contract, "
-				"model_tier, files, acceptance_criteria, verification, risks, status, "
+				"files, acceptance_criteria, verification, risks, status, "
 				"status_reason, position, created_at, started_at, completed_at, updated_at"
-				") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				(
 					task_id,
 					PROJECT_ID,
@@ -70,7 +70,6 @@ def _seed_store(tmp_path: Path) -> ReadStore:
 					f"Overview for {slug}.",
 					f"Purpose for {slug}.",
 					f"Contract for {slug}.",
-					"sonnet",
 					None,
 					"Acceptance criteria.",
 					"Verification.",

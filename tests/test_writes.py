@@ -742,7 +742,6 @@ def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
 		overview="Original overview",
 		purpose="Original purpose",
 		contract="Original contract",
-		model_tier="sonnet",
 		files="original.py",
 		acceptance_criteria="Original criteria",
 		verification="Original verification",
@@ -754,7 +753,6 @@ def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
 	updated = store.task_edit(
 		task["id"],
 		overview="Updated overview",
-		clear_model_tier=True,
 		files="updated.py",
 	)
 
@@ -766,7 +764,6 @@ def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
 	assert updated["overview"] == "Updated overview"
 	assert updated["purpose"] == task["purpose"]
 	assert updated["contract"] == task["contract"]
-	assert updated["model_tier"] is None
 	assert updated["files"] == "updated.py"
 	assert updated["acceptance_criteria"] == task["acceptance_criteria"]
 	assert updated["verification"] == task["verification"]

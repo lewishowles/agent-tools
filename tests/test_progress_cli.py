@@ -83,7 +83,7 @@ def test_commands_json_lists_the_registry_with_required_flags(
 		"names": ["body"],
 		"required": True,
 	}
-	assert commands["task add"]["flags"][10] == {
+	assert commands["task add"]["flags"][9] == {
 		"names": ["--release", "--release-id"],
 		"required": False,
 	}
@@ -880,7 +880,6 @@ def test_task_list_action_styles_embedded_commands(monkeypatch) -> None:
 				"overview": "A task overview.",
 				"purpose": "A task purpose.",
 				"contract": "A task contract.",
-				"model_tier": "standard",
 				"files": "src/task.py",
 				"acceptance_criteria": "Task output is readable.",
 				"verification": "Run focused tests.",
@@ -901,7 +900,6 @@ def test_task_list_action_styles_embedded_commands(monkeypatch) -> None:
 				{"label": "Overview", "value": "A task overview."},
 				{"label": "Purpose", "value": "A task purpose."},
 				{"label": "Contract", "value": "A task contract."},
-				{"label": "Model tier", "value": "standard"},
 				{"label": "Files", "value": "src/task.py"},
 				{
 					"label": "Acceptance criteria",
@@ -959,7 +957,7 @@ def test_object_planning_fields_use_row_group(
 			for row in expected_rows
 		)
 
-		assert output == f"{expected_output}\n"
+		assert output == f"\n{expected_output}\n\n"
 		assert groups == [expected_rows]
 		assert divider_calls == [
 			{"divider_width": label_width + 2 + 72, "divider_colour": "border"}
@@ -1574,7 +1572,6 @@ def test_task_edit_dispatches_values_and_optional_clear_flags(
 				"tsk_test",
 				"--overview",
 				"Updated",
-				"--clear-model-tier",
 				"--database",
 				str(tmp_path / "db"),
 				"--json",
@@ -1588,12 +1585,10 @@ def test_task_edit_dispatches_values_and_optional_clear_flags(
 		"overview": "Updated",
 		"purpose": None,
 		"contract": None,
-		"model_tier": None,
 		"files": None,
 		"acceptance_criteria": None,
 		"verification": None,
 		"risks": None,
-		"clear_model_tier": True,
 		"clear_files": False,
 		"clear_acceptance_criteria": False,
 		"clear_verification": False,

@@ -56,7 +56,6 @@ def _create_schema(connection: sqlite3.Connection) -> None:
 			overview TEXT NOT NULL,
 			purpose TEXT NOT NULL,
 			contract TEXT NOT NULL,
-			model_tier TEXT,
 			files TEXT,
 			acceptance_criteria TEXT NOT NULL,
 			verification TEXT NOT NULL,

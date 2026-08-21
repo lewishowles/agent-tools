@@ -191,7 +191,7 @@ chunks, notes, and dependencies.
 Create a task:
 
 ```text
-progress task add --slug <slug> --title <title> --overview <overview> --purpose <purpose> --contract <contract> [--model-tier <model_tier>] [--files <files>] [--acceptance-criteria <acceptance_criteria>] [--verification <verification>] [--risks <risks>] [--release <release_id> | --release-id <release_id>] [--depends-on <task_id> | --dependency <task_id>] [--position <position>] [--json] [--database <path>]
+progress task add --slug <slug> --title <title> --overview <overview> --purpose <purpose> --contract <contract> [--files <files>] [--acceptance-criteria <acceptance_criteria>] [--verification <verification>] [--risks <risks>] [--release <release_id> | --release-id <release_id>] [--depends-on <task_id> | --dependency <task_id>] [--position <position>] [--json] [--database <path>]
 ```
 
 - `--slug <slug>`: stable slug stored on the task
@@ -199,7 +199,6 @@ progress task add --slug <slug> --title <title> --overview <overview> --purpose 
 - `--overview <overview>`: non-empty task summary
 - `--purpose <purpose>`: non-empty task purpose
 - `--contract <contract>`: non-empty task contract
-- `--model-tier <model_tier>`: optional model tier label; this is a freeform string
 - `--files <files>`: optional files covered by the task
 - `--acceptance-criteria <acceptance_criteria>`: optional completion conditions
 - `--verification <verification>`: optional verification instructions
@@ -278,7 +277,7 @@ progress task rename <task_id> --title <title> [--json] [--database <path>]
 Update task planning fields:
 
 ```text
-progress task edit <task_id> [--overview <overview>] [--purpose <purpose>] [--contract <contract>] [--model-tier <model_tier>] [--files <files>] [--acceptance-criteria <acceptance_criteria>] [--verification <verification>] [--risks <risks>] [--clear-model-tier] [--clear-files] [--clear-acceptance-criteria] [--clear-verification] [--clear-risks] [--json] [--database <path>]
+progress task edit <task_id> [--overview <overview>] [--purpose <purpose>] [--contract <contract>] [--files <files>] [--acceptance-criteria <acceptance_criteria>] [--verification <verification>] [--risks <risks>] [--clear-files] [--clear-acceptance-criteria] [--clear-verification] [--clear-risks] [--json] [--database <path>]
 ```
 
 `--overview`, `--purpose`, and `--contract` must contain text. These fields
@@ -559,10 +558,10 @@ Chunks:
 - First chunk [pending] (chk_KkjpMXgs5qkPeUsEuNDIDg)
 ```
 
-## Statuses, note types, and model tiers
+## Statuses and note types
 
-This table lists every legal literal for each status, note type, and model-tier
-field, and the command that sets or changes it.
+This table lists every legal literal for each status and note type, and the
+command that sets or changes it.
 
 | Field             | Literal          | Set or reached by                                                                                                                                                             |
 | ----------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -580,7 +579,6 @@ field, and the command that sets or changes it.
 | `chunk.status`    | `skipped`        | Schema-legal, but currently unreachable through any CLI command                                                                                                               |
 | `note.type`       | `discovery`      | `discovery add`; immutable after creation                                                                                                                                     |
 | `note.type`       | `decision`       | `decision add`; immutable after creation                                                                                                                                      |
-| `task.model_tier` | Any string       | Set only at creation with `task add --model-tier`; no rename or update command changes it. This field is freeform and has no enumerated values or CLI `--choices` restriction |
 
 The available transitions are:
 
