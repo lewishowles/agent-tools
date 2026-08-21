@@ -53,6 +53,13 @@ Every subcommand accepts these common options:
 Database path precedence is `--database`, then `AGENTS_PROGRESS_DATABASE`, then
 the default `~/.agents/progress.db`.
 
+Commands use a noun followed by a verb, such as `progress task list` or
+`progress release get <release_id>`. If you enter a verb on its own, use a
+legacy command name, or mistype a nested command, `progress` prints the valid
+complete commands to try. The old `progress current` and `progress ready`
+commands both point to `progress next`. With `--json`, the same suggestion is
+returned in the standard error envelope.
+
 ## Current work
 
 ### `progress next`

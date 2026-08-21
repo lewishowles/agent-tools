@@ -1,7 +1,9 @@
 """Command-line interface for progress read and write commands."""
 
 import argparse
+import difflib
 import json
+import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -21,6 +23,18 @@ _FRAMED_HUMAN_COMMANDS = {
 	"release list",
 	"task list",
 }
+
+# Top-level commands removed by prior releases, mapped to their direct replacement.
+_LEGACY_COMMAND_ALIASES = {
+	"current": "next",
+	"ready": "next",
+}
+
+# Matches argparse's raw "invalid choice" usage error to pull out the offending token.
+_INVALID_CHOICE_PATTERN = re.compile(
+	r"argument (?P<argument>[^:]+): invalid choice: "
+	r"(?P<quote>['\"])(?P<token>.*?)(?P=quote)"
+)
 
 
 class CliUsageError(Exception):
@@ -560,6 +574,124 @@ _COMMAND_SPECS = (
 )
 
 
+def _leaf_command_paths(
+	specs: tuple[_CommandSpec, ...], parent_path: tuple[str, ...] = ()
+) -> list[tuple[str, ...]]:
+	"""Return every complete command path in the command registry."""
+	paths = []
+
+	for spec in specs:
+		path = (*parent_path, spec.name)
+		if spec.children:
+			paths.extend(_leaf_command_paths(spec.children, path))
+		else:
+			paths.append(path)
+
+	return paths
+
+
+def _command_words(arguments: list[str]) -> list[str]:
+	"""Return command words from argv before the first command argument option."""
+	words = []
+	skip_next = False
+
+	for argument in arguments:
+		if skip_next:
+			skip_next = False
+			continue
+		if argument == "--database":
+			skip_next = True
+			continue
+		if argument == "--json":
+			continue
+		if argument.startswith("-"):
+			break
+
+		words.append(argument)
+
+	return words
+
+
+def _format_command_suggestions(
+	token: str, command_paths: list[tuple[str, ...]]
+) -> str:
+	"""Format copyable full command paths for a missing command noun."""
+	suggestions = "\n".join(
+		f"  progress {' '.join(command_path)}" for command_path in command_paths
+	)
+	return f"'{token}' is not a command on its own. Did you mean one of:\n{suggestions}"
+
+
+def _format_alias_suggestion(token: str, alias: str) -> str:
+	"""Format a direct replacement for a removed top-level command."""
+	return f"'{token}' was removed. Use progress {alias} instead."
+
+
+def _suggest_command_error(message: str, arguments: list[str]) -> str:
+	"""Suggest a complete progress command for an invalid subcommand choice."""
+	match = _INVALID_CHOICE_PATTERN.search(message)
+	if match is None:
+		return message
+
+	token = match.group("token")
+	words = _command_words(arguments)
+	try:
+		token_index = words.index(token)
+	except ValueError:
+		token_index = 0
+
+	parent_path = tuple(words[:token_index])
+	all_paths = _leaf_command_paths(_COMMAND_SPECS)
+	scoped_paths = [
+		command_path
+		for command_path in all_paths
+		if command_path[: len(parent_path)] == parent_path
+	]
+
+	if match.group("argument") == "COMMAND":
+		alias = _LEGACY_COMMAND_ALIASES.get(token)
+		if alias is not None:
+			return _format_alias_suggestion(token, alias)
+
+	exact_paths = [
+		command_path for command_path in scoped_paths if command_path[-1] == token
+	]
+	if exact_paths:
+		return _format_command_suggestions(token, exact_paths)
+
+	comparison_values = [token]
+	command_input = " ".join(words)
+	if command_input != token:
+		comparison_values.append(command_input)
+
+	candidate_paths = scoped_paths if parent_path else all_paths
+	path_by_candidate: dict[str, list[tuple[str, ...]]] = {}
+	for command_path in candidate_paths:
+		for candidate in (command_path[-1], " ".join(command_path)):
+			path_by_candidate.setdefault(candidate, []).append(command_path)
+
+	fuzzy_paths = []
+	for comparison_value in comparison_values:
+		matches = difflib.get_close_matches(
+			comparison_value,
+			list(path_by_candidate),
+			n=3,
+			cutoff=0.75,
+		)
+		for candidate in matches:
+			for command_path in path_by_candidate[candidate]:
+				if command_path not in fuzzy_paths:
+					fuzzy_paths.append(command_path)
+
+	if fuzzy_paths:
+		return _format_command_suggestions(token, fuzzy_paths)
+
+	if parent_path and scoped_paths:
+		return _format_command_suggestions(token, scoped_paths)
+
+	return message
+
+
 def _manifest_argument_is_required(argument: _ArgumentSpec) -> bool:
 	"""Return whether an argument is required: positionals are required unless their nargs allows an empty value, flags only when explicitly marked."""
 	if argument.names[0].startswith("-"):
@@ -649,7 +781,7 @@ def main(argv: list[str] | None = None) -> int:
 	except CliUsageError as error:
 		return _write_error(
 			"usage",
-			str(error),
+			_suggest_command_error(str(error), arguments),
 			{},
 			json_mode,
 			status=2,

@@ -51,6 +51,153 @@ def test_missing_noun_subcommand_lists_valid_choices(
 	)
 
 
+@pytest.mark.parametrize(
+	("arguments", "token", "expected_suggestions", "expected_message"),
+	[
+		(
+			["list"],
+			"list",
+			[
+				"progress release list",
+				"progress task list",
+				"progress chunk list",
+				"progress discovery list",
+				"progress decision list",
+			],
+			None,
+		),
+		(
+			["add"],
+			"add",
+			[
+				"progress release add",
+				"progress task add",
+				"progress task dependency add",
+				"progress chunk add",
+				"progress discovery add",
+				"progress decision add",
+			],
+			None,
+		),
+		(
+			["get"],
+			"get",
+			[
+				"progress release get",
+				"progress task get",
+				"progress chunk get",
+				"progress context get",
+			],
+			None,
+		),
+		(
+			["current"],
+			"current",
+			[],
+			"'current' was removed. Use progress next instead.",
+		),
+		(["ready"], "ready", [], "'ready' was removed. Use progress next instead."),
+		(
+			["task", "foo"],
+			"foo",
+			[
+				"progress task add",
+				"progress task move",
+				"progress task dependency add",
+				"progress task dependency remove",
+				"progress task remove",
+				"progress task rename",
+				"progress task edit",
+				"progress task start",
+				"progress task complete",
+				"progress task block",
+				"progress task unblock",
+				"progress task get",
+				"progress task list",
+			],
+			None,
+		),
+		(["taks", "list"], "taks", ["progress task list"], None),
+		(["zzz"], "zzz", [], None),
+	],
+)
+def test_unknown_commands_explain_the_correct_command_shape(
+	capsys,
+	arguments: list[str],
+	token: str,
+	expected_suggestions: list[str],
+	expected_message: str | None,
+) -> None:
+	assert cli.main(arguments) == 2
+
+	output = capsys.readouterr()
+
+	assert output.out == ""
+	if expected_message is not None:
+		assert output.err == f"Error: {expected_message}\n"
+	elif expected_suggestions:
+		expected_lines = "\n".join(
+			f"  {suggestion}" for suggestion in expected_suggestions
+		)
+		assert output.err == (
+			f"Error: '{token}' is not a command on its own. Did you mean one of:\n"
+			f"{expected_lines}\n"
+		)
+	else:
+		assert f"invalid choice: '{token}'" in output.err
+		assert "(choose from" in output.err
+		assert "Did you mean one of:" not in output.err
+
+
+@pytest.mark.parametrize("command", ["current", "ready"])
+def test_legacy_command_json_uses_the_same_replacement(capsys, command: str) -> None:
+	assert cli.main([command]) == 2
+
+	human_output = capsys.readouterr()
+
+	assert cli.main([command, "--json"]) == 2
+
+	json_output = capsys.readouterr()
+	response = json.loads(json_output.out)
+
+	assert json_output.err == ""
+	assert response == {
+		"ok": False,
+		"error": {
+			"code": "usage",
+			"message": human_output.err.removeprefix("Error: ").rstrip("\n"),
+			"details": {},
+		},
+	}
+	assert response["error"]["message"] == (
+		f"'{command}' was removed. Use progress next instead."
+	)
+
+
+def test_unknown_command_json_uses_the_same_multiline_suggestion(capsys) -> None:
+	assert cli.main(["list"]) == 2
+
+	human_output = capsys.readouterr()
+
+	assert cli.main(["list", "--json"]) == 2
+
+	json_output = capsys.readouterr()
+	response = json.loads(json_output.out)
+
+	assert json_output.err == ""
+	assert response == {
+		"ok": False,
+		"error": {
+			"code": "usage",
+			"message": human_output.err.removeprefix("Error: ").rstrip("\n"),
+			"details": {},
+		},
+	}
+	assert (
+		"Did you mean one of:\n  progress release list" in response["error"]["message"]
+	)
+
+
 def test_top_level_help_uses_a_short_usage_placeholder() -> None:
 	help_text = cli.build_parser().format_help()
 	usage_line = help_text.splitlines()[0]
