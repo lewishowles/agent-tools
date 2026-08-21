@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from agents_progress._cli_style import (
 	CliStyleNotFoundError,
+	divider as render_divider,
 	hint as render_hint,
 	render as render_generic,
 	row as render_row,
@@ -20,6 +21,9 @@ _PLAIN_RESULT_MARKERS = {
 	"success": "OK",
 	"warning": "!",
 }
+
+# Divider width used when no width is given, for plain-text output.
+_PLAIN_DIVIDER_WIDTH = 40
 
 
 def _render_or_plain(
@@ -145,6 +149,31 @@ def row(label: str, value: str, result: str = "") -> str:
 	return _render_or_plain(
 		lambda: render_row(label, value, result),
 		lambda: _plain_row(label, value, result),
+	)
+
+
+def _plain_divider(label: str, divider_width: int | None) -> str:
+	"""Render a horizontal divider without ANSI styling."""
+	width = divider_width if divider_width is not None else _PLAIN_DIVIDER_WIDTH
+	line = "-" * max(width, 0)
+	return f"{label} {line}" if label else line
+
+
+def divider(
+	label: str = "",
+	divider_width: int | None = None,
+	divider_colour: str | None = None,
+	label_colour: str | None = None,
+) -> str:
+	"""Render a divider using cli-style or plain text."""
+	return _render_or_plain(
+		lambda: render_divider(
+			label,
+			divider_width,
+			divider_colour,
+			label_colour,
+		),
+		lambda: _plain_divider(label, divider_width),
 	)
 
 

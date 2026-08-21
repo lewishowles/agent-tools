@@ -571,6 +571,25 @@ def test_row_group_requests_72_column_wrap(monkeypatch) -> None:
 	assert calls == [("row-group", {"rows": rows, "wrapWidth": 72})]
 
 
+def test_divider_passes_border_colour_to_cli_style(monkeypatch) -> None:
+	calls: list[tuple[str, int | None, str | None, str | None]] = []
+
+	def fake_divider(
+		label: str,
+		divider_width: int | None,
+		divider_colour: str | None,
+		label_colour: str | None,
+	) -> str:
+		calls.append((label, divider_width, divider_colour, label_colour))
+		return "divider"
+
+	monkeypatch.setattr(style_module, "render_divider", fake_divider)
+
+	assert style_module.divider(divider_width=72, divider_colour="border") == "divider"
+
+	assert calls == [("", 72, "border", None)]
+
+
 def test_human_task_list_groups_rows_and_renders_hints(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -915,17 +934,109 @@ def test_object_planning_fields_use_row_group(
 	monkeypatch,
 ) -> None:
 	groups: list[list[dict[str, str]]] = []
+	divider_calls: list[dict[str, object]] = []
 
 	def fake_row_group(rows: list[dict[str, str]]) -> str:
 		groups.append(rows)
-		return "Grouped planning fields"
+		label_width = max(len(row["label"]) for row in rows)
+		return "\n".join(
+			f"{row['label'].ljust(label_width)}  {row['value']}" for row in rows
+		)
+
+	def fake_divider(**kwargs: object) -> str:
+		divider_calls.append(kwargs)
+		return "Muted divider"
 
 	monkeypatch.setattr(render_module, "render_row_group", fake_row_group)
+	monkeypatch.setattr(render_module, "render_divider", fake_divider)
 
 	output = render_module.render(command, data)
 
-	assert "Grouped planning fields" in output
-	assert groups == [expected_rows]
+	if command == "task get":
+		label_width = max(len(row["label"]) for row in expected_rows)
+		expected_output = "\nMuted divider\n".join(
+			f"{row['label'].ljust(label_width)}  {row['value']}"
+			for row in expected_rows
+		)
+
+		assert output == f"{expected_output}\n"
+		assert groups == [expected_rows]
+		assert divider_calls == [
+			{"divider_width": label_width + 2 + 72, "divider_colour": "border"}
+		]
+	else:
+		assert "Description  A chunk description." in output
+		assert groups == [expected_rows]
+		assert divider_calls == []
+
+
+@pytest.mark.parametrize(
+	("rendered_rows", "rows", "expected_message"),
+	[
+		(
+			"Unexpected output",
+			[{"label": "ID", "value": "tsk_test"}],
+			"cli-style row-group output did not start with a row label",
+		),
+		(
+			"ID     tsk_test",
+			[
+				{"label": "ID", "value": "tsk_test"},
+				{"label": "Status", "value": "ready"},
+			],
+			"cli-style row-group output did not contain every row",
+		),
+	],
+)
+def test_split_task_get_row_group_rejects_invalid_cli_style_output(
+	rendered_rows: str,
+	rows: list[dict[str, str]],
+	expected_message: str,
+) -> None:
+	with pytest.raises(ValueError, match=expected_message):
+		render_module._split_task_get_row_group(
+			rendered_rows,
+			rows,
+			label_width=6,
+		)
+
+
+def test_task_get_row_group_keeps_wrapped_values_with_one_divider_call(
+	monkeypatch,
+) -> None:
+	rows = [
+		{"label": "ID", "value": "tsk_test"},
+		{"label": "Overview", "value": "A wrapped overview."},
+		{"label": "Status", "value": "ready"},
+	]
+	divider_calls: list[dict[str, object]] = []
+
+	def fake_row_group(rows: list[dict[str, str]]) -> str:
+		return "\n".join(
+			[
+				"ID        tsk_test",
+				"Overview  A wrapped",
+				"          overview.",
+				"Status    ready",
+			]
+		)
+
+	def fake_divider(**kwargs: object) -> str:
+		divider_calls.append(kwargs)
+		return "Muted divider"
+
+	monkeypatch.setattr(render_module, "render_row_group", fake_row_group)
+	monkeypatch.setattr(render_module, "render_divider", fake_divider)
+
+	assert render_module._render_task_get_row_group(rows) == (
+		"ID        tsk_test\n"
+		"Muted divider\n"
+		"Overview  A wrapped\n"
+		"          overview.\n"
+		"Muted divider\n"
+		"Status    ready"
+	)
+	assert divider_calls == [{"divider_width": 82, "divider_colour": "border"}]
 
 
 def test_task_get_field_order_matches_task_dataclass() -> None:

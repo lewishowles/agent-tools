@@ -1,6 +1,9 @@
 """Human-readable rendering for progress read responses."""
 
+import re
+
 from .style import (
+	divider as render_divider,
 	hint as render_hint,
 	labelled_line as render_labelled_line,
 	row as render_row,
@@ -8,6 +11,18 @@ from .style import (
 	span as render_span,
 	status as render_status,
 	table as render_table,
+)
+
+
+# Column width task get wraps each field row and its divider to.
+_TASK_GET_ROW_WRAP_WIDTH = 72
+
+# cli-style rows place two spaces between the label and value columns.
+_TASK_GET_ROW_SEPARATOR_WIDTH = 2
+
+# Match ANSI control sequences so row labels can be found in styled output.
+_ANSI_ESCAPE_PATTERN = re.compile(
+	r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))"
 )
 
 
@@ -368,9 +383,68 @@ def _render_object(command: str, data: dict[str, object]) -> str:
 		lines.append(f"{_format_label(key)}: {'' if value is None else value}")
 
 	if grouped_rows:
-		lines.append(render_row_group(grouped_rows))
+		if command == "task get":
+			lines.append(_render_task_get_row_group(grouped_rows))
+		else:
+			lines.append(render_row_group(grouped_rows))
+
+	if command == "task get":
+		return "\n" + "\n".join(lines) + "\n\n"
 
 	return "\n".join(lines) + "\n"
+
+
+def _render_task_get_row_group(rows: list[dict[str, str]]) -> str:
+	"""Render task fields as aligned rows separated by border-coloured dividers."""
+	label_width = max(len(row["label"]) for row in rows)
+	rendered_rows = render_row_group(rows)
+	row_divider = render_divider(
+		divider_width=(
+			label_width + _TASK_GET_ROW_SEPARATOR_WIDTH + _TASK_GET_ROW_WRAP_WIDTH
+		),
+		divider_colour="border",
+	)
+	row_blocks = _split_task_get_row_group(rendered_rows, rows, label_width)
+	return f"\n{row_divider}\n".join(row_blocks)
+
+
+def _split_task_get_row_group(
+	rendered_rows: str,
+	rows: list[dict[str, str]],
+	label_width: int,
+) -> list[str]:
+	"""Split one styled row group while keeping wrapped value lines with their row."""
+	rendered_lines = rendered_rows.splitlines()
+	row_labels = [row["label"].ljust(label_width) for row in rows]
+	row_blocks = []
+	current_block = []
+	next_label_index = 0
+
+	for line in rendered_lines:
+		plain_line = _ANSI_ESCAPE_PATTERN.sub("", line)
+		if next_label_index < len(row_labels) and plain_line.startswith(
+			row_labels[next_label_index]
+		):
+			if current_block:
+				row_blocks.append("\n".join(current_block))
+			current_block = [line]
+			next_label_index += 1
+			continue
+
+		if not current_block:
+			raise ValueError(
+				"cli-style row-group output did not start with a row label"
+			)
+
+		current_block.append(line)
+
+	if current_block:
+		row_blocks.append("\n".join(current_block))
+
+	if len(row_blocks) != len(rows):
+		raise ValueError("cli-style row-group output did not contain every row")
+
+	return row_blocks
 
 
 def _format_label(key: str) -> str:
