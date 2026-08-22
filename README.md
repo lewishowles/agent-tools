@@ -218,6 +218,12 @@ progress task add --slug <slug> --title <title> --overview <overview> --purpose 
 The new task is `ready` when its dependencies allow it to start, or `blocked`
 when it still has unresolved dependencies.
 
+Running `progress task add` at a real terminal without every required flag
+prompts for whatever is missing, field by field, instead of raising the usual
+missing-argument error. Already-supplied flags are skipped; optional fields
+can be left blank by pressing Enter. Piped or non-interactive stdin (scripts,
+CI, agents) always gets the missing-argument error instead of a prompt.
+
 ### `progress task move`
 
 Move a task within its current release or unassigned queue:
@@ -430,6 +436,9 @@ progress chunk add --task <task_id> --title <title> --description <description> 
 - `--description <description>`: non-empty chunk description
 - `--position <position>`: optional ordering position; when omitted, the chunk
   uses the first unused positive position in its task
+
+Running `progress chunk add` at a real terminal without every required flag
+prompts for whatever is missing, the same way `progress task add` does.
 
 ### `progress chunk move`
 

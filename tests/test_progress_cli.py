@@ -600,6 +600,254 @@ def test_write_commands_dispatch_to_the_matching_store_method(
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 
+def test_task_add_prompts_for_required_and_optional_arguments(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {"id": "tsk_test"}
+	arguments_seen: dict[str, object] = {}
+	prompt_values = iter(
+		[
+			"task-slug",
+			"Task title",
+			"Task overview",
+			"Task purpose",
+			"Task contract",
+			"",
+			"",
+			"",
+			"",
+			"",
+			"",
+			"",
+		]
+	)
+	prompts: list[str] = []
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_add(self, **arguments):
+			arguments_seen.update(arguments)
+			return data
+
+	def fake_input(prompt: str) -> str:
+		prompts.append(prompt)
+		return next(prompt_values)
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+	monkeypatch.setattr(cli, "render", lambda command, data: "")
+	monkeypatch.setattr("builtins.input", fake_input)
+	monkeypatch.setattr(
+		cli.sys,
+		"stdin",
+		type("_InteractiveStdin", (), {"isatty": lambda self: True})(),
+	)
+
+	assert cli.main(["task", "add", "--database", str(tmp_path / "db")]) == 0
+
+	assert arguments_seen == {
+		"slug": "task-slug",
+		"title": "Task title",
+		"overview": "Task overview",
+		"purpose": "Task purpose",
+		"contract": "Task contract",
+		"files": None,
+		"acceptance_criteria": "",
+		"verification": "",
+		"risks": "",
+		"release_id": None,
+		"depends_on": [],
+		"position": None,
+	}
+	assert [prompt.split(" ", 1)[0] for prompt in prompts] == [
+		"--slug",
+		"--title",
+		"--overview",
+		"--purpose",
+		"--contract",
+		"--files",
+		"--acceptance-criteria",
+		"--verification",
+		"--risks",
+		"--release/--release-id",
+		"--depends-on/--dependency",
+		"--position",
+	]
+	assert all("press Enter to skip" in prompt for prompt in prompts[5:])
+	assert capsys.readouterr().err == ""
+
+
+def test_chunk_add_prompts_for_required_and_optional_arguments(
+	tmp_path: Path, monkeypatch
+) -> None:
+	data = {"id": "chk_test", "task_id": "tsk_test"}
+	arguments_seen: dict[str, object] = {}
+	prompt_values = iter(["tsk_test", "Chunk title", "Chunk description", ""])
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def chunk_add(self, **arguments):
+			arguments_seen.update(arguments)
+			return data
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+	monkeypatch.setattr(cli, "render", lambda command, data: "")
+	monkeypatch.setattr("builtins.input", lambda prompt: next(prompt_values))
+	monkeypatch.setattr(
+		cli.sys,
+		"stdin",
+		type("_InteractiveStdin", (), {"isatty": lambda self: True})(),
+	)
+
+	assert cli.main(["chunk", "add", "--database", str(tmp_path / "db")]) == 0
+
+	assert arguments_seen == {
+		"task_id": "tsk_test",
+		"title": "Chunk title",
+		"description": "Chunk description",
+		"position": None,
+	}
+
+
+@pytest.mark.parametrize("help_flag", ["--help", "-h"])
+def test_add_help_does_not_prompt_for_missing_required_arguments(
+	help_flag: str, capsys, monkeypatch
+) -> None:
+	monkeypatch.setattr(
+		cli.sys,
+		"stdin",
+		type("_InteractiveStdin", (), {"isatty": lambda self: True})(),
+	)
+	monkeypatch.setattr(
+		"builtins.input",
+		lambda prompt: pytest.fail("help must not start the add prompt"),
+	)
+
+	with pytest.raises(SystemExit) as error:
+		cli.main(["task", "add", help_flag])
+
+	assert error.value.code == 0
+	output = capsys.readouterr()
+	assert output.err == ""
+	assert "usage: progress task add" in output.out
+	assert "--slug" in output.out
+
+
+def test_add_prompt_skips_arguments_already_supplied(
+	tmp_path: Path, monkeypatch
+) -> None:
+	data = {"id": "tsk_test"}
+	prompts: list[str] = []
+	prompt_values = iter(
+		["Task title", "Task overview", "Task purpose", "Task contract", *([""] * 7)]
+	)
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_add(self, **arguments):
+			return data
+
+	def fake_input(prompt: str) -> str:
+		prompts.append(prompt)
+		return next(prompt_values)
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+	monkeypatch.setattr(cli, "render", lambda command, data: "")
+	monkeypatch.setattr("builtins.input", fake_input)
+	monkeypatch.setattr(
+		cli.sys,
+		"stdin",
+		type("_InteractiveStdin", (), {"isatty": lambda self: True})(),
+	)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"add",
+				"--slug",
+				"supplied-slug",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+
+	assert prompts[0].startswith("--title ")
+	assert all(not prompt.startswith("--slug ") for prompt in prompts)
+
+
+def test_missing_add_arguments_keep_argparse_error_on_non_tty_stdin(
+	capsys, monkeypatch
+) -> None:
+	monkeypatch.setattr(
+		cli.sys,
+		"stdin",
+		type("_NonInteractiveStdin", (), {"isatty": lambda self: False})(),
+	)
+
+	assert cli.main(["chunk", "add"]) == 2
+
+	output = capsys.readouterr()
+	assert output.out == ""
+	assert output.err == (
+		"Error: the following arguments are required: --task, --title, --description\n"
+	)
+
+
+def test_json_mode_keeps_missing_add_arguments_non_interactive(
+	capsys, monkeypatch
+) -> None:
+	monkeypatch.setattr(
+		cli.sys,
+		"stdin",
+		type("_InteractiveStdin", (), {"isatty": lambda self: True})(),
+	)
+	monkeypatch.setattr(
+		"builtins.input",
+		lambda prompt: pytest.fail("JSON mode must not prompt"),
+	)
+
+	assert cli.main(["task", "add", "--json"]) == 2
+
+	response = json.loads(capsys.readouterr().out)
+	assert response == {
+		"ok": False,
+		"error": {
+			"code": "usage",
+			"message": (
+				"the following arguments are required: "
+				"--slug, --title, --overview, --purpose, --contract"
+			),
+			"details": {},
+		},
+	}
+
+
+def test_other_add_commands_do_not_prompt(capsys, monkeypatch) -> None:
+	monkeypatch.setattr(
+		cli.sys,
+		"stdin",
+		type("_InteractiveStdin", (), {"isatty": lambda self: True})(),
+	)
+	monkeypatch.setattr(
+		"builtins.input",
+		lambda prompt: pytest.fail("release add must not prompt"),
+	)
+
+	assert cli.main(["release", "add"]) == 2
+
+	assert capsys.readouterr().err == (
+		"Error: the following arguments are required: --slug, --title, --overview\n"
+	)
+
+
 def test_task_clean_passes_force_to_the_write_store(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:

@@ -58,6 +58,16 @@ class _ArgumentSpec:
 
 
 @dataclass(frozen=True)
+class _PromptArgument:
+	"""One argparse flag the interactive add prompt can ask for, paired with its prompt hint."""
+
+	names: tuple[str, ...]
+	hint: str
+	required: bool = False
+	repeatable: bool = False
+
+
+@dataclass(frozen=True)
 class _CommandSpec:
 	"""Describe one command parser and any nested command parsers."""
 
@@ -625,6 +635,122 @@ def _command_words(arguments: list[str]) -> list[str]:
 	return words
 
 
+# Fields `task add` prompts for, in the same order as its parser flags.
+_TASK_ADD_PROMPT_ARGUMENTS = (
+	_PromptArgument(("--slug",), "stable slug stored on the task", required=True),
+	_PromptArgument(("--title",), "display title", required=True),
+	_PromptArgument(("--overview",), "non-empty task summary", required=True),
+	_PromptArgument(("--purpose",), "non-empty task purpose", required=True),
+	_PromptArgument(("--contract",), "non-empty task contract", required=True),
+	_PromptArgument(("--files",), "optional files covered by the task"),
+	_PromptArgument(("--acceptance-criteria",), "optional completion conditions"),
+	_PromptArgument(("--verification",), "optional verification instructions"),
+	_PromptArgument(("--risks",), "optional risks"),
+	_PromptArgument(("--release", "--release-id"), "associate the task with a release"),
+	_PromptArgument(
+		("--depends-on", "--dependency"),
+		"task ID dependency",
+		repeatable=True,
+	),
+	_PromptArgument(("--position",), "optional ordering position"),
+)
+
+# Fields `chunk add` prompts for, in the same order as its parser flags.
+_CHUNK_ADD_PROMPT_ARGUMENTS = (
+	_PromptArgument(("--task",), "task ID that owns the chunk", required=True),
+	_PromptArgument(("--title",), "display title", required=True),
+	_PromptArgument(("--description",), "non-empty chunk description", required=True),
+	_PromptArgument(("--position",), "optional ordering position"),
+)
+
+# Looks up a command's prompt fields by its first two argv words.
+_PROMPT_ARGUMENTS_BY_COMMAND = {
+	("task", "add"): _TASK_ADD_PROMPT_ARGUMENTS,
+	("chunk", "add"): _CHUNK_ADD_PROMPT_ARGUMENTS,
+}
+
+
+def _prompt_arguments_for_command(
+	arguments: list[str],
+) -> tuple[_PromptArgument, ...]:
+	"""Look up the prompt fields for a command, or an empty tuple outside task/chunk add."""
+	command = tuple(_command_words(arguments)[:2])
+	return _PROMPT_ARGUMENTS_BY_COMMAND.get(command, ())
+
+
+def _argument_is_present(arguments: list[str], names: tuple[str, ...]) -> bool:
+	"""Check whether argv already supplies one of an argument's flag names."""
+	return any(
+		argument == name or argument.startswith(f"{name}=")
+		for argument in arguments
+		for name in names
+	)
+
+
+def _prompt_value(argument: _PromptArgument, *, repeatable_value: bool = False) -> str:
+	"""Ask for one field's value, showing its hint and, for optional fields, how to skip it."""
+	names = "/".join(argument.names)
+	optional_hint = ""
+	if not argument.required:
+		optional_hint = (
+			"; press Enter when finished"
+			if repeatable_value
+			else "; press Enter to skip"
+		)
+
+	try:
+		return input(f"{names} ({argument.hint}{optional_hint}): ")
+	except EOFError:
+		# A closed stdin mid-prompt reads as a blank answer, so required-field
+		# validation reports it instead of the prompt crashing.
+		return ""
+
+
+def _should_prompt_add_arguments(arguments: list[str]) -> bool:
+	"""Decide whether to prompt: task/chunk add, not help or --json, missing a required flag, real terminal."""
+	if "-h" in arguments or "--help" in arguments:
+		return False
+
+	prompt_arguments = _prompt_arguments_for_command(arguments)
+	if not prompt_arguments or "--json" in arguments:
+		return False
+
+	if not any(
+		argument.required and not _argument_is_present(arguments, argument.names)
+		for argument in prompt_arguments
+	):
+		return False
+
+	return sys.stdin.isatty()
+
+
+def _prompt_add_arguments(arguments: list[str]) -> list[str]:
+	"""Prompt for each missing field and append the answers to argv, so parsing and validation run unchanged."""
+	prompt_arguments = _prompt_arguments_for_command(arguments)
+	prompted_arguments = list(arguments)
+
+	for argument in prompt_arguments:
+		if _argument_is_present(prompted_arguments, argument.names):
+			continue
+
+		if argument.required:
+			prompted_arguments.extend((argument.names[0], _prompt_value(argument)))
+			continue
+
+		has_value = False
+		while True:
+			value = _prompt_value(argument, repeatable_value=has_value)
+			if not value:
+				break
+
+			prompted_arguments.extend((argument.names[0], value))
+			has_value = True
+			if not argument.repeatable:
+				break
+
+	return prompted_arguments
+
+
 def _format_command_suggestions(
 	token: str, command_paths: list[tuple[str, ...]]
 ) -> str:
@@ -783,6 +909,9 @@ def main(argv: list[str] | None = None) -> int:
 
 	try:
 		parser = build_parser()
+		if _should_prompt_add_arguments(arguments):
+			arguments = _prompt_add_arguments(arguments)
+
 		args = parser.parse_args(arguments)
 		json_mode = bool(getattr(args, "json", json_mode))
 
