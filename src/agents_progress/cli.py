@@ -345,6 +345,11 @@ _COMMAND_SPECS = (
 				arguments=(_argument("task_id"),),
 			),
 			_CommandSpec(
+				"clean",
+				"remove done tasks and now-empty releases",
+				arguments=(_argument("--force", action="store_true"),),
+			),
+			_CommandSpec(
 				"rename",
 				"rename a task",
 				arguments=(_argument("task_id"), _argument("--title", required=True)),
@@ -891,6 +896,10 @@ def _run_command(
 		("task", "remove"): lambda: (
 			WriteStore(database).task_remove(args.task_id),
 			"task remove",
+		),
+		("task", "clean"): lambda: (
+			WriteStore(database).task_clean(force=args.force),
+			"task clean",
 		),
 		("task", "rename"): lambda: (
 			WriteStore(database).task_rename(args.task_id, args.title),

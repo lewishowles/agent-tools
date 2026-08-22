@@ -288,6 +288,36 @@ The error names every blocking child ID. The operation is atomic, and deletion
 never cascades to chunks, notes, or dependency edges. Remove every child row,
 note, and dependency edge explicitly before retrying.
 
+### `progress task clean`
+
+Remove completed tasks that have no notes or dependency edges:
+
+```text
+progress task clean [--json] [--database <path>]
+```
+
+Tasks with discovery or decision notes, or with dependency edges, are kept
+untouched. The human-readable result reports the removed and kept task counts,
+each kept task's title and ID, the notes and dependency edges that kept it, and
+any release that became empty because its tasks were removed. Dependency
+details include the other task's title and ID and whether the task depends on
+it or is required by it.
+
+Use `--force` only when those notes and dependency edges can be deleted:
+
+```text
+progress task clean --force [--json] [--database <path>]
+```
+
+The forced pass removes the currently blocked completed tasks, their notes,
+dependency edges, and chunks before removing any releases left with no tasks.
+An empty release that was not affected by this command is not removed.
+
+If a note on a task outside the blocked set supersedes a note being force
+deleted, the whole `--force` pass aborts with a "still referenced" error and
+nothing is deleted. This is rare and fails safely: resolve it by removing or
+reassigning the superseding note first, then rerun `--force`.
+
 ### `progress task rename`
 
 Change a task title:
@@ -589,22 +619,22 @@ Chunks:
 This table lists every legal literal for each status and note type, and the
 command that sets or changes it.
 
-| Field             | Literal          | Set or reached by                                                                                                                                                             |
-| ----------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `release.status`  | `planned`        | `release add --status planned`                                                                                                                                                |
-| `release.status`  | `active`         | `release add --status active`                                                                                                                                                 |
-| `release.status`  | `done`           | `release add --status done`, or `release complete` from `planned` or `active`                                                                                                 |
-| `task.status`     | `ready`          | `task add` when dependencies allow work, or `task unblock`                                                                                                                    |
-| `task.status`     | `in-progress`    | `task start`                                                                                                                                                                  |
-| `task.status`     | `blocked`        | `task add` when dependencies block work, `task dependency add` when an unfinished dependency is added to a ready task, or `task block` without `--needs-decision`             |
-| `task.status`     | `needs-decision` | `task block --needs-decision`                                                                                                                                                 |
-| `task.status`     | `done`           | `task complete`                                                                                                                                                               |
-| `chunk.status`    | `pending`        | `chunk add`, `chunk start`/`task block`/`task start` demoting an active chunk to pending                                                                                       |
-| `chunk.status`    | `active`         | `task start`, `chunk start`, or `chunk complete` activating the next pending chunk                                                                                             |
-| `chunk.status`    | `done`           | `chunk complete`                                                                                                                                                              |
-| `chunk.status`    | `skipped`        | Schema-legal, but currently unreachable through any CLI command                                                                                                               |
-| `note.type`       | `discovery`      | `discovery add`; immutable after creation                                                                                                                                     |
-| `note.type`       | `decision`       | `decision add`; immutable after creation                                                                                                                                      |
+| Field            | Literal          | Set or reached by                                                                                                                                                 |
+| ---------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `release.status` | `planned`        | `release add --status planned`                                                                                                                                    |
+| `release.status` | `active`         | `release add --status active`                                                                                                                                     |
+| `release.status` | `done`           | `release add --status done`, or `release complete` from `planned` or `active`                                                                                     |
+| `task.status`    | `ready`          | `task add` when dependencies allow work, or `task unblock`                                                                                                        |
+| `task.status`    | `in-progress`    | `task start`                                                                                                                                                      |
+| `task.status`    | `blocked`        | `task add` when dependencies block work, `task dependency add` when an unfinished dependency is added to a ready task, or `task block` without `--needs-decision` |
+| `task.status`    | `needs-decision` | `task block --needs-decision`                                                                                                                                     |
+| `task.status`    | `done`           | `task complete`                                                                                                                                                   |
+| `chunk.status`   | `pending`        | `chunk add`, `chunk start`/`task block`/`task start` demoting an active chunk to pending                                                                          |
+| `chunk.status`   | `active`         | `task start`, `chunk start`, or `chunk complete` activating the next pending chunk                                                                                |
+| `chunk.status`   | `done`           | `chunk complete`                                                                                                                                                  |
+| `chunk.status`   | `skipped`        | Schema-legal, but currently unreachable through any CLI command                                                                                                   |
+| `note.type`      | `discovery`      | `discovery add`; immutable after creation                                                                                                                         |
+| `note.type`      | `decision`       | `decision add`; immutable after creation                                                                                                                          |
 
 The available transitions are:
 

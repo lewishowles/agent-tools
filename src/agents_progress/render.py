@@ -48,6 +48,18 @@ _OBJECT_ROW_GROUP_FIELDS = {
 # Commands whose row-grouped fields omit blank values.
 _DROP_BLANK_ROW_GROUPS = frozenset({"task get"})
 
+# Explains why a non-force clean pass leaves task history in place.
+_TASK_CLEAN_KEPT_HINT = (
+	"Tasks with notes or dependencies are kept to avoid removing potentially "
+	"relevant notes. Use --force to override."
+)
+
+# Maps dependency directions from the write-store response to display labels.
+_TASK_CLEAN_DEPENDENCY_LABELS = {
+	"depends_on": "Depends on:",
+	"required_by": "Required by:",
+}
+
 # Canonical field order for task get output.
 _TASK_GET_FIELD_ORDER = (
 	"id",
@@ -80,6 +92,8 @@ def render(command: str, data: object) -> str:
 		return _render_next(data)
 	if command == "doctor":
 		return _render_doctor(data)
+	if command == "task clean":
+		return _render_task_clean(data)
 	if isinstance(data, dict) and "items" in data:
 		return _render_list(command, data)
 	if isinstance(data, dict):
@@ -148,6 +162,152 @@ def _render_doctor(data: object) -> str:
 			lines.append(f"- {field}: {name} ({finding.get('id', '')})")
 
 	return "\n".join(lines) + "\n"
+
+
+def _render_task_clean(data: object) -> str:
+	"""Render task-clean counts and the tasks kept for explicit review."""
+	if not isinstance(data, dict):
+		return str(data)
+
+	removed_count = data.get("removed_count", 0)
+	if not isinstance(removed_count, int):
+		removed_count = 0
+
+	kept = data.get("blocked", [])
+	kept_tasks = (
+		[task for task in kept if isinstance(task, dict)]
+		if isinstance(kept, list)
+		else []
+	)
+	releases_removed = data.get("releases_removed", [])
+	kept_count = len(kept_tasks)
+	blocks = [
+		render_span(
+			f"{_count_label(removed_count, 'task', 'tasks')} removed",
+			"success",
+			weight="normal",
+		),
+		render_span(
+			f"{_count_label(kept_count, 'task', 'tasks')} kept",
+			"warning" if kept_count else "muted",
+			weight="normal",
+		),
+		"",
+	]
+	if kept_tasks:
+		blocks.extend(
+			[
+				f"{_render_task_clean_label('Hint')}  {_TASK_CLEAN_KEPT_HINT}",
+				"",
+			]
+		)
+		for index, task in enumerate(kept_tasks):
+			if index:
+				blocks.append("")
+			blocks.extend(_render_task_clean_task(task))
+		blocks.append("")
+
+	releases_count = len(releases_removed) if isinstance(releases_removed, list) else 0
+	blocks.append(
+		render_span(
+			f"{_count_label(releases_count, 'release', 'releases')} removed",
+			"muted",
+			weight="normal",
+		)
+	)
+	if isinstance(releases_removed, list):
+		for release in releases_removed:
+			if isinstance(release, dict):
+				blocks.append(
+					f"{_render_task_clean_label('Removed release')}  "
+					f"{release.get('title', '')} ({release.get('id', '')})"
+				)
+
+	return "\n".join(blocks) + "\n"
+
+
+def _count_label(count: int, singular: str, plural: str) -> str:
+	"""Return a count with its singular or plural label."""
+	return f"{count} {singular if count == 1 else plural}"
+
+
+def _render_task_clean_label(label: str) -> str:
+	"""Render a task-clean label in the muted tone."""
+	return render_span(label, "muted", weight="normal")
+
+
+def _render_task_clean_task(task: dict[str, object]) -> list[str]:
+	"""Render one kept task and the history that kept it."""
+	notes = task.get("notes", [])
+	note_records = (
+		[note for note in notes if isinstance(note, dict)]
+		if isinstance(notes, list)
+		else []
+	)
+	dependencies = task.get("dependencies", [])
+	dependency_records = (
+		[dependency for dependency in dependencies if isinstance(dependency, dict)]
+		if isinstance(dependencies, list)
+		else []
+	)
+	reasons = []
+	note_counts = {}
+	for note in note_records:
+		note_type = str(note.get("type", ""))
+		note_counts[note_type] = note_counts.get(note_type, 0) + 1
+	for note_type in ("discovery", "decision"):
+		if note_counts.get(note_type):
+			reasons.append(
+				_count_label(
+					note_counts[note_type],
+					f"{note_type} note",
+					f"{note_type} notes",
+				)
+			)
+	if dependency_records:
+		reasons.append(
+			_count_label(len(dependency_records), "dependency", "dependencies")
+		)
+
+	label_width = len("Kept task")
+	kept_task_label = _render_task_clean_label("Kept task".ljust(label_width))
+	reason_label = _render_task_clean_label("Reason".ljust(label_width))
+	blocks = [
+		f"{kept_task_label}  {task.get('title', '')} ({task.get('id', '')})",
+		f"{reason_label}  {', '.join(reasons)}",
+		"",
+	]
+
+	for index, note in enumerate(note_records):
+		if index:
+			blocks.append("")
+		note_type = str(note.get("type", "")).capitalize()
+		blocks.extend(
+			[
+				_render_task_clean_label(f"{note_type} note"),
+				str(note.get("body", "")),
+			]
+		)
+
+	if dependency_records:
+		blocks.extend(["", _render_task_clean_label("Dependency")])
+		blocks.extend(
+			_render_task_clean_dependency(dependency)
+			for dependency in dependency_records
+		)
+
+	return blocks
+
+
+def _render_task_clean_dependency(dependency: dict[str, object]) -> str:
+	"""Render one dependency using its resolved direction and endpoint details."""
+	direction = str(dependency.get("direction", ""))
+	label = _TASK_CLEAN_DEPENDENCY_LABELS.get(direction, "Dependency:")
+	return (
+		f"{_render_task_clean_label(label)} "
+		f"{dependency.get('other_task_title', '')} "
+		f"({dependency.get('other_task_id', '')})"
+	)
 
 
 def _render_next(data: object) -> str:

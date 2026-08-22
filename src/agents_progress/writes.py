@@ -427,6 +427,107 @@ class WriteStore(_StoreBase):
 
 		return {"id": task_id}
 
+	def task_clean(
+		self,
+		force: bool = False,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""Remove done tasks that are safe to clear, or the current blocked set with force."""
+		project = self.current_project(path)
+
+		with self.database.transaction() as connection:
+			candidates = []
+			for task in connection.execute(
+				"""
+				SELECT id, release_id, title
+				FROM tasks
+				WHERE project_id = ? AND status = 'done'
+				ORDER BY position, id
+				""",
+				(project.id,),
+			).fetchall():
+				notes = _task_notes(connection, task["id"], project.id)
+				dependencies = _task_dependency_edges(connection, task["id"])
+				candidates.append(
+					{
+						"task": task,
+						"notes": notes,
+						"dependencies": dependencies,
+					}
+				)
+
+			blocking_candidates = []
+			clean_candidates = []
+			for candidate in candidates:
+				if candidate["notes"] or candidate["dependencies"]:
+					blocking_candidates.append(candidate)
+				else:
+					clean_candidates.append(candidate)
+
+			blocked = [
+				_clean_blocked_task(candidate) for candidate in blocking_candidates
+			]
+			targets = blocking_candidates if force else clean_candidates
+			task_ids = [candidate["task"]["id"] for candidate in targets]
+
+			if force:
+				for task_id in task_ids:
+					connection.execute(
+						"DELETE FROM task_dependencies WHERE task_id = ? OR depends_on_task_id = ?",
+						(task_id, task_id),
+					)
+
+				_delete_task_notes(
+					connection,
+					[note for candidate in targets for note in candidate["notes"]],
+				)
+
+			for task_id in task_ids:
+				connection.execute("DELETE FROM chunks WHERE task_id = ?", (task_id,))
+
+			removed = [
+				{"id": candidate["task"]["id"], "title": candidate["task"]["title"]}
+				for candidate in targets
+			]
+			release_ids = sorted(
+				{
+					candidate["task"]["release_id"]
+					for candidate in targets
+					if candidate["task"]["release_id"] is not None
+				}
+			)
+
+			for task_id in task_ids:
+				connection.execute(
+					"DELETE FROM tasks WHERE id = ? AND project_id = ?",
+					(task_id, project.id),
+				)
+
+			releases_removed = []
+			for release_id in release_ids:
+				release = connection.execute(
+					"SELECT id, title FROM releases WHERE id = ? AND project_id = ?",
+					(release_id, project.id),
+				).fetchone()
+				remaining_task = connection.execute(
+					"SELECT 1 FROM tasks WHERE release_id = ? LIMIT 1",
+					(release_id,),
+				).fetchone()
+				if release is None or remaining_task is not None:
+					continue
+
+				connection.execute("DELETE FROM releases WHERE id = ?", (release_id,))
+				releases_removed.append(
+					{"id": release["id"], "title": release["title"]}
+				)
+
+		return {
+			"removed_count": len(removed),
+			"removed": removed,
+			"blocked": [] if force else blocked,
+			"releases_removed": releases_removed,
+		}
+
 	def task_rename(
 		self,
 		task_id: str,
@@ -1355,6 +1456,108 @@ class WriteStore(_StoreBase):
 			).fetchone()
 
 		return Context.from_row(row).to_dict()
+
+
+def _task_notes(
+	connection: sqlite3.Connection,
+	task_id: str,
+	project_id: str,
+) -> list[sqlite3.Row]:
+	"""Return one task's notes in creation order for clean inspection."""
+	return connection.execute(
+		f"""
+		SELECT {_NOTE_COLUMNS}
+		FROM notes
+		WHERE project_id = ? AND task_id = ?
+		ORDER BY created_at, id
+		""",
+		(project_id, task_id),
+	).fetchall()
+
+
+def _task_dependency_edges(
+	connection: sqlite3.Connection,
+	task_id: str,
+) -> list[dict[str, str]]:
+	"""Return every dependency edge where a task is either endpoint."""
+	return [
+		{
+			"task_id": row["task_id"],
+			"depends_on_task_id": row["depends_on_task_id"],
+			"other_task_id": (
+				row["depends_on_task_id"]
+				if row["task_id"] == task_id
+				else row["task_id"]
+			),
+			"other_task_title": (
+				row["depends_on_task_title"]
+				if row["task_id"] == task_id
+				else row["task_title"]
+			),
+			"direction": ("depends_on" if row["task_id"] == task_id else "required_by"),
+		}
+		for row in connection.execute(
+			"""
+			SELECT
+				task_dependencies.task_id,
+				task_dependencies.depends_on_task_id,
+				dependent_task.title AS task_title,
+				dependency_task.title AS depends_on_task_title
+			FROM task_dependencies
+			JOIN tasks AS dependent_task
+				ON dependent_task.id = task_dependencies.task_id
+			JOIN tasks AS dependency_task
+				ON dependency_task.id = task_dependencies.depends_on_task_id
+			WHERE task_dependencies.task_id = ?
+				OR task_dependencies.depends_on_task_id = ?
+			ORDER BY task_dependencies.task_id, task_dependencies.depends_on_task_id
+			""",
+			(task_id, task_id),
+		).fetchall()
+	]
+
+
+def _clean_blocked_task(candidate: dict[str, object]) -> dict[str, object]:
+	"""Build the public blocked-task record before any forced deletion."""
+	task = candidate["task"]
+	return {
+		"id": task["id"],
+		"title": task["title"],
+		"notes": [
+			{"type": note["type"], "body": note["body"]} for note in candidate["notes"]
+		],
+		"dependencies": candidate["dependencies"],
+	}
+
+
+def _delete_task_notes(
+	connection: sqlite3.Connection, notes: list[sqlite3.Row]
+) -> None:
+	"""Delete selected notes from leaves upward without breaking supersession links."""
+	pending = {note["id"]: note for note in notes}
+	while pending:
+		pending_ids = tuple(pending)
+		placeholders = ", ".join("?" for _ in pending_ids)
+		superseding_rows = connection.execute(
+			f"SELECT id, supersedes_id FROM notes WHERE supersedes_id IN ({placeholders})",
+			pending_ids,
+		).fetchall()
+		superseded_ids = {row["supersedes_id"] for row in superseding_rows}
+		leaves = [note for note in pending.values() if note["id"] not in superseded_ids]
+		if not leaves:
+			_raise_if_referenced(
+				"note",
+				next(iter(pending)),
+				{"notes": [row["id"] for row in superseding_rows]},
+			)
+
+		for note_type in ("discovery", "decision"):
+			for note in leaves:
+				if note["type"] != note_type:
+					continue
+
+				connection.execute("DELETE FROM notes WHERE id = ?", (note["id"],))
+				pending.pop(note["id"])
 
 
 def _unblock_task(

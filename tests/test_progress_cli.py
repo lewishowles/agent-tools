@@ -30,7 +30,7 @@ def test_bare_invocation_prints_help_and_succeeds(capsys) -> None:
 		("release", "{add,list,get,remove,rename,edit,complete}"),
 		(
 			"task",
-			"{add,move,dependency,remove,rename,edit,start,complete,block,unblock,get,list}",
+			"{add,move,dependency,remove,clean,rename,edit,start,complete,block,unblock,get,list}",
 		),
 		("chunk", "{add,move,start,complete,remove,rename,edit,get,list}"),
 		("discovery", "{add,list,remove}"),
@@ -106,6 +106,7 @@ def test_missing_noun_subcommand_lists_valid_choices(
 				"progress task dependency add",
 				"progress task dependency remove",
 				"progress task remove",
+				"progress task clean",
 				"progress task rename",
 				"progress task edit",
 				"progress task start",
@@ -223,6 +224,11 @@ def test_commands_json_lists_the_registry_with_required_flags(
 	assert commands["task dependency add"]["flags"] == [
 		{"names": ["task_id"], "required": True},
 		{"names": ["depends_on_task_id"], "required": True},
+		{"names": ["--json"], "required": False},
+		{"names": ["--database"], "required": False},
+	]
+	assert commands["task clean"]["flags"] == [
+		{"names": ["--force"], "required": False},
 		{"names": ["--json"], "required": False},
 		{"names": ["--database"], "required": False},
 	]
@@ -468,6 +474,7 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 		),
 		(["release", "complete", "rel_" + "r" * 22], "release_complete", "write"),
 		(["task", "remove", "tsk_" + "t" * 22], "task_remove", "write"),
+		(["task", "clean"], "task_clean", "write"),
 		(
 			["task", "rename", "tsk_" + "t" * 22, "--title", "Renamed task"],
 			"task_rename",
@@ -590,6 +597,40 @@ def test_write_commands_dispatch_to_the_matching_store_method(
 	assert cli.main([*arguments, "--database", str(tmp_path / "db"), "--json"]) == 0
 
 	assert calls == [(store_name, method_name)]
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+def test_task_clean_passes_force_to_the_write_store(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {"removed_count": 0, "removed": [], "blocked": [], "releases_removed": []}
+	arguments_seen: dict[str, object] = {}
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_clean(self, *, force):
+			arguments_seen["force"] = force
+			return data
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"clean",
+				"--force",
+				"--database",
+				str(tmp_path / "db"),
+				"--json",
+			]
+		)
+		== 0
+	)
+
+	assert arguments_seen == {"force": True}
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 
@@ -1264,6 +1305,163 @@ def test_human_next_renders_done_chunk_with_success_status(
 	output = capsys.readouterr()
 
 	assert "✓ Chunk status done" in output.out or "OK Chunk status done" in output.out
+
+
+def test_human_task_clean_renders_counts_and_kept_task_details() -> None:
+	data = {
+		"removed_count": 2,
+		"removed": [
+			{"id": "tsk_removed", "title": "Old completed task"},
+			{"id": "tsk_removed_two", "title": "Another completed task"},
+		],
+		"blocked": [
+			{
+				"id": "tsk_kept",
+				"title": "Task with history",
+				"notes": [
+					{"type": "discovery", "body": "Keep this discovery."},
+					{"type": "decision", "body": "Keep this decision."},
+				],
+				"dependencies": [
+					{
+						"task_id": "tsk_kept",
+						"depends_on_task_id": "tsk_dependency",
+						"other_task_id": "tsk_dependency",
+						"other_task_title": "Dependency task",
+						"direction": "depends_on",
+					},
+					{
+						"task_id": "tsk_required",
+						"depends_on_task_id": "tsk_kept",
+						"other_task_id": "tsk_required",
+						"other_task_title": "Dependent task",
+						"direction": "required_by",
+					},
+				],
+			},
+			{
+				"id": "tsk_kept_two",
+				"title": "Second kept task",
+				"notes": [],
+				"dependencies": [
+					{
+						"task_id": "tsk_kept_two",
+						"depends_on_task_id": "tsk_dependency_two",
+						"other_task_id": "tsk_dependency_two",
+						"other_task_title": "Second dependency",
+						"direction": "depends_on",
+					}
+				],
+			},
+		],
+		"releases_removed": [{"id": "rel_removed", "title": "Old release"}],
+	}
+
+	output = render_module.render("task clean", data)
+
+	assert "2 tasks removed" in output
+	assert "2 tasks kept" in output
+	assert "Old completed task (tsk_removed)" not in output
+	assert "Hint  Tasks with notes or dependencies are kept" in output
+	assert "Kept task  Task with history (tsk_kept)" in output
+	assert "Reason     1 discovery note, 1 decision note, 2 dependencies" in output
+	assert "Discovery note\nKeep this discovery." in output
+	assert "Decision note\nKeep this decision." in output
+	assert "Dependency\nDepends on: Dependency task (tsk_dependency)" in output
+	assert "Required by: Dependent task (tsk_required)" in output
+	second_task_start = output.index("Second kept task (tsk_kept_two)")
+	first_task_end = output.index("Second kept task", output.index("Task with history"))
+	assert "\n\n" in output[output.index("Task with history") : first_task_end]
+	assert "Reason     1 dependency" in output[second_task_start:]
+	assert (
+		"Dependency\nDepends on: Second dependency (tsk_dependency_two)"
+		in output[second_task_start:]
+	)
+	assert "1 release removed" in output
+	assert "Removed release  Old release (rel_removed)" in output
+	assert "Blocked" not in output
+
+
+def test_human_task_clean_always_shows_zero_counts() -> None:
+	output = render_module.render(
+		"task clean",
+		{"removed_count": 0, "removed": [], "blocked": [], "releases_removed": []},
+	)
+
+	assert "0 tasks removed" in output
+	assert "0 tasks kept" in output
+	assert "0 releases removed" in output
+	assert "Hint" not in output
+
+
+def test_human_task_clean_uses_summary_colours_and_muted_labels(monkeypatch) -> None:
+	calls = []
+
+	def fake_span(value: str, tone: str = "info", weight: str | None = None) -> str:
+		calls.append((value, tone, weight))
+		return value
+
+	monkeypatch.setattr(render_module, "render_span", fake_span)
+
+	render_module.render(
+		"task clean",
+		{
+			"removed_count": 1,
+			"removed": [],
+			"blocked": [
+				{
+					"id": "tsk_kept",
+					"title": "Kept task",
+					"notes": [{"type": "discovery", "body": "Note."}],
+					"dependencies": [
+						{
+							"other_task_id": "tsk_other",
+							"other_task_title": "Other task",
+							"direction": "depends_on",
+						}
+					],
+				}
+			],
+			"releases_removed": [],
+		},
+	)
+
+	assert calls[0] == ("1 task removed", "success", "normal")
+	assert calls[1] == ("1 task kept", "warning", "normal")
+	assert all(tone == "muted" for _, tone, _ in calls[2:])
+	assert all(tone not in {"failed", "info"} for _, tone, _ in calls)
+
+
+def test_human_task_clean_separates_kept_task_blocks() -> None:
+	data = {
+		"removed_count": 0,
+		"removed": [],
+		"blocked": [
+			{
+				"id": "tsk_one",
+				"title": "First task",
+				"notes": [{"type": "discovery", "body": "First note."}],
+				"dependencies": [],
+			},
+			{
+				"id": "tsk_two",
+				"title": "Second task",
+				"notes": [{"type": "decision", "body": "Second note."}],
+				"dependencies": [],
+			},
+		],
+		"releases_removed": [],
+	}
+
+	output = render_module.render("task clean", data)
+	first_task_start = output.index("First task")
+	second_task_start = output.index("Second task")
+
+	assert "\n\n" in output[first_task_start:second_task_start]
+	assert "  discovery note" not in output
+	assert "  decision note" not in output
+	assert "x " not in output
+	assert "× " not in output
 
 
 @pytest.mark.parametrize(

@@ -909,6 +909,151 @@ def test_remove_childless_rows_and_dependency_edges(tmp_path: Path) -> None:
 			)
 
 
+def test_task_clean_removes_safe_done_tasks_and_reports_blockers(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	empty_release = store.release_add(
+		"empty", "Empty release", overview="Empty release overview"
+	)
+	clean_release = store.release_add(
+		"clean", "Clean release", overview="Clean release overview"
+	)
+	mixed_release = store.release_add(
+		"mixed", "Mixed release", overview="Mixed release overview"
+	)
+	blocked_release = store.release_add(
+		"blocked", "Blocked release", overview="Blocked release overview"
+	)
+
+	clean_task = _add_task(store, "clean", "Clean task", release_id=clean_release["id"])
+	clean_chunk = _add_chunk(store, clean_task["id"], "Clean chunk")
+	store.task_start(clean_task["id"])
+	store.chunk_complete(clean_chunk["id"])
+	store.task_complete(clean_task["id"])
+
+	mixed_task = _add_task(store, "mixed", "Mixed task", release_id=mixed_release["id"])
+	store.task_start(mixed_task["id"])
+	store.task_complete(mixed_task["id"])
+	_add_task(store, "remaining", "Remaining task", release_id=mixed_release["id"])
+
+	dependency = _add_task(
+		store, "dependency", "Dependency", release_id=blocked_release["id"]
+	)
+	blocked_task = _add_task(
+		store,
+		"blocked",
+		"Blocked task",
+		release_id=blocked_release["id"],
+		depends_on=[dependency["id"]],
+	)
+	discovery = store.discovery_add(blocked_task["id"], "Keep this discovery.")
+	store.decision_add(
+		blocked_task["id"],
+		"Keep this decision.",
+		supersedes_id=discovery["id"],
+	)
+	store.task_start(dependency["id"])
+	store.task_complete(dependency["id"])
+	store.task_start(blocked_task["id"])
+	store.task_complete(blocked_task["id"])
+
+	result = store.task_clean()
+	blocked_by_id = {task["id"]: task for task in result["blocked"]}
+
+	assert result["removed_count"] == 2
+	assert {task["id"] for task in result["removed"]} == {
+		clean_task["id"],
+		mixed_task["id"],
+	}
+	assert blocked_by_id[blocked_task["id"]]["notes"] == [
+		{"type": "discovery", "body": "Keep this discovery."},
+		{"type": "decision", "body": "Keep this decision."},
+	]
+	assert blocked_by_id[blocked_task["id"]]["dependencies"] == [
+		{
+			"task_id": blocked_task["id"],
+			"depends_on_task_id": dependency["id"],
+			"other_task_id": dependency["id"],
+			"other_task_title": "Dependency",
+			"direction": "depends_on",
+		}
+	]
+	assert blocked_by_id[dependency["id"]]["dependencies"] == [
+		{
+			"task_id": blocked_task["id"],
+			"depends_on_task_id": dependency["id"],
+			"other_task_id": blocked_task["id"],
+			"other_task_title": "Blocked task",
+			"direction": "required_by",
+		}
+	]
+	assert result["releases_removed"] == [
+		{"id": clean_release["id"], "title": "Clean release"}
+	]
+
+	read_store = ReadStore(store.database, _ProjectStore(store.database))
+	with pytest.raises(NotFoundError):
+		read_store.task_get(clean_task["id"])
+	assert {task["id"] for task in read_store.task_list(status="done")["items"]} == {
+		dependency["id"],
+		blocked_task["id"],
+	}
+	release_ids = {release["id"] for release in read_store.release_list()["items"]}
+	assert clean_release["id"] not in release_ids
+	assert empty_release["id"] in release_ids
+	assert mixed_release["id"] in release_ids
+	assert blocked_release["id"] in release_ids
+
+
+def test_task_clean_force_removes_only_blocked_done_tasks_and_notes(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("blocked", "Blocked", overview="Blocked overview")
+	dependency = _add_task(store, "dependency", "Dependency", release_id=release["id"])
+	blocked_task = _add_task(
+		store,
+		"blocked",
+		"Blocked task",
+		release_id=release["id"],
+		depends_on=[dependency["id"]],
+	)
+	discovery = store.discovery_add(blocked_task["id"], "Discovery body")
+	store.decision_add(
+		blocked_task["id"], "Decision body", supersedes_id=discovery["id"]
+	)
+	store.task_start(dependency["id"])
+	store.task_complete(dependency["id"])
+	store.task_start(blocked_task["id"])
+	store.task_complete(blocked_task["id"])
+
+	store.task_clean()
+	new_clean_task = _add_task(store, "new-clean", "New clean task")
+	store.task_start(new_clean_task["id"])
+	store.task_complete(new_clean_task["id"])
+
+	result = store.task_clean(force=True)
+
+	assert result["removed_count"] == 2
+	assert {task["id"] for task in result["removed"]} == {
+		dependency["id"],
+		blocked_task["id"],
+	}
+	assert result["blocked"] == []
+	assert result["releases_removed"] == [{"id": release["id"], "title": "Blocked"}]
+	assert (
+		ReadStore(store.database, _ProjectStore(store.database)).task_get(
+			new_clean_task["id"]
+		)["status"]
+		== "done"
+	)
+
+	with store.database.connection() as connection:
+		assert connection.execute("SELECT 1 FROM notes").fetchone() is None
+		assert connection.execute("SELECT 1 FROM task_dependencies").fetchone() is None
+
+
 def test_rename_updates_titles_without_changing_identifiers_or_slugs(
 	tmp_path: Path,
 ) -> None:
