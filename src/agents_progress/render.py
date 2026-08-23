@@ -385,7 +385,7 @@ def _render_next(data: object) -> str:
 
 
 def _render_list(command: str, data: dict[str, object]) -> str:
-	"""Render one bounded page with cli-style rows and a pagination hint."""
+	"""Render one bounded page with cli-style rows, a per-chunk get hint, and a pagination hint."""
 	if command == "task list":
 		return _render_task_list(data)
 
@@ -403,11 +403,19 @@ def _render_list(command: str, data: dict[str, object]) -> str:
 		status = item.get("status")
 		identifier = str(item.get("id", ""))
 		value = f"{status} ({identifier})" if status else f"({identifier})"
+		result_type = _status_result_type(status) if status else ""
 		item_block = render_row(
 			str(name),
 			value,
-			_status_result_type(status) if status else "",
+			result_type,
 		)
+		if command == "chunk list" and status and result_type != "success":
+			item_block = "\n".join(
+				[
+					item_block,
+					render_hint(f"progress chunk get {identifier}"),
+				]
+			)
 		description = item.get("description")
 		if command == "chunk list" and description:
 			item_block = "\n".join(

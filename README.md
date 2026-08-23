@@ -621,6 +621,7 @@ Tasks:
 $ progress chunk list --task tsk_nIHyevhUxTyEDLbyfXPhRQ --limit 20 --offset 0
 Chunks:
 - First chunk [pending] (chk_KkjpMXgs5qkPeUsEuNDIDg)
+  → progress chunk get chk_KkjpMXgs5qkPeUsEuNDIDg
 ```
 
 ## Statuses and note types

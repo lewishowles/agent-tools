@@ -1245,6 +1245,7 @@ def test_chunk_list_renders_descriptions_in_wrapped_rows(monkeypatch) -> None:
 		"render_row",
 		lambda label, value, result="": f"{label}: {value}",
 	)
+	monkeypatch.setattr(render_module, "render_hint", lambda message: f"→ {message}")
 
 	def fake_row_group(rows: list[dict[str, str]]) -> str:
 		descriptions.append(rows)
@@ -1266,7 +1267,7 @@ def test_chunk_list_renders_descriptions_in_wrapped_rows(monkeypatch) -> None:
 				{
 					"id": "chk_other",
 					"title": "Other output",
-					"status": "pending",
+					"status": "done",
 					"description": "Another chunk description.",
 				},
 			],
@@ -1277,8 +1278,9 @@ def test_chunk_list_renders_descriptions_in_wrapped_rows(monkeypatch) -> None:
 	assert output == (
 		"Chunks\n\n"
 		"Render output: ready (chk_test)\n"
+		"→ progress chunk get chk_test\n"
 		f"Description: {description}\n\n"
-		"Other output: pending (chk_other)\n"
+		"Other output: done (chk_other)\n"
 		"Description: Another chunk description."
 	)
 	assert descriptions == [
@@ -1300,6 +1302,7 @@ def test_chunk_list_omits_empty_descriptions(description, monkeypatch) -> None:
 		"render_row",
 		lambda label, value, result="": f"{label}: {value}",
 	)
+	monkeypatch.setattr(render_module, "render_hint", lambda message: f"→ {message}")
 
 	output = render_module._render_list(
 		"chunk list",
@@ -1316,7 +1319,9 @@ def test_chunk_list_omits_empty_descriptions(description, monkeypatch) -> None:
 		},
 	)
 
-	assert "Render output: ready (chk_test)" in output
+	assert output == (
+		"Chunks\n\nRender output: ready (chk_test)\n→ progress chunk get chk_test"
+	)
 	assert "Description" not in output
 
 
