@@ -1277,39 +1277,64 @@ def test_task_list_uses_release_priority_for_json_and_table_output(
 	)
 
 
-def test_chunk_list_renders_descriptions_in_wrapped_rows(monkeypatch) -> None:
-	descriptions: list[list[dict[str, str]]] = []
+def test_chunk_list_renders_status_rows_and_descriptions(monkeypatch) -> None:
+	status_calls: list[tuple[str, str, str]] = []
 
-	monkeypatch.setattr(render_module, "render_span", lambda value, *args: value)
+	def fake_status(result_type: str, label: str = "", detail: str = "") -> str:
+		status_calls.append((result_type, label, detail))
+		return f"{result_type}:{label}" if label else result_type
+
 	monkeypatch.setattr(
 		render_module,
-		"render_row",
-		lambda label, value, result="": f"{label}: {value}",
+		"render_span",
+		lambda value, *args, **kwargs: value,
 	)
-	monkeypatch.setattr(render_module, "render_hint", lambda message: f"→ {message}")
+	monkeypatch.setattr(render_module, "render_status", fake_status)
+	monkeypatch.setattr(
+		render_module,
+		"render_hint",
+		lambda message: pytest.fail(f"unexpected hint: {message}"),
+	)
 
-	def fake_row_group(rows: list[dict[str, str]]) -> str:
-		descriptions.append(rows)
-		return f"Description: {rows[0]['value']}"
-
-	monkeypatch.setattr(render_module, "render_row_group", fake_row_group)
-
-	description = "A long description explains the full scope of this chunk."
+	active_description = "The active chunk description."
+	pending_description = "The pending chunk description."
+	long_identifier = "chk_QByCeE0lGXmeVEbAF7oFKg"
 	output = render_module._render_list(
 		"chunk list",
 		{
 			"items": [
 				{
-					"id": "chk_test",
-					"title": "Render output",
-					"status": "ready",
-					"description": description,
+					"id": "chk_done",
+					"title": "Done output",
+					"status": "done",
+					"description": "Done descriptions are hidden.",
 				},
 				{
-					"id": "chk_other",
-					"title": "Other output",
+					"id": "chk_done_other",
+					"title": "Other done output",
 					"status": "done",
-					"description": "Another chunk description.",
+				},
+				{
+					"id": long_identifier,
+					"title": "Active output",
+					"status": "active",
+					"description": active_description,
+				},
+				{
+					"id": "chk_active_other",
+					"title": "Other active output",
+					"status": "active",
+				},
+				{
+					"id": "chk_pending",
+					"title": "Pending output",
+					"status": "pending",
+					"description": pending_description,
+				},
+				{
+					"id": "chk_pending_other",
+					"title": "Other pending output",
+					"status": "pending",
 				},
 			],
 			"has_more": False,
@@ -1318,32 +1343,42 @@ def test_chunk_list_renders_descriptions_in_wrapped_rows(monkeypatch) -> None:
 
 	assert output == (
 		"Chunks\n\n"
-		"Render output: ready (chk_test)\n"
-		"→ progress chunk get chk_test\n"
-		f"Description: {description}\n\n"
-		"Other output: done (chk_other)\n"
-		"Description: Another chunk description."
+		"success:done  Done output · chk_done\n"
+		"success:done  Other done output · chk_done_other\n\n"
+		f"info:active  Active output · {long_identifier}\n\n"
+		f"{active_description}\n\n"
+		"info:active  Other active output · chk_active_other\n\n"
+		"– Pending output · chk_pending\n\n"
+		f"{pending_description}\n\n"
+		"– Other pending output · chk_pending_other"
 	)
-	assert descriptions == [
-		[{"label": "Description", "value": description}],
-		[
-			{
-				"label": "Description",
-				"value": "Another chunk description.",
-			}
-		],
+	assert "Done descriptions are hidden." not in output
+	assert any(long_identifier in line for line in output.splitlines())
+	assert "Description" not in output
+	assert (
+		"success:done  Done output · chk_done\n"
+		"success:done  Other done output · chk_done_other"
+	) in output
+	assert status_calls == [
+		("success", "done", ""),
+		("success", "done", ""),
+		("info", "active", ""),
+		("info", "active", ""),
 	]
 
 
 @pytest.mark.parametrize("description", [None, ""])
 def test_chunk_list_omits_empty_descriptions(description, monkeypatch) -> None:
-	monkeypatch.setattr(render_module, "render_span", lambda value, *args: value)
 	monkeypatch.setattr(
 		render_module,
-		"render_row",
-		lambda label, value, result="": f"{label}: {value}",
+		"render_span",
+		lambda value, *args, **kwargs: value,
 	)
-	monkeypatch.setattr(render_module, "render_hint", lambda message: f"→ {message}")
+	monkeypatch.setattr(
+		render_module,
+		"render_status",
+		lambda result_type, label="", detail="": result_type,
+	)
 
 	output = render_module._render_list(
 		"chunk list",
@@ -1360,10 +1395,38 @@ def test_chunk_list_omits_empty_descriptions(description, monkeypatch) -> None:
 		},
 	)
 
-	assert output == (
-		"Chunks\n\nRender output: ready (chk_test)\n→ progress chunk get chk_test"
-	)
+	assert output == "Chunks\n\n– Render output · chk_test"
 	assert "Description" not in output
+
+
+def test_chunk_list_renders_pagination_without_hint(monkeypatch) -> None:
+	monkeypatch.setattr(
+		render_module,
+		"render_span",
+		lambda value, *args, **kwargs: value,
+	)
+	monkeypatch.setattr(
+		render_module,
+		"render_status",
+		lambda result_type, label="", detail="": result_type,
+	)
+	monkeypatch.setattr(
+		render_module,
+		"render_hint",
+		lambda message: pytest.fail(f"unexpected hint: {message}"),
+	)
+
+	output = render_module._render_list(
+		"chunk list",
+		{
+			"items": [],
+			"offset": 0,
+			"limit": 1,
+			"has_more": True,
+		},
+	)
+
+	assert output == "Chunks\n\nMore results: use --offset 1."
 
 
 def test_task_list_action_styles_embedded_commands(monkeypatch) -> None:

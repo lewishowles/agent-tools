@@ -459,14 +459,15 @@ def _render_next_position_line(
 
 
 def _render_list(command: str, data: dict[str, object]) -> str:
-	"""Render one bounded page with cli-style rows, a per-chunk get hint, and a pagination hint."""
+	"""Render one bounded page with cli-style rows and a pagination hint."""
 	if command == "task list":
 		return _render_task_list(data)
+	if command == "chunk list":
+		return _render_chunk_list(data)
 
 	items = data.get("items", [])
 	labels = {
 		"release list": "Releases",
-		"chunk list": "Chunks",
 	}
 	title = labels.get(command, "Results")
 	blocks = [render_span(title)]
@@ -483,28 +484,6 @@ def _render_list(command: str, data: dict[str, object]) -> str:
 			value,
 			result_type,
 		)
-		if command == "chunk list" and status and result_type != "success":
-			item_block = "\n".join(
-				[
-					item_block,
-					render_hint(f"progress chunk get {identifier}"),
-				]
-			)
-		description = item.get("description")
-		if command == "chunk list" and description:
-			item_block = "\n".join(
-				[
-					item_block,
-					render_row_group(
-						[
-							{
-								"label": "Description",
-								"value": str(description),
-							}
-						]
-					),
-				]
-			)
 		blocks.append(item_block)
 
 	if data.get("has_more"):
@@ -512,6 +491,88 @@ def _render_list(command: str, data: dict[str, object]) -> str:
 		blocks.append(render_hint(f"More results: use --offset {next_offset}."))
 
 	return "\n\n".join(blocks)
+
+
+def _render_chunk_list(data: dict[str, object]) -> str:
+	"""Render chunk rows with status and description-aware spacing."""
+	blocks = [render_span("Chunks")]
+	chunk_items = _render_chunk_items(data.get("items", []))
+	if chunk_items:
+		blocks.append(chunk_items)
+
+	if data.get("has_more"):
+		next_offset = int(data.get("offset", 0)) + int(data.get("limit", 0))
+		blocks.append(
+			render_span(
+				f"More results: use --offset {next_offset}.",
+				"muted",
+				weight="normal",
+			)
+		)
+
+	return "\n\n".join(blocks)
+
+
+def _render_chunk_items(items: object) -> str:
+	"""Render valid chunk items without splitting IDs or adding excess blank lines."""
+	if not isinstance(items, list):
+		return ""
+
+	blocks: list[tuple[str, str, bool]] = []
+	for item in items:
+		if not isinstance(item, dict):
+			continue
+
+		blocks.append(_render_chunk_item(item))
+
+	if not blocks:
+		return ""
+
+	output = blocks[0][0]
+	for previous, current in zip(blocks, blocks[1:]):
+		separator = (
+			"\n\n" if previous[1] != current[1] or previous[2] or current[2] else "\n"
+		)
+		output += f"{separator}{current[0]}"
+
+	return output
+
+
+def _render_chunk_item(item: dict[str, object]) -> tuple[str, str, bool]:
+	"""Render one chunk row and return its status group and description state."""
+	result_type = _status_result_type(item.get("status"))
+	status_group = {
+		"skipped": "pending",
+		"success": "done",
+	}.get(result_type, "active")
+	identifier = str(item.get("id", ""))
+	title = str(item.get("title") or item.get("id") or "item")
+	row_tone = "muted" if status_group != "active" else "text"
+	title_and_id = render_span(
+		f"{title} · {identifier}",
+		row_tone,
+		weight="normal",
+	)
+
+	if status_group == "done":
+		row = f"{render_status('success', 'done')}  {title_and_id}"
+	elif status_group == "active":
+		row = f"{render_status('info', 'active')}  {title_and_id}"
+	else:
+		# render_status('skipped') has no marker-only option and falls back to
+		# a "Skipped" label, so pending rows use a plain muted marker span instead.
+		row = f"{render_span('–', 'muted', weight='normal')} {title_and_id}"
+
+	description = item.get("description")
+	if status_group == "done" or not description:
+		return row, status_group, False
+
+	description_block = render_span(
+		textwrap.fill(str(description), _TASK_GET_ROW_WRAP_WIDTH),
+		"muted",
+		weight="normal",
+	)
+	return f"{row}\n\n{description_block}", status_group, True
 
 
 def _render_task_list(data: dict[str, object]) -> str:
