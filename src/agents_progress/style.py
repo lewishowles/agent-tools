@@ -144,10 +144,22 @@ def labelled_line(label: str, message: str) -> str:
 	)
 
 
-def row(label: str, value: str, result: str = "") -> str:
+def row(
+	label: str,
+	value: str,
+	result: str = "",
+	label_colour: str | None = None,
+	value_colour: str | None = None,
+) -> str:
 	"""Render a labelled row using cli-style or plain text."""
 	return _render_or_plain(
-		lambda: render_row(label, value, result),
+		lambda: render_row(
+			label,
+			value,
+			result,
+			label_colour=label_colour,
+			value_colour=value_colour,
+		),
 		lambda: _plain_row(label, value, result),
 	)
 

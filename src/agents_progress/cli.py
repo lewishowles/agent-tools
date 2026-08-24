@@ -958,7 +958,14 @@ def _run_command(
 	database = Database(getattr(args, "database", None))
 	subcommand_name = getattr(args, f"{command_name}_command", None)
 	dispatch = {
-		("next", None): lambda: (ReadStore(database).next(), "next"),
+		("next", None): lambda: (
+			(
+				ReadStore(database).next(include_position_totals=True)
+				if include_release_titles
+				else ReadStore(database).next()
+			),
+			"next",
+		),
 		("doctor", None): lambda: (ReadStore(database).doctor(), "doctor"),
 		("project", "init"): lambda: (_run_project(args, database), "project init"),
 		("project", "attach"): lambda: (_run_project(args, database), "project attach"),

@@ -252,8 +252,17 @@ def _dependency_ids(connection: sqlite3.Connection, task_id: str) -> list[str]:
 class ReadStore(_StoreBase):
 	"""Run the current project's read queries against the progress database."""
 
-	def next(self, path: str | Path | None = None) -> dict[str, object]:
-		"""Return the next queued task, its active chunk, and a next-command hint."""
+	def next(
+		self,
+		path: str | Path | None = None,
+		*,
+		include_position_totals: bool = False,
+	) -> dict[str, object]:
+		"""Return the next queued task, its active chunk, and a next-command hint.
+
+		Set include_position_totals for human display: the response then
+		also carries task_total and, when a chunk is active, chunk_total.
+		"""
 		project = self.current_project(path)
 
 		with self.database.connection() as connection:
@@ -278,9 +287,21 @@ class ReadStore(_StoreBase):
 				else []
 			)
 
-		return _task_response(
+		response = _task_response(
 			project, task_row, chunk_row, "progress task list", dependency_ids
 		)
+		if not include_position_totals or task_row is None:
+			return response
+
+		response["task_total"] = self.task_count_for_release(
+			task_row["release_id"], path
+		)
+		if chunk_row is not None:
+			response["chunk_total"] = self.chunk_count_for_task(
+				chunk_row["task_id"], path
+			)
+
+		return response
 
 	def doctor(self, path: str | Path | None = None) -> dict[str, object]:
 		"""Report records with blank fields from the required-in-practice list."""
@@ -450,6 +471,21 @@ class ReadStore(_StoreBase):
 
 			return response
 
+	def task_count_for_release(
+		self, release_id: str | None, path: str | Path | None = None
+	) -> int:
+		"""Count the current project's tasks under one release, including a null release_id."""
+		project = self.current_project(path)
+
+		with self.database.connection() as connection:
+			row = connection.execute(
+				"SELECT COUNT(*) AS total FROM tasks "
+				"WHERE project_id = ? AND release_id IS ?",
+				(project.id, release_id),
+			).fetchone()
+
+		return int(row["total"])
+
 	def chunk_get(
 		self,
 		chunk_id: str,
@@ -505,6 +541,21 @@ class ReadStore(_StoreBase):
 				"task_id = ?",
 				(task_id,),
 			)
+
+	def chunk_count_for_task(self, task_id: str, path: str | Path | None = None) -> int:
+		"""Count one task's chunks, scoped to the current project via its parent task."""
+		project = self.current_project(path)
+
+		with self.database.connection() as connection:
+			row = connection.execute(
+				"SELECT COUNT(*) AS total FROM chunks "
+				"WHERE task_id = ? AND EXISTS ("
+				"SELECT 1 FROM tasks WHERE tasks.id = chunks.task_id "
+				"AND tasks.project_id = ?)",
+				(task_id, project.id),
+			).fetchone()
+
+		return int(row["total"])
 
 	def discovery_list(
 		self,

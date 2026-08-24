@@ -1001,18 +1001,24 @@ def test_human_success_renders_readable_output(
 		"project": {"id": "prj_test", "slug": "agents", "name": "Agents"},
 		"task": {
 			"id": "tsk_test",
+			"release_id": "rel_test",
 			"title": "Read surface",
 			"status": "in-progress",
 			"overview": "Read the current task.",
 			"status_reason": "Waiting for a decision",
+			"position": 2,
 		},
 		"chunk": {
 			"id": "chk_test",
+			"task_id": "tsk_test",
 			"title": "CLI output",
 			"description": "Render readable output.",
 			"status": "active",
+			"position": 1,
 		},
 		"dependency_ids": ["tsk_dependency"],
+		"task_total": 7,
+		"chunk_total": 3,
 		"hint_command": "progress chunk complete chk_test",
 	}
 
@@ -1020,7 +1026,8 @@ def test_human_success_renders_readable_output(
 		def __init__(self, database) -> None:
 			pass
 
-		def next(self):
+		def next(self, *, include_position_totals=False):
+			assert include_position_totals is True
 			return data
 
 	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
@@ -1034,11 +1041,13 @@ def test_human_success_renders_readable_output(
 	assert output.out.endswith("\n\n")
 	assert "Project" in output.out and "Agents" in output.out
 	assert "Task" in output.out and "Read surface" in output.out
-	assert "Task status" in output.out and "in-progress" in output.out
+	assert "in progress" in output.out and "task 2 / 7 for release" in output.out
+	assert "Info" in output.out and "progress task get tsk_test" in output.out
 	assert "Blocking reason" in output.out and "Waiting for a decision" in output.out
 	assert "Dependency IDs" in output.out and "tsk_dependency" in output.out
-	assert "Next action: progress chunk complete chk_test" in output.out
-	assert "i Hint: progress chunk complete chk_test" not in output.out
+	assert "Chunk" in output.out and "chunk 1 / 3 for task" in output.out
+	assert "progress chunk get chk_test" in output.out
+	assert "Next action" not in output.out
 
 
 def test_row_group_requests_72_column_wrap(monkeypatch) -> None:
@@ -1538,20 +1547,31 @@ def test_human_next_renders_done_chunk_with_success_status(
 ) -> None:
 	data = {
 		"project": {"id": "prj_test", "slug": "agents", "name": "Agents"},
-		"task": {"id": "tsk_test", "title": "Read surface", "status": "ready"},
+		"task": {
+			"id": "tsk_test",
+			"release_id": "rel_test",
+			"title": "Read surface",
+			"status": "ready",
+			"position": 1,
+		},
 		"chunk": {
 			"id": "chk_test",
+			"task_id": "tsk_test",
 			"title": "CLI output",
 			"description": "Render readable output.",
 			"status": "done",
+			"position": 1,
 		},
+		"task_total": 1,
+		"chunk_total": 2,
 	}
 
 	class _ReadStore:
 		def __init__(self, database) -> None:
 			pass
 
-		def next(self):
+		def next(self, *, include_position_totals=False):
+			assert include_position_totals is True
 			return data
 
 	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
@@ -1560,7 +1580,9 @@ def test_human_next_renders_done_chunk_with_success_status(
 
 	output = capsys.readouterr()
 
-	assert "✓ Chunk status done" in output.out or "OK Chunk status done" in output.out
+	assert "done" in output.out
+	assert "chunk 1 / 2 for task" in output.out
+	assert "progress chunk get chk_test" in output.out
 
 
 def test_human_task_clean_renders_counts_and_kept_task_details() -> None:

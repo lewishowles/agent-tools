@@ -1,6 +1,7 @@
 """Human-readable rendering for progress read responses."""
 
 import re
+import textwrap
 
 from .style import (
 	divider as render_divider,
@@ -19,6 +20,9 @@ _TASK_GET_ROW_WRAP_WIDTH = 72
 
 # cli-style rows place two spaces between the label and value columns.
 _TASK_GET_ROW_SEPARATOR_WIDTH = 2
+
+# `progress next`'s bare title/overview paragraphs wrap at the same width as its labelled rows.
+_NEXT_PARAGRAPH_WRAP_WIDTH = 72
 
 # Match ANSI control sequences so row labels can be found in styled output.
 _ANSI_ESCAPE_PATTERN = re.compile(
@@ -317,7 +321,15 @@ def _render_next(data: object) -> str:
 
 	project = data.get("project")
 	project_name = project.get("name", "") if isinstance(project, dict) else ""
-	blocks = [render_row("Project", str(project_name))]
+	blocks = [
+		render_row(
+			"Project",
+			str(project_name),
+			label_colour="muted",
+			value_colour="accent",
+		),
+		render_divider(divider_colour="muted"),
+	]
 	task = data.get("task")
 	chunk = data.get("chunk")
 	if not isinstance(task, dict):
@@ -325,63 +337,110 @@ def _render_next(data: object) -> str:
 	else:
 		task_status = task.get("status", "")
 		task_rows = [
-			{"label": "Task", "value": str(task.get("title", ""))},
 			{
-				"label": "Overview",
-				"value": str(task.get("overview") or task.get("purpose") or ""),
+				"label": "Task",
+				"value": _render_next_position_line(
+					"task",
+					task_status,
+					task.get("position", ""),
+					data.get("task_total", ""),
+					"release",
+				),
 			},
-			{"label": "ID", "value": str(task.get("id", ""))},
+			{
+				"label": "Info",
+				"value": render_span(
+					f"progress task get {task.get('id', '')}", "muted"
+				),
+			},
 		]
 		status_reason = task.get("status_reason")
 		if status_reason:
-			task_rows.append({"label": "Blocking reason", "value": str(status_reason)})
+			task_rows.append(
+				{
+					"label": "Blocking reason",
+					"value": render_span(str(status_reason), "muted"),
+				}
+			)
 
 		dependency_ids = data.get("dependency_ids")
 		if isinstance(dependency_ids, list) and dependency_ids:
 			task_rows.append(
 				{
 					"label": "Dependency IDs",
-					"value": ", ".join(str(item) for item in dependency_ids),
+					"value": render_span(
+						", ".join(str(item) for item in dependency_ids), "muted"
+					),
 				}
 			)
 
-		blocks.extend(
-			[
-				render_row_group(task_rows),
-				render_status(
-					_status_result_type(task_status),
-					"Task status",
-					str(task_status),
-				),
-			]
-		)
-		if isinstance(chunk, dict):
-			chunk_status = chunk.get("status", "")
-			blocks.extend(
-				[
-					render_row_group(
-						[
-							{"label": "Chunk", "value": str(chunk.get("title", ""))},
-							{
-								"label": "Description",
-								"value": str(chunk.get("description", "")),
-							},
-							{"label": "ID", "value": str(chunk.get("id", ""))},
-						]
-					),
-					render_status(
-						_status_result_type(chunk_status),
-						"Chunk status",
-						str(chunk_status),
-					),
-				]
+		blocks.append(render_row_group(task_rows))
+		blocks.append(render_span(str(task.get("title", "")), "text"))
+		task_overview = task.get("overview") or task.get("purpose")
+		if task_overview:
+			blocks.append(
+				render_span(
+					textwrap.fill(str(task_overview), _NEXT_PARAGRAPH_WRAP_WIDTH),
+					"muted",
+				)
 			)
 
-	hint_command = data.get("hint_command")
-	if hint_command:
-		blocks.append(render_labelled_line("Next action", str(hint_command)))
+		if isinstance(chunk, dict):
+			chunk_status = chunk.get("status", "")
+			blocks.append(render_divider(divider_colour="muted"))
+			blocks.append(
+				render_row_group(
+					[
+						{
+							"label": "Chunk",
+							"value": _render_next_position_line(
+								"chunk",
+								chunk_status,
+								chunk.get("position", ""),
+								data.get("chunk_total", ""),
+								"task",
+							),
+						},
+						{
+							"label": "Info",
+							"value": render_span(
+								f"progress chunk get {chunk.get('id', '')}", "muted"
+							),
+						},
+					]
+				)
+			)
+			blocks.append(render_span(str(chunk.get("title", "")), "text"))
+			chunk_description = chunk.get("description")
+			if chunk_description:
+				blocks.append(
+					render_span(
+						textwrap.fill(
+							str(chunk_description), _NEXT_PARAGRAPH_WRAP_WIDTH
+						),
+						"muted",
+					)
+				)
 
 	return "\n\n".join(blocks)
+
+
+def _render_next_position_line(
+	object_name: str,
+	status: object,
+	position: object,
+	total: object,
+	parent_name: str,
+) -> str:
+	"""Render the status word plus the record's 1-based position among its siblings."""
+	status_label = str(status).replace("-", " ")
+	position_label = f"• {object_name} {position} / {total} for {parent_name}"
+	return " ".join(
+		[
+			render_span(status_label, "info"),
+			render_span(position_label, "muted"),
+		]
+	)
 
 
 def _render_list(command: str, data: dict[str, object]) -> str:
