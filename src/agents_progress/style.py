@@ -92,6 +92,7 @@ def _plain_table(columns: list[dict[str, str]], rows: list[dict[str, str]]) -> s
 	]
 
 	def render_line(values: list[str]) -> str:
+		"""Render one table line, padding every value except the final cell."""
 		return "  ".join(
 			value.ljust(width) if index < len(values) - 1 else value
 			for index, (value, width) in enumerate(zip(values, widths, strict=True))
