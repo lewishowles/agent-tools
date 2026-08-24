@@ -16,6 +16,7 @@ from agents_progress.errors import (
 	ProgressError,
 	StillReferencedError,
 	UnresolvedDependenciesError,
+	WrongObjectIdTypeError,
 )
 from agents_progress.projects import Project
 from agents_progress.reads import ReadStore
@@ -570,6 +571,61 @@ def test_creation_and_chunk_lifecycle_are_atomic(tmp_path: Path) -> None:
 
 	assert completed_task["status"] == "done"
 	assert completed_task["completed_at"] is not None
+
+
+@pytest.mark.parametrize("use_slug", [False, True])
+def test_task_start_accepts_an_id_or_slug(tmp_path: Path, use_slug: bool) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "start-task", "Start task")
+	reference = task["slug"] if use_slug else task["id"]
+
+	started = store.task_start(reference)
+
+	assert started["id"] == task["id"]
+	assert started["status"] == "in-progress"
+
+
+@pytest.mark.parametrize("reference", ["missing-task", "tsk_" + "t" * 22])
+def test_task_start_rejects_an_unknown_identifier(
+	tmp_path: Path, reference: str
+) -> None:
+	store = _seed_store(tmp_path)
+
+	with pytest.raises(NotFoundError):
+		store.task_start(reference)
+
+
+@pytest.mark.parametrize("method_name", ["task_start", "task_complete"])
+def test_task_lifecycle_rejects_a_wrong_object_type(
+	tmp_path: Path, method_name: str
+) -> None:
+	store = _seed_store(tmp_path)
+
+	with pytest.raises(WrongObjectIdTypeError):
+		getattr(store, method_name)("chk_" + "c" * 22)
+
+
+@pytest.mark.parametrize("use_slug", [False, True])
+def test_task_complete_accepts_an_id_or_slug(tmp_path: Path, use_slug: bool) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "complete-task", "Complete task")
+	store.task_start(task["id"])
+	reference = task["slug"] if use_slug else task["id"]
+
+	completed = store.task_complete(reference)
+
+	assert completed["id"] == task["id"]
+	assert completed["status"] == "done"
+
+
+@pytest.mark.parametrize("reference", ["missing-task", "tsk_" + "t" * 22])
+def test_task_complete_rejects_an_unknown_identifier(
+	tmp_path: Path, reference: str
+) -> None:
+	store = _seed_store(tmp_path)
+
+	with pytest.raises(NotFoundError):
+		store.task_complete(reference)
 
 
 def test_chunk_start_demotes_active_chunk_and_activates_target(tmp_path: Path) -> None:

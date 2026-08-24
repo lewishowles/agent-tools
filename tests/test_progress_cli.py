@@ -7,7 +7,10 @@ from agents_progress.database import Database
 import agents_progress.render as render_module
 import agents_progress.style as style_module
 from agents_progress import cli
-from agents_progress.errors import AlreadyExistsError, DuplicateDependencyError
+from agents_progress.errors import (
+	AlreadyExistsError,
+	DuplicateDependencyError,
+)
 from agents_progress.models import Task
 from agents_progress.projects import Project, ProjectStore
 from agents_progress.render import _status_result_type

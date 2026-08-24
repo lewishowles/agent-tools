@@ -27,7 +27,7 @@ from .ids import (
 )
 from .models import Chunk, Context, Note, Release, Task
 from .projects import _StoreBase
-from .reads import _TASK_COLUMNS
+from .reads import _TASK_COLUMNS, resolve_identifier, validate_identifier
 from .schema import utc_timestamp
 
 # Status values accepted when creating or updating a release.
@@ -1061,11 +1061,12 @@ class WriteStore(_StoreBase):
 	def task_start(
 		self, task_id: str, path: str | Path | None = None
 	) -> dict[str, object]:
-		"""Start a ready task, activate its first pending chunk, and demote any other in-progress task to ready."""
-		validate_object_id(task_id, TASK_PREFIX)
+		"""Start a ready task by ID or project slug, activate its first pending chunk, and demote any other in-progress task to ready."""
+		task_id = validate_identifier(task_id, TASK_PREFIX)
 		project = self.current_project(path)
 
 		with self.database.transaction() as connection:
+			task_id = resolve_identifier(connection, task_id, TASK_PREFIX, project.id)
 			task = _task_row(connection, task_id, project.id)
 			if task is None:
 				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
@@ -1137,11 +1138,12 @@ class WriteStore(_StoreBase):
 	def task_complete(
 		self, task_id: str, path: str | Path | None = None
 	) -> dict[str, object]:
-		"""Complete an in-progress task only after every chunk is finished or skipped, and unblock any dependents whose remaining dependencies are now done."""
-		validate_object_id(task_id, TASK_PREFIX)
+		"""Complete an in-progress task by ID or project slug after its chunks finish, and unblock eligible dependents."""
+		task_id = validate_identifier(task_id, TASK_PREFIX)
 		project = self.current_project(path)
 
 		with self.database.transaction() as connection:
+			task_id = resolve_identifier(connection, task_id, TASK_PREFIX, project.id)
 			task = _task_row(connection, task_id, project.id)
 			if task is None:
 				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})

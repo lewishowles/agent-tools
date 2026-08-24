@@ -4,11 +4,17 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 import sqlite3
 
-from .errors import InvalidStatusError, NotFoundError
+from .errors import (
+	InvalidObjectIdError,
+	InvalidStatusError,
+	NotFoundError,
+	WrongObjectIdTypeError,
+)
 from .ids import (
 	CHUNK_PREFIX,
 	RELEASE_PREFIX,
 	TASK_PREFIX,
+	is_valid_object_id,
 	validate_object_id,
 )
 from .models import Chunk, Context, Note, Release, Task
@@ -45,6 +51,12 @@ _TASK_QUEUE_ORDER = (
 	"ELSE 2 END, releases.position, tasks.position, tasks.id"
 )
 
+# Tables that support project-scoped slug lookup for command identifiers.
+_IDENTIFIER_TABLES = {
+	RELEASE_PREFIX: "releases",
+	TASK_PREFIX: "tasks",
+}
+
 _CHUNK_COLUMNS = (
 	"id, task_id, position, title, description, status, started_at, completed_at"
 )
@@ -64,6 +76,44 @@ REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
 	"task": ("overview", "purpose", "contract"),
 	"chunk": ("description",),
 }
+
+
+def validate_identifier(value: str, expected_prefix: str) -> str:
+	"""Validate an ID-shaped identifier, leaving slug candidates unchanged."""
+	try:
+		return validate_object_id(value, expected_prefix)
+	except (InvalidObjectIdError, WrongObjectIdTypeError):
+		if is_valid_object_id(value):
+			raise
+
+	return value
+
+
+def resolve_identifier(
+	connection: sqlite3.Connection,
+	value: str,
+	expected_prefix: str,
+	project_id: str,
+) -> str:
+	"""Resolve a release or task ID or project slug.
+
+	Return the matched ID, or return the raw value unchanged when no slug matches so the
+	caller's not-found check handles it. Raise ValueError for an unsupported prefix.
+	"""
+	table = _IDENTIFIER_TABLES.get(expected_prefix)
+	if table is None:
+		raise ValueError(f"slug lookup is not supported for {expected_prefix!r}")
+
+	value = validate_identifier(value, expected_prefix)
+	if is_valid_object_id(value, expected_prefix):
+		return value
+
+	row = connection.execute(
+		f"SELECT id FROM {table} WHERE project_id = ? AND slug = ?",
+		(project_id, value),
+	).fetchone()
+
+	return value if row is None else row["id"]
 
 
 def validate_page(limit: int = DEFAULT_LIMIT, offset: int = 0) -> tuple[int, int]:
@@ -312,11 +362,14 @@ class ReadStore(_StoreBase):
 		release_id: str,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Return one current-project release, raising not-found if it does not exist here."""
-		validate_object_id(release_id, RELEASE_PREFIX)
+		"""Return one current-project release by ID or project slug, or raise not-found."""
+		release_id = validate_identifier(release_id, RELEASE_PREFIX)
 		project = self.current_project(path)
 
 		with self.database.connection() as connection:
+			release_id = resolve_identifier(
+				connection, release_id, RELEASE_PREFIX, project.id
+			)
 			row = connection.execute(
 				f"SELECT {_RELEASE_COLUMNS} FROM releases "
 				"WHERE id = ? AND project_id = ?",
@@ -335,11 +388,12 @@ class ReadStore(_StoreBase):
 		task_id: str,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Return one current-project task, raising not-found if it does not exist here."""
-		validate_object_id(task_id, TASK_PREFIX)
+		"""Return one current-project task by ID or project slug, or raise not-found."""
+		task_id = validate_identifier(task_id, TASK_PREFIX)
 		project = self.current_project(path)
 
 		with self.database.connection() as connection:
+			task_id = resolve_identifier(connection, task_id, TASK_PREFIX, project.id)
 			row = connection.execute(
 				f"SELECT {_TASK_COLUMNS} FROM tasks WHERE id = ? AND project_id = ?",
 				(task_id, project.id),

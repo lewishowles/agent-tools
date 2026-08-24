@@ -4,8 +4,9 @@ import pytest
 
 from agents_progress.database import Database
 from agents_progress.errors import NotFoundError, WrongObjectIdTypeError
+from agents_progress.ids import RELEASE_PREFIX, TASK_PREFIX
 from agents_progress.projects import Project
-from agents_progress.reads import ReadStore
+from agents_progress.reads import ReadStore, resolve_identifier
 from agents_progress.writes import WriteStore
 
 
@@ -445,6 +446,85 @@ def test_task_get_rejects_a_wrong_object_type_before_lookup(tmp_path: Path) -> N
 
 	with pytest.raises(WrongObjectIdTypeError):
 		store.task_get(CHUNK_A)
+
+
+@pytest.mark.parametrize(
+	("value", "expected_prefix", "expected_id"),
+	[
+		(TASK_A, TASK_PREFIX, TASK_A),
+		("first", TASK_PREFIX, TASK_A),
+		("missing-task", TASK_PREFIX, "missing-task"),
+		(RELEASE_A, RELEASE_PREFIX, RELEASE_A),
+		("progress-store", RELEASE_PREFIX, RELEASE_A),
+		("missing-release", RELEASE_PREFIX, "missing-release"),
+	],
+)
+def test_resolve_identifier_tries_id_then_project_slug(
+	tmp_path: Path,
+	value: str,
+	expected_prefix: str,
+	expected_id: str,
+) -> None:
+	store = _seed_store(tmp_path)
+
+	with store.database.connection() as connection:
+		resolved_id = resolve_identifier(connection, value, expected_prefix, PROJECT_ID)
+
+	assert resolved_id == expected_id
+
+
+def test_resolve_identifier_rejects_a_wrong_object_type(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+
+	with store.database.connection() as connection:
+		with pytest.raises(WrongObjectIdTypeError):
+			resolve_identifier(connection, CHUNK_A, TASK_PREFIX, PROJECT_ID)
+
+
+@pytest.mark.parametrize(
+	("reference", "expected_id"),
+	[(RELEASE_A, RELEASE_A), ("progress-store", RELEASE_A)],
+)
+def test_release_get_accepts_an_id_or_slug(
+	tmp_path: Path, reference: str, expected_id: str
+) -> None:
+	store = _seed_store(tmp_path)
+
+	release = store.release_get(reference)
+
+	assert release["id"] == expected_id
+
+
+@pytest.mark.parametrize(
+	("reference", "expected_id"),
+	[(TASK_A, TASK_A), ("first", TASK_A)],
+)
+def test_task_get_accepts_an_id_or_slug(
+	tmp_path: Path, reference: str, expected_id: str
+) -> None:
+	store = _seed_store(tmp_path)
+
+	task = store.task_get(reference)
+
+	assert task["id"] == expected_id
+
+
+@pytest.mark.parametrize("reference", ["missing-release", "rel_" + "r" * 22])
+def test_release_get_rejects_an_unknown_identifier(
+	tmp_path: Path, reference: str
+) -> None:
+	store = _seed_store(tmp_path)
+
+	with pytest.raises(NotFoundError):
+		store.release_get(reference)
+
+
+@pytest.mark.parametrize("reference", ["missing-task", "tsk_" + "t" * 22])
+def test_task_get_rejects_an_unknown_identifier(tmp_path: Path, reference: str) -> None:
+	store = _seed_store(tmp_path)
+
+	with pytest.raises(NotFoundError):
+		store.task_get(reference)
 
 
 def test_release_and_chunk_get_return_the_full_current_project_records(
