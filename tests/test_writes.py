@@ -618,6 +618,33 @@ def test_task_complete_accepts_an_id_or_slug(tmp_path: Path, use_slug: bool) -> 
 	assert completed["status"] == "done"
 
 
+def test_task_complete_accepts_a_ready_task_without_starting_it(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "ready-task", "Ready task")
+
+	completed = store.task_complete(task["id"])
+
+	assert completed["status"] == "done"
+	assert completed["started_at"] is None
+	assert completed["completed_at"] is not None
+
+
+@pytest.mark.parametrize("status", ["blocked", "needs-decision", "done"])
+def test_task_complete_rejects_non_ready_tasks(tmp_path: Path, status: str) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, f"{status}-task", f"{status.title()} task")
+
+	if status == "done":
+		store.task_complete(task["id"])
+	else:
+		store.task_block(
+			task["id"], "Waiting for input", needs_decision=status == "needs-decision"
+		)
+
+	with pytest.raises(InvalidTransitionError, match="ready or in progress"):
+		store.task_complete(task["id"])
+
+
 @pytest.mark.parametrize("reference", ["missing-task", "tsk_" + "t" * 22])
 def test_task_complete_rejects_an_unknown_identifier(
 	tmp_path: Path, reference: str
@@ -674,6 +701,78 @@ def test_chunk_start_rejects_non_pending_chunks(tmp_path: Path, status: str) -> 
 
 	with pytest.raises(InvalidTransitionError, match="must be pending"):
 		store.chunk_start(chunk["id"])
+
+
+def test_chunk_complete_accepts_a_pending_chunk(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "pending-chunk-task", "Pending chunk task")
+	chunk = _add_chunk(store, task["id"], "Pending chunk")
+
+	completed = store.chunk_complete(chunk["id"])
+
+	assert completed["status"] == "done"
+	assert completed["started_at"] is None
+	assert completed["completed_at"] is not None
+
+
+def test_chunk_complete_leaves_an_earlier_pending_sibling_unchanged(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "ready-task", "Ready task")
+	earlier_chunk = _add_chunk(store, task["id"], "Earlier chunk")
+	later_chunk = _add_chunk(store, task["id"], "Later chunk")
+
+	completed = store.chunk_complete(later_chunk["id"])
+	chunks = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)
+	chunks_by_id = {chunk["id"]: chunk for chunk in chunks["items"]}
+
+	assert completed["status"] == "done"
+	assert chunks_by_id[earlier_chunk["id"]]["status"] == "pending"
+	assert chunks_by_id[later_chunk["id"]]["status"] == "done"
+	assert chunks_by_id[earlier_chunk["id"]]["started_at"] is None
+
+
+def test_chunk_complete_leaves_an_active_sibling_unchanged(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "in-progress-task", "In-progress task")
+	active_chunk = _add_chunk(store, task["id"], "Active chunk")
+	pending_chunk = _add_chunk(store, task["id"], "Pending chunk")
+	later_chunk = _add_chunk(store, task["id"], "Later chunk")
+	store.task_start(task["id"])
+
+	completed = store.chunk_complete(later_chunk["id"])
+	chunks = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)
+	chunks_by_id = {chunk["id"]: chunk for chunk in chunks["items"]}
+
+	assert completed["status"] == "done"
+	assert chunks_by_id[active_chunk["id"]]["status"] == "active"
+	assert chunks_by_id[pending_chunk["id"]]["status"] == "pending"
+	assert chunks_by_id[later_chunk["id"]]["status"] == "done"
+
+
+@pytest.mark.parametrize("status", ["done", "skipped"])
+def test_chunk_complete_rejects_finished_chunks(tmp_path: Path, status: str) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, f"{status}-chunk-task", f"{status.title()} chunk task")
+	chunk = _add_chunk(store, task["id"], "Chunk")
+
+	if status == "done":
+		store.chunk_complete(chunk["id"])
+	else:
+		with store.database.transaction() as connection:
+			connection.execute(
+				"UPDATE chunks SET status = 'skipped' WHERE id = ?", (chunk["id"],)
+			)
+
+	with pytest.raises(InvalidTransitionError, match="pending or active"):
+		store.chunk_complete(chunk["id"])
 
 
 def test_dependencies_block_and_complete_tasks(tmp_path: Path) -> None:

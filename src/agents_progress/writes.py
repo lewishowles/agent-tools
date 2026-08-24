@@ -1138,7 +1138,7 @@ class WriteStore(_StoreBase):
 	def task_complete(
 		self, task_id: str, path: str | Path | None = None
 	) -> dict[str, object]:
-		"""Complete an in-progress task by ID or project slug after its chunks finish, and unblock eligible dependents."""
+		"""Complete a ready or in-progress task by ID or project slug after its chunks finish, and unblock eligible dependents."""
 		task_id = validate_identifier(task_id, TASK_PREFIX)
 		project = self.current_project(path)
 
@@ -1147,9 +1147,9 @@ class WriteStore(_StoreBase):
 			task = _task_row(connection, task_id, project.id)
 			if task is None:
 				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
-			if task["status"] != "in-progress":
+			if task["status"] not in {"ready", "in-progress"}:
 				raise InvalidTransitionError(
-					f"task {task_id} must be in progress before it can complete",
+					f"task {task_id} must be ready or in progress before it can complete",
 					{"id": task_id, "status": task["status"]},
 				)
 
@@ -1256,7 +1256,7 @@ class WriteStore(_StoreBase):
 	def chunk_complete(
 		self, chunk_id: str, path: str | Path | None = None
 	) -> dict[str, object]:
-		"""Complete the active chunk and activate the next pending chunk atomically."""
+		"""Complete a pending or active chunk and advance only from active."""
 		validate_object_id(chunk_id, CHUNK_PREFIX)
 		project = self.current_project(path)
 
@@ -1264,27 +1264,29 @@ class WriteStore(_StoreBase):
 			chunk = _chunk_row(connection, chunk_id, project.id)
 			if chunk is None:
 				raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
-			if chunk["status"] != "active":
+			if chunk["status"] not in {"pending", "active"}:
 				raise InvalidTransitionError(
-					f"chunk {chunk_id} must be active before it can complete",
+					f"chunk {chunk_id} must be pending or active before it can complete",
 					{"id": chunk_id, "status": chunk["status"]},
 				)
 
+			previous_status = chunk["status"]
 			now = utc_timestamp()
 			connection.execute(
 				"UPDATE chunks SET status = 'done', completed_at = ? WHERE id = ?",
 				(now, chunk_id),
 			)
-			next_chunk = connection.execute(
-				f"SELECT {_QUALIFIED_CHUNK_COLUMNS} FROM chunks "
-				"WHERE task_id = ? AND status = 'pending' ORDER BY position, id LIMIT 1",
-				(chunk["task_id"],),
-			).fetchone()
-			if next_chunk is not None:
-				connection.execute(
-					"UPDATE chunks SET status = 'active', started_at = ? WHERE id = ?",
-					(now, next_chunk["id"]),
-				)
+			if previous_status == "active":
+				next_chunk = connection.execute(
+					f"SELECT {_QUALIFIED_CHUNK_COLUMNS} FROM chunks "
+					"WHERE task_id = ? AND status = 'pending' ORDER BY position, id LIMIT 1",
+					(chunk["task_id"],),
+				).fetchone()
+				if next_chunk is not None:
+					connection.execute(
+						"UPDATE chunks SET status = 'active', started_at = ? WHERE id = ?",
+						(now, next_chunk["id"]),
+					)
 
 			return _chunk_dict(connection, chunk_id, project.id)
 
