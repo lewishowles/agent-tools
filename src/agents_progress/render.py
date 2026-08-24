@@ -21,9 +21,6 @@ _TASK_GET_ROW_WRAP_WIDTH = 72
 # cli-style rows place two spaces between the label and value columns.
 _TASK_GET_ROW_SEPARATOR_WIDTH = 2
 
-# `progress next`'s bare title/overview paragraphs wrap at the same width as its labelled rows.
-_NEXT_PARAGRAPH_WRAP_WIDTH = 72
-
 # Match ANSI control sequences so row labels can be found in styled output.
 _ANSI_ESCAPE_PATTERN = re.compile(
 	r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))"
@@ -41,6 +38,15 @@ _STATUS_RESULT_TYPES = {
 	"needs-decision": "warning",
 	"pending": "skipped",
 	"ready": "skipped",
+}
+
+# Maps a _STATUS_RESULT_TYPES result type to the span() tone that renders it.
+_STATUS_TONES = {
+	"failed": "danger",
+	"info": "info",
+	"skipped": "muted",
+	"success": "success",
+	"warning": "warning",
 }
 
 
@@ -342,7 +348,7 @@ def _render_next(data: object) -> str:
 				"value": _render_next_position_line(
 					"task",
 					task_status,
-					task.get("position", ""),
+					data.get("task_rank", ""),
 					data.get("task_total", ""),
 					"release",
 				),
@@ -380,7 +386,7 @@ def _render_next(data: object) -> str:
 		if task_overview:
 			blocks.append(
 				render_span(
-					textwrap.fill(str(task_overview), _NEXT_PARAGRAPH_WRAP_WIDTH),
+					textwrap.fill(str(task_overview), _TASK_GET_ROW_WRAP_WIDTH),
 					"muted",
 				)
 			)
@@ -396,7 +402,7 @@ def _render_next(data: object) -> str:
 							"value": _render_next_position_line(
 								"chunk",
 								chunk_status,
-								chunk.get("position", ""),
+								data.get("chunk_rank", ""),
 								data.get("chunk_total", ""),
 								"task",
 							),
@@ -415,9 +421,7 @@ def _render_next(data: object) -> str:
 			if chunk_description:
 				blocks.append(
 					render_span(
-						textwrap.fill(
-							str(chunk_description), _NEXT_PARAGRAPH_WRAP_WIDTH
-						),
+						textwrap.fill(str(chunk_description), _TASK_GET_ROW_WRAP_WIDTH),
 						"muted",
 					)
 				)
@@ -428,16 +432,17 @@ def _render_next(data: object) -> str:
 def _render_next_position_line(
 	object_name: str,
 	status: object,
-	position: object,
+	rank: object,
 	total: object,
 	parent_name: str,
 ) -> str:
-	"""Render the status word plus the record's 1-based position among its siblings."""
+	"""Render the status word plus the record's 1-based rank among its siblings."""
 	status_label = str(status).replace("-", " ")
-	position_label = f"• {object_name} {position} / {total} for {parent_name}"
+	position_label = f"• {object_name} {rank} / {total} for {parent_name}"
+	status_tone = _STATUS_TONES.get(_status_result_type(status), "info")
 	return " ".join(
 		[
-			render_span(status_label, "info"),
+			render_span(status_label, status_tone),
 			render_span(position_label, "muted"),
 		]
 	)

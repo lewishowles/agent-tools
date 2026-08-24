@@ -293,10 +293,16 @@ class ReadStore(_StoreBase):
 		if not include_position_totals or task_row is None:
 			return response
 
+		response["task_rank"] = self.task_rank_for_release(
+			task_row["id"], task_row["release_id"], path
+		)
 		response["task_total"] = self.task_count_for_release(
 			task_row["release_id"], path
 		)
 		if chunk_row is not None:
+			response["chunk_rank"] = self.chunk_rank_for_task(
+				chunk_row["id"], chunk_row["task_id"], path
+			)
 			response["chunk_total"] = self.chunk_count_for_task(
 				chunk_row["task_id"], path
 			)
@@ -486,6 +492,30 @@ class ReadStore(_StoreBase):
 
 		return int(row["total"])
 
+	def task_rank_for_release(
+		self,
+		task_id: str,
+		release_id: str | None,
+		path: str | Path | None = None,
+	) -> int:
+		"""Rank a task 1-based among its release's tasks, ordered by position then id.
+
+		Unlike the stored position column, this rank stays contiguous even
+		after sibling tasks are removed.
+		"""
+		project = self.current_project(path)
+
+		with self.database.connection() as connection:
+			row = connection.execute(
+				"SELECT position_rank FROM ("
+				"SELECT id, ROW_NUMBER() OVER (ORDER BY position, id) AS position_rank "
+				"FROM tasks WHERE project_id = ? AND release_id IS ?"
+				") WHERE id = ?",
+				(project.id, release_id, task_id),
+			).fetchone()
+
+		return int(row["position_rank"])
+
 	def chunk_get(
 		self,
 		chunk_id: str,
@@ -556,6 +586,32 @@ class ReadStore(_StoreBase):
 			).fetchone()
 
 		return int(row["total"])
+
+	def chunk_rank_for_task(
+		self,
+		chunk_id: str,
+		task_id: str,
+		path: str | Path | None = None,
+	) -> int:
+		"""Rank a chunk 1-based among its task's chunks, ordered by position then id.
+
+		Scoped to the current project via its parent task, same as chunk_count_for_task.
+		"""
+		project = self.current_project(path)
+
+		with self.database.connection() as connection:
+			row = connection.execute(
+				"SELECT position_rank FROM ("
+				"SELECT id, ROW_NUMBER() OVER (ORDER BY position, id) AS position_rank "
+				"FROM chunks WHERE task_id = ? AND EXISTS ("
+				"SELECT 1 FROM tasks WHERE tasks.id = chunks.task_id "
+				"AND tasks.project_id = ?"
+				")"
+				") WHERE id = ?",
+				(task_id, project.id, chunk_id),
+			).fetchone()
+
+		return int(row["position_rank"])
 
 	def discovery_list(
 		self,

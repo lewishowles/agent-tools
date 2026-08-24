@@ -145,6 +145,49 @@ def test_next_returns_the_task_chunk_and_next_command(tmp_path: Path) -> None:
 	assert result["hint_command"] == f"progress chunk complete {CHUNK_A}"
 
 
+def test_next_uses_live_totals_and_ranks_after_sibling_removals(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	writer = WriteStore(store.database, _ProjectStore(store.database))
+	task = writer.task_add(
+		"third",
+		"Third task",
+		overview="Third task overview",
+		purpose="Third task purpose",
+		contract="Third task contract",
+		release_id=RELEASE_A,
+		position=3,
+	)
+	first_chunk = writer.chunk_add(
+		task["id"], "First chunk", "First chunk description", position=1
+	)
+	writer.chunk_add(task["id"], "Second chunk", "Second chunk description", position=2)
+	third_chunk = writer.chunk_add(
+		task["id"], "Third chunk", "Third chunk description", position=3
+	)
+
+	writer.discovery_remove(DISCOVERY_B)
+	writer.task_remove(TASK_B)
+	writer.chunk_remove(first_chunk["id"])
+	writer.task_start(task["id"])
+	writer.chunk_start(third_chunk["id"])
+
+	assert store.task_count_for_release(RELEASE_A) == 2
+	assert store.chunk_count_for_task(task["id"]) == 2
+
+	result = store.next(include_position_totals=True)
+
+	assert result["task"]["id"] == task["id"]
+	assert result["task"]["position"] == 3
+	assert result["task_rank"] == 2
+	assert result["task_total"] == 2
+	assert result["chunk"]["id"] == third_chunk["id"]
+	assert result["chunk"]["position"] == 3
+	assert result["chunk_rank"] == 2
+	assert result["chunk_total"] == 2
+
+
 def test_next_returns_the_earliest_ready_task_when_nothing_is_in_progress(
 	tmp_path: Path,
 ) -> None:

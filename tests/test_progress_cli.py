@@ -1017,7 +1017,9 @@ def test_human_success_renders_readable_output(
 			"position": 1,
 		},
 		"dependency_ids": ["tsk_dependency"],
+		"task_rank": 2,
 		"task_total": 7,
+		"chunk_rank": 1,
 		"chunk_total": 3,
 		"hint_command": "progress chunk complete chk_test",
 	}
@@ -1048,6 +1050,33 @@ def test_human_success_renders_readable_output(
 	assert "Chunk" in output.out and "chunk 1 / 3 for task" in output.out
 	assert "progress chunk get chk_test" in output.out
 	assert "Next action" not in output.out
+
+
+@pytest.mark.parametrize(
+	("status", "expected_tone"),
+	[
+		("blocked", "danger"),
+		("done", "success"),
+		("needs-decision", "warning"),
+		("pending", "muted"),
+		("ready", "muted"),
+		("in-progress", "info"),
+	],
+)
+def test_human_next_colours_status_by_result_type(
+	monkeypatch, status: str, expected_tone: str
+) -> None:
+	calls = []
+
+	def fake_span(value: str, tone: str = "info", weight: str | None = None) -> str:
+		calls.append((value, tone, weight))
+		return value
+
+	monkeypatch.setattr(render_module, "render_span", fake_span)
+
+	render_module._render_next_position_line("task", status, 2, 3, "release")
+
+	assert calls[0][1] == expected_tone
 
 
 def test_row_group_requests_72_column_wrap(monkeypatch) -> None:
@@ -1563,7 +1592,9 @@ def test_human_next_renders_done_chunk_with_success_status(
 			"position": 1,
 		},
 		"task_total": 1,
+		"task_rank": 1,
 		"chunk_total": 2,
+		"chunk_rank": 1,
 	}
 
 	class _ReadStore:
