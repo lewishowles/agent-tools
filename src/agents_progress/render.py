@@ -356,7 +356,9 @@ def _render_next(data: object) -> str:
 			{
 				"label": "Info",
 				"value": render_span(
-					f"progress task get {task.get('id', '')}", "muted"
+					f"progress task get {task.get('id', '')}",
+					"muted",
+					weight="normal",
 				),
 			},
 		]
@@ -365,7 +367,7 @@ def _render_next(data: object) -> str:
 			task_rows.append(
 				{
 					"label": "Blocking reason",
-					"value": render_span(str(status_reason), "muted"),
+					"value": render_span(str(status_reason), "muted", weight="normal"),
 				}
 			)
 
@@ -375,19 +377,22 @@ def _render_next(data: object) -> str:
 				{
 					"label": "Dependency IDs",
 					"value": render_span(
-						", ".join(str(item) for item in dependency_ids), "muted"
+						", ".join(str(item) for item in dependency_ids),
+						"muted",
+						weight="normal",
 					),
 				}
 			)
 
 		blocks.append(render_row_group(task_rows))
-		blocks.append(render_span(str(task.get("title", "")), "text"))
+		blocks.append(render_span(str(task.get("title", "")), "text", weight="bold"))
 		task_overview = task.get("overview") or task.get("purpose")
 		if task_overview:
 			blocks.append(
 				render_span(
 					textwrap.fill(str(task_overview), _TASK_GET_ROW_WRAP_WIDTH),
 					"muted",
+					weight="normal",
 				)
 			)
 
@@ -410,19 +415,24 @@ def _render_next(data: object) -> str:
 						{
 							"label": "Info",
 							"value": render_span(
-								f"progress chunk get {chunk.get('id', '')}", "muted"
+								f"progress chunk get {chunk.get('id', '')}",
+								"muted",
+								weight="normal",
 							),
 						},
 					]
 				)
 			)
-			blocks.append(render_span(str(chunk.get("title", "")), "text"))
+			blocks.append(
+				render_span(str(chunk.get("title", "")), "text", weight="bold")
+			)
 			chunk_description = chunk.get("description")
 			if chunk_description:
 				blocks.append(
 					render_span(
 						textwrap.fill(str(chunk_description), _TASK_GET_ROW_WRAP_WIDTH),
 						"muted",
+						weight="normal",
 					)
 				)
 
@@ -442,8 +452,8 @@ def _render_next_position_line(
 	status_tone = _STATUS_TONES.get(_status_result_type(status), "info")
 	return " ".join(
 		[
-			render_span(status_label, status_tone),
-			render_span(position_label, "muted"),
+			render_span(status_label, status_tone, weight="bold"),
+			render_span(position_label, "muted", weight="normal"),
 		]
 	)
 
