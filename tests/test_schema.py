@@ -1,7 +1,7 @@
 import sqlite3
 
 import pytest
-
+from agents_progress import schema
 from agents_progress.database import Database
 from agents_progress.errors import MigrationFailedError, StaleSchemaError
 from agents_progress.ids import (
@@ -11,7 +11,6 @@ from agents_progress.ids import (
 	TASK_PREFIX,
 	generate_object_id,
 )
-from agents_progress import schema
 
 
 def _insert_project(connection: sqlite3.Connection, project_id: str) -> None:

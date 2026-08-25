@@ -1,12 +1,11 @@
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import get_context
 from pathlib import Path
-import sqlite3
 
 import pytest
-
-from agents_progress.database import Database
 from agents_progress import database as database_module
+from agents_progress.database import Database
 from agents_progress.errors import (
 	DatabaseBusyError,
 	InvalidDependencyError,
@@ -21,7 +20,6 @@ from agents_progress.errors import (
 from agents_progress.projects import Project
 from agents_progress.reads import ReadStore
 from agents_progress.writes import WriteStore
-
 
 PROJECT_ID = "prj_" + "p" * 22
 

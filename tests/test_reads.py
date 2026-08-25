@@ -1,14 +1,12 @@
 from pathlib import Path
 
 import pytest
-
 from agents_progress.database import Database
 from agents_progress.errors import NotFoundError, WrongObjectIdTypeError
 from agents_progress.ids import RELEASE_PREFIX, TASK_PREFIX
 from agents_progress.projects import Project
 from agents_progress.reads import ReadStore, resolve_identifier
 from agents_progress.writes import WriteStore
-
 
 PROJECT_ID = "prj_" + "p" * 22
 RELEASE_A = "rel_" + "a" * 22
