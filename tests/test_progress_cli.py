@@ -656,7 +656,7 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 
 	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
 	monkeypatch.setattr(cli, "render", lambda command, data: "")
-	monkeypatch.setattr("builtins.input", fake_input)
+	monkeypatch.setattr(cli, "prompt", fake_input)
 	monkeypatch.setattr(
 		cli.sys,
 		"stdin",
@@ -752,7 +752,7 @@ def test_chunk_add_prompts_for_required_and_optional_arguments(
 
 	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
 	monkeypatch.setattr(cli, "render", lambda command, data: "")
-	monkeypatch.setattr("builtins.input", lambda prompt: next(prompt_values))
+	monkeypatch.setattr(cli, "prompt", lambda prompt: next(prompt_values))
 	monkeypatch.setattr(
 		cli.sys,
 		"stdin",
@@ -769,6 +769,47 @@ def test_chunk_add_prompts_for_required_and_optional_arguments(
 	}
 
 
+def test_prompt_value_uses_editable_prompt(monkeypatch) -> None:
+	argument = cli._PromptArgument(("--slug",), "short identifier", required=True)
+	prompts: list[str] = []
+
+	def fake_prompt(prompt: str) -> str:
+		prompts.append(prompt)
+		return "task-slug"
+
+	monkeypatch.setattr(cli, "prompt", fake_prompt)
+
+	assert cli._prompt_value(argument) == "task-slug"
+
+	assert prompts == ["slug: "]
+
+
+def test_prompt_value_treats_eof_as_a_blank_answer(monkeypatch) -> None:
+	argument = cli._PromptArgument(("--slug",), "short identifier", required=True)
+
+	def raise_eof(prompt: str) -> str:
+		raise EOFError
+
+	monkeypatch.setattr(cli, "prompt", raise_eof)
+
+	assert cli._prompt_value(argument) == ""
+
+
+def test_prompt_value_exits_130_when_cancelled(capsys, monkeypatch) -> None:
+	argument = cli._PromptArgument(("--slug",), "short identifier", required=True)
+
+	def raise_keyboard_interrupt(prompt: str) -> str:
+		raise KeyboardInterrupt
+
+	monkeypatch.setattr(cli, "prompt", raise_keyboard_interrupt)
+
+	with pytest.raises(SystemExit) as error:
+		cli._prompt_value(argument)
+
+	assert error.value.code == 130
+	assert capsys.readouterr().out.endswith("Cancelled.\n")
+
+
 @pytest.mark.parametrize("help_flag", ["--help", "-h"])
 def test_add_help_does_not_prompt_for_missing_required_arguments(
 	help_flag: str, capsys, monkeypatch
@@ -779,7 +820,8 @@ def test_add_help_does_not_prompt_for_missing_required_arguments(
 		type("_InteractiveStdin", (), {"isatty": lambda self: True})(),
 	)
 	monkeypatch.setattr(
-		"builtins.input",
+		cli,
+		"prompt",
 		lambda prompt: pytest.fail("help must not start the add prompt"),
 	)
 
@@ -815,7 +857,7 @@ def test_add_prompt_skips_arguments_already_supplied(
 
 	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
 	monkeypatch.setattr(cli, "render", lambda command, data: "")
-	monkeypatch.setattr("builtins.input", fake_input)
+	monkeypatch.setattr(cli, "prompt", fake_input)
 	monkeypatch.setattr(
 		cli.sys,
 		"stdin",
@@ -872,7 +914,8 @@ def test_json_mode_keeps_missing_add_arguments_non_interactive(
 		type("_InteractiveStdin", (), {"isatty": lambda self: True})(),
 	)
 	monkeypatch.setattr(
-		"builtins.input",
+		cli,
+		"prompt",
 		lambda prompt: pytest.fail("JSON mode must not prompt"),
 	)
 
@@ -899,7 +942,8 @@ def test_other_add_commands_do_not_prompt(capsys, monkeypatch) -> None:
 		type("_InteractiveStdin", (), {"isatty": lambda self: True})(),
 	)
 	monkeypatch.setattr(
-		"builtins.input",
+		cli,
+		"prompt",
 		lambda prompt: pytest.fail("release add must not prompt"),
 	)
 

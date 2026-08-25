@@ -8,6 +8,8 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from prompt_toolkit import prompt
+
 from .database import Database
 from .errors import ProgressError
 from .projects import ProjectStore
@@ -736,7 +738,7 @@ def _prompt_value(argument: _PromptArgument, *, repeatable_value: bool = False) 
 	print(f"({styled_names}) {hint}{optional_hint}")
 
 	try:
-		value = input(f"{field_name}: ")
+		value = prompt(f"{field_name}: ")
 	except KeyboardInterrupt:
 		print()
 		print("Cancelled.")
