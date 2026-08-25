@@ -13,6 +13,7 @@ from .errors import ProgressError
 from .projects import ProjectStore
 from .reads import DEFAULT_LIMIT, MAX_LIMIT, ReadStore
 from .render import render
+from .style import span as render_span
 from .writes import WriteStore
 
 
@@ -47,6 +48,31 @@ class ProgressArgumentParser(argparse.ArgumentParser):
 	def error(self, message: str) -> None:
 		"""Turn an argparse usage error into a CliUsageError the caller can format."""
 		raise CliUsageError(message)
+
+
+class ProgressHelpFormatter(argparse.HelpFormatter):
+	"""Format subparser choices as a flat command list without its metavar."""
+
+	def add_arguments(self, actions: list[argparse.Action]) -> None:
+		"""Label sections containing subparsers as commands."""
+		if any(isinstance(action, argparse._SubParsersAction) for action in actions):
+			self._current_section.heading = "commands"
+
+		super().add_arguments(actions)
+
+	def _format_action(self, action: argparse.Action) -> str:
+		"""Format subparser choices without the redundant parent action line."""
+		if isinstance(action, argparse._SubParsersAction):
+			self._action_max_length -= self._indent_increment
+			try:
+				return "".join(
+					self._format_action(subaction)
+					for subaction in action._get_subactions()
+				)
+			finally:
+				self._action_max_length += self._indent_increment
+
+		return super()._format_action(action)
 
 
 @dataclass(frozen=True)
@@ -157,7 +183,11 @@ def _add_command_specs(
 ) -> None:
 	"""Build command parsers from the shared declarative command specification."""
 	for spec in specs:
-		parser = commands.add_parser(spec.name, help=spec.help_text)
+		parser = commands.add_parser(
+			spec.name,
+			help=spec.help_text,
+			formatter_class=ProgressHelpFormatter,
+		)
 
 		if spec.children:
 			nested_commands = parser.add_subparsers(
@@ -184,8 +214,8 @@ def _add_command_specs(
 # Every CLI command and its nested subcommands, in the order they should appear in --help.
 _COMMAND_SPECS = (
 	_CommandSpec("next", "show the next queued task and active chunk"),
-	_CommandSpec("doctor", "find blank required-in-practice fields"),
 	_CommandSpec("commands", "list every command and flag"),
+	_CommandSpec("doctor", "find blank required-in-practice fields"),
 	_CommandSpec(
 		"project",
 		"manage the current project binding",
@@ -637,7 +667,7 @@ def _command_words(arguments: list[str]) -> list[str]:
 
 # Fields `task add` prompts for, in the same order as its parser flags.
 _TASK_ADD_PROMPT_ARGUMENTS = (
-	_PromptArgument(("--slug",), "stable slug stored on the task", required=True),
+	_PromptArgument(("--slug",), "short identifier stored on the task", required=True),
 	_PromptArgument(("--title",), "display title", required=True),
 	_PromptArgument(("--overview",), "non-empty task summary", required=True),
 	_PromptArgument(("--purpose",), "non-empty task purpose", required=True),
@@ -690,6 +720,7 @@ def _argument_is_present(arguments: list[str], names: tuple[str, ...]) -> bool:
 def _prompt_value(argument: _PromptArgument, *, repeatable_value: bool = False) -> str:
 	"""Ask for one field's value, showing its hint and, for optional fields, how to skip it."""
 	names = "/".join(argument.names)
+	field_name = argument.names[0].removeprefix("--")
 	optional_hint = ""
 	if not argument.required:
 		optional_hint = (
@@ -698,12 +729,25 @@ def _prompt_value(argument: _PromptArgument, *, repeatable_value: bool = False) 
 			else "; press Enter to skip"
 		)
 
+	hint = argument.hint[:1].upper() + argument.hint[1:]
+	styled_names = render_span(names, "muted", weight="normal")
+
+	print()
+	print(f"({styled_names}) {hint}{optional_hint}")
+
 	try:
-		return input(f"{names} ({argument.hint}{optional_hint}): ")
+		value = input(f"{field_name}: ")
+	except KeyboardInterrupt:
+		print()
+		print("Cancelled.")
+		# 130 is the conventional exit status for a command ended by SIGINT.
+		raise SystemExit(130)
 	except EOFError:
 		# A closed stdin mid-prompt reads as a blank answer, so required-field
 		# validation reports it instead of the prompt crashing.
-		return ""
+		value = ""
+
+	return value
 
 
 def _should_prompt_add_arguments(arguments: list[str]) -> bool:
@@ -882,6 +926,7 @@ def build_parser() -> argparse.ArgumentParser:
 	parser = ProgressArgumentParser(
 		prog="progress",
 		description="Track project progress in a local SQLite database.",
+		formatter_class=ProgressHelpFormatter,
 	)
 	parser.add_argument(
 		"--json",

@@ -202,14 +202,30 @@ def test_unknown_command_json_uses_the_same_multiline_suggestion(capsys) -> None
 	)
 
 
-def test_top_level_help_uses_a_short_usage_placeholder() -> None:
+def test_top_level_help_lists_commands_without_a_redundant_metavar() -> None:
 	help_text = cli.build_parser().format_help()
 	usage_line = help_text.splitlines()[0]
 
 	assert "COMMAND" in usage_line
 	assert "{next,current,doctor" not in usage_line
-	assert "\n  COMMAND\n" in help_text
-	assert "    task           read task records" in help_text
+	assert "\ncommands:\n" in help_text
+	assert "\n  COMMAND\n" not in help_text
+	assert "  task           read task records" in help_text
+	assert "    task           read task records" not in help_text
+
+
+def test_nested_help_lists_commands_without_a_redundant_metavar(capsys) -> None:
+	with pytest.raises(SystemExit) as exception:
+		cli.build_parser().parse_args(["project", "--help"])
+
+	help_text = capsys.readouterr().out
+
+	assert exception.value.code == 0
+	assert "\ncommands:\n" in help_text
+	assert "\n  {init,attach,current}\n" not in help_text
+	assert "\n  init" in help_text
+	assert "\n    init" not in help_text
+	assert "create and bind a project" in help_text
 
 
 def test_commands_json_lists_the_registry_with_required_flags(
@@ -663,22 +679,60 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 		"depends_on": [],
 		"position": None,
 	}
-	assert [prompt.split(" ", 1)[0] for prompt in prompts] == [
-		"--slug",
-		"--title",
-		"--overview",
-		"--purpose",
-		"--contract",
-		"--files",
-		"--acceptance-criteria",
-		"--verification",
-		"--risks",
-		"--release/--release-id",
-		"--depends-on/--dependency",
-		"--position",
+	assert prompts == [
+		"slug: ",
+		"title: ",
+		"overview: ",
+		"purpose: ",
+		"contract: ",
+		"files: ",
+		"acceptance-criteria: ",
+		"verification: ",
+		"risks: ",
+		"release: ",
+		"depends-on: ",
+		"position: ",
 	]
-	assert all("press Enter to skip" in prompt for prompt in prompts[5:])
-	assert capsys.readouterr().err == ""
+
+	output = capsys.readouterr()
+	assert output.err == ""
+	assert all(
+		f") {hint}" in output.out
+		for hint in (
+			"Short identifier stored on the task",
+			"Display title",
+			"Non-empty task summary",
+			"Non-empty task purpose",
+			"Non-empty task contract",
+			"Optional files covered by the task; press Enter to skip",
+			"Optional completion conditions; press Enter to skip",
+			"Optional verification instructions; press Enter to skip",
+			"Optional risks; press Enter to skip",
+			"Associate the task with a release; press Enter to skip",
+			"Task ID dependency; press Enter to skip",
+			"Optional ordering position; press Enter to skip",
+		)
+	)
+	assert all(
+		flag in output.out
+		for flag in (
+			"--slug",
+			"--title",
+			"--overview",
+			"--purpose",
+			"--contract",
+			"--files",
+			"--acceptance-criteria",
+			"--verification",
+			"--risks",
+			"--release/--release-id",
+			"--depends-on/--dependency",
+			"--position",
+		)
+	)
+	assert output.out.count("press Enter to skip") == 7
+	assert output.out.startswith("\n")
+	assert output.out.count("\n\n") == len(prompts) - 1
 
 
 def test_chunk_add_prompts_for_required_and_optional_arguments(
@@ -740,7 +794,7 @@ def test_add_help_does_not_prompt_for_missing_required_arguments(
 
 
 def test_add_prompt_skips_arguments_already_supplied(
-	tmp_path: Path, monkeypatch
+	tmp_path: Path, monkeypatch, capsys
 ) -> None:
 	data = {"id": "tsk_test"}
 	prompts: list[str] = []
@@ -782,8 +836,13 @@ def test_add_prompt_skips_arguments_already_supplied(
 		== 0
 	)
 
-	assert prompts[0].startswith("--title ")
-	assert all(not prompt.startswith("--slug ") for prompt in prompts)
+	output = capsys.readouterr()
+	assert prompts[0] == "title: "
+	assert all(prompt != "slug: " for prompt in prompts)
+	assert "--slug" not in output.out
+	assert ") Display title" in output.out
+	assert output.out.startswith("\n")
+	assert output.out.count("\n\n") == len(prompts) - 1
 
 
 def test_missing_add_arguments_keep_argparse_error_on_non_tty_stdin(
