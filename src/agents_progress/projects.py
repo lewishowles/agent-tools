@@ -42,13 +42,21 @@ class Project:
 class BindingRepository(Protocol):
 	"""Provide the Git binding operations required by ProjectStore."""
 
-	def root(self) -> Path: ...
+	def root(self) -> Path:
+		"""Return the repository root or raise for a non-Git path."""
+		...
 
-	def get_binding(self) -> str | None: ...
+	def get_binding(self) -> str | None:
+		"""Read the repository's bound progress project ID, if one exists."""
+		...
 
-	def set_binding(self, project_id: str) -> None: ...
+	def set_binding(self, project_id: str) -> None:
+		"""Bind the repository to a progress project ID."""
+		...
 
-	def clear_binding(self) -> None: ...
+	def clear_binding(self) -> None:
+		"""Remove the repository's progress project binding."""
+		...
 
 
 class ProjectStore:
@@ -59,6 +67,7 @@ class ProjectStore:
 		database: Database | None = None,
 		repository_factory: type[GitRepository] = GitRepository,
 	) -> None:
+		"""Store the database and repository factory used by this store."""
 		self.database = database or Database()
 		self.repository_factory = repository_factory
 
@@ -104,6 +113,7 @@ class ProjectStore:
 			else:
 				repository.set_binding(previous_binding)
 		except Exception as compensation_error:
+			# Provide a manual recovery command when compensation cannot restore the binding.
 			recovery_command = (
 				"git config --local --unset-all progress.project-id"
 				if previous_binding is None
@@ -127,6 +137,7 @@ class ProjectStore:
 					"project init refuses to replace an existing progress.project-id binding"
 				)
 
+			# Generate one project ID for both the binding and database row.
 			project_id = generate_object_id(PROJECT_PREFIX, self._project_exists)
 			project = Project(project_id, slug, name, utc_timestamp())
 

@@ -18,9 +18,11 @@ class Release:
 
 	@classmethod
 	def from_row(cls, row: object) -> "Release":
+		"""Build a Release from a database row."""
 		return cls(**dict(row))
 
 	def to_dict(self) -> dict[str, object]:
+		"""Return the release fields as a dictionary."""
 		return dataclasses.asdict(self)
 
 
@@ -50,9 +52,11 @@ class Task:
 
 	@classmethod
 	def from_row(cls, row: object) -> "Task":
+		"""Build a Task from a database row."""
 		return cls(**dict(row))
 
 	def to_dict(self) -> dict[str, object]:
+		"""Return the task fields as a dictionary."""
 		return dataclasses.asdict(self)
 
 
@@ -71,9 +75,11 @@ class Chunk:
 
 	@classmethod
 	def from_row(cls, row: object) -> "Chunk":
+		"""Build a Chunk from a database row."""
 		return cls(**dict(row))
 
 	def to_dict(self) -> dict[str, object]:
+		"""Return the chunk fields as a dictionary."""
 		return dataclasses.asdict(self)
 
 
@@ -91,9 +97,11 @@ class Note:
 
 	@classmethod
 	def from_row(cls, row: object) -> "Note":
+		"""Build a Note from a database row."""
 		return cls(**dict(row))
 
 	def to_dict(self) -> dict[str, object]:
+		"""Return the note fields as a dictionary."""
 		return dataclasses.asdict(self)
 
 
@@ -112,7 +120,9 @@ class Context:
 
 	@classmethod
 	def from_row(cls, row: object) -> "Context":
+		"""Build a Context from a database row."""
 		return cls(**dict(row))
 
 	def to_dict(self) -> dict[str, object]:
+		"""Return the context fields as a dictionary."""
 		return dataclasses.asdict(self)

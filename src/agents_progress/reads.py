@@ -20,30 +20,31 @@ from .ids import (
 from .models import Chunk, Context, Note, Release, Task
 from .projects import Project, _StoreBase
 
-# Default and maximum page size for bounded list responses.
+# Default number of records returned per page.
 DEFAULT_LIMIT = 50
+# Maximum records allowed per page.
 MAX_LIMIT = 200
 
 # Task statuses accepted by the task list --status filter.
 TASK_STATUSES = frozenset({"ready", "in-progress", "blocked", "needs-decision", "done"})
 
-# Column lists shared between single-row and paged queries per table.
+# Columns selected from releases in list and single-row queries.
 _RELEASE_COLUMNS = "id, project_id, slug, title, overview, status, position"
 
+# Columns selected from tasks in list and single-row queries.
 _TASK_COLUMNS = (
 	"id, project_id, slug, release_id, title, overview, purpose, contract, "
 	"files, acceptance_criteria, verification, risks, status, "
 	"status_reason, position, created_at, started_at, completed_at, updated_at"
 )
 
-# _TASK_COLUMNS qualified with the tasks table alias, for queries that join
-# another table sharing column names (e.g. releases).
+# Qualified task columns for joins with tables that share column names.
 _TASK_COLUMNS_QUALIFIED = ", ".join(
 	f"tasks.{column.strip()}" for column in _TASK_COLUMNS.split(",")
 )
 
-# Unassigned tasks use the final release-priority bucket. Their NULL release
-# position sorts before done releases in that bucket, matching `next`.
+# Queue order used by `next`. Unassigned tasks land in the final priority bucket,
+# where their NULL release position sorts before done releases in that bucket.
 _TASK_QUEUE_ORDER = (
 	"CASE releases.status "
 	"WHEN 'active' THEN 0 "
@@ -57,20 +58,24 @@ _IDENTIFIER_TABLES = {
 	TASK_PREFIX: "tasks",
 }
 
+# Columns selected from chunks in list queries.
 _CHUNK_COLUMNS = (
 	"id, task_id, position, title, description, status, started_at, completed_at"
 )
 
+# Columns selected from notes in list queries.
 _NOTE_COLUMNS = "id, project_id, task_id, type, body, supersedes_id, created_at"
 
+# Columns selected from handoff context in read queries.
 _CONTEXT_COLUMNS = (
 	"project_id, current_goal, previous_step, next_step, standing_context, "
 	"verify_with, stop_marker, updated_at"
 )
 
+# Note types accepted by the note commands.
 NOTE_TYPES = frozenset({"discovery", "decision"})
 
-# Fields that should be populated for each record in the doctor check.
+# Fields checked by the doctor command for each record type.
 REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
 	"release": ("overview",),
 	"task": ("overview", "purpose", "contract"),
@@ -129,6 +134,7 @@ def validate_page(limit: int = DEFAULT_LIMIT, offset: int = 0) -> tuple[int, int
 def page_response(
 	items: Sequence[dict[str, object]], limit: int, offset: int, total: int
 ) -> dict[str, object]:
+	"""Build the bounded page response returned by list queries."""
 	return {
 		"items": list(items),
 		"limit": limit,
@@ -169,6 +175,7 @@ def _add_release_titles(
 	items: list[dict[str, object]],
 ) -> None:
 	"""Add the matching release title to each task-list item with one bounded query."""
+	# Collect unique release IDs before the single project-scoped lookup.
 	release_ids = list(
 		dict.fromkeys(
 			str(item["release_id"])
@@ -179,11 +186,14 @@ def _add_release_titles(
 	if not release_ids:
 		return
 
+	# Build one parameter placeholder for each release ID.
 	placeholders = ", ".join("?" for _ in release_ids)
+	# Fetch all matching titles together to avoid one query per task.
 	rows = connection.execute(
 		f"SELECT id, title FROM releases WHERE project_id = ? AND id IN ({placeholders})",
 		(project_id, *release_ids),
 	).fetchall()
+	# Index titles by release ID for response enrichment.
 	titles = {str(row["id"]): str(row["title"]) for row in rows}
 
 	for item in items:
@@ -311,6 +321,7 @@ class ReadStore(_StoreBase):
 
 	def doctor(self, path: str | Path | None = None) -> dict[str, object]:
 		"""Report records with blank fields from the required-in-practice list."""
+		# Bounded-list loader for each record type, used by the checks below.
 		page_loaders: dict[str, Callable[[int, int], dict[str, object]]] = {
 			"release": lambda limit, offset: self.release_list(limit, offset, path),
 			"task": lambda limit, offset: self.task_list(None, limit, offset, path),
