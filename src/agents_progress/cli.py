@@ -185,7 +185,7 @@ def _add_command_specs(
 _COMMAND_SPECS = (
 	_CommandSpec("next", "show the next queued task and active chunk"),
 	_CommandSpec("doctor", "find blank required-in-practice fields"),
-	_CommandSpec("commands", "list all available commands"),
+	_CommandSpec("commands", "list every command and flag"),
 	_CommandSpec(
 		"project",
 		"manage the current project binding",
