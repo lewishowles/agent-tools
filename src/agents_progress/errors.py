@@ -1,5 +1,7 @@
 """Stable errors raised by the progress storage foundation."""
 
+# Error codes are stable identifiers used by the CLI's text and `--json` output.
+
 
 class ProgressError(Exception):
 	"""Represent a user-facing progress error with a stable code."""
@@ -7,6 +9,7 @@ class ProgressError(Exception):
 	code = "error"
 
 	def __init__(self, message: str, details: dict[str, object] | None = None) -> None:
+		"""Store the error message and optional structured details."""
 		self.message = message
 		self.details = details or {}
 		super().__init__(message)
@@ -24,6 +27,7 @@ class WrongObjectIdTypeError(ProgressError):
 	code = "wrong-id-type"
 
 	def __init__(self, expected_prefix: str, value: object) -> None:
+		"""Build the message from the expected prefix and the offending value."""
 		super().__init__(
 			f"expected an object ID beginning with {expected_prefix!r}, got {value!r}",
 			{"expected_prefix": expected_prefix, "value": value},
@@ -156,6 +160,7 @@ class ProjectBindingRecoveryError(ProgressError):
 		write_error: Exception,
 		rollback_error: Exception,
 	) -> None:
+		"""Create an error with instructions for recovering a failed project binding."""
 		message = (
 			f"project binding recovery is required for {project_id}; "
 			f"binding write failed: {write_error}; "

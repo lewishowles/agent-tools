@@ -5,7 +5,7 @@ import subprocess
 
 from .errors import GitBindingError, NotAProjectError
 
-# the local Git config key that stores a repository's bound project ID
+# Git config key that binds a repository to its progress project.
 _BINDING_KEY = "progress.project-id"
 
 
@@ -13,6 +13,7 @@ class GitRepository:
 	"""Read and write a progress binding in a repository's local Git config."""
 
 	def __init__(self, path: str | Path | None = None) -> None:
+		"""Store the resolved path used for Git commands."""
 		candidate = Path(path) if path is not None else Path.cwd()
 		self.path = candidate.expanduser().resolve()
 

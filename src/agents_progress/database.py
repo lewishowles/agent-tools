@@ -9,11 +9,11 @@ from pathlib import Path
 from .errors import DatabaseBusyError
 from .schema import is_busy_error, migrate
 
-# the one global database shared by every project, unless a path is given explicitly
+# Default location for the database shared by every project.
 DEFAULT_DATABASE_PATH = Path.home() / ".agents" / "progress.db"
-# fallback database path, checked before DEFAULT_DATABASE_PATH when --database is omitted
+# Environment variable that overrides the default database path.
 DATABASE_ENVIRONMENT_VARIABLE = "AGENTS_PROGRESS_DATABASE"
-# how long a connection waits on a locked database before raising DatabaseBusyError
+# Seconds to wait for a locked database before raising DatabaseBusyError.
 BUSY_TIMEOUT_SECONDS = 5.0
 
 
@@ -81,6 +81,7 @@ class Database:
 	"""Open progress connections against one database path."""
 
 	def __init__(self, path: str | Path | None = None) -> None:
+		"""Store the database path used by this instance's connections."""
 		self.path = resolve_database_path(path)
 
 	def connect(self) -> sqlite3.Connection:
