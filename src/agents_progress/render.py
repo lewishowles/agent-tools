@@ -104,6 +104,17 @@ def render(command: str, data: object) -> str:
 		return _render_doctor(data)
 	if command == "task clean":
 		return _render_task_clean(data)
+	if command in {"task complete", "chunk complete"} and isinstance(data, dict):
+		# Completion prints one success line, not every record field; handled here
+		# rather than in _render_object so task get and chunk get still show all fields.
+		record_type = command.split()[0]  # "task" or "chunk"
+
+		return (
+			render_status(
+				"success", f"Completed {record_type}", str(data.get("title") or "")
+			)
+			+ "\n"
+		)
 	if isinstance(data, dict) and "items" in data:
 		return _render_list(command, data)
 	if isinstance(data, dict):
@@ -678,9 +689,6 @@ def _render_object(command: str, data: dict[str, object]) -> str:
 		if key == "demoted_task":
 			lines.append(f"Demoted task: {_format_demoted_task(value)}")
 			continue
-		if key == "unblocked_tasks":
-			lines.extend(_format_unblocked_tasks(value))
-			continue
 
 		lines.append(f"{_format_label(key)}: {'' if value is None else value}")
 
@@ -764,17 +772,3 @@ def _format_demoted_task(value: object) -> str:
 		return ""
 
 	return f"{value.get('title', '')} ({value.get('id', '')})"
-
-
-def _format_unblocked_tasks(value: object) -> list[str]:
-	"""Name tasks made ready when a completed task removed their last dependency, or 'none' when nothing was."""
-	if not isinstance(value, list) or not value:
-		return ["Unblocked tasks: none"]
-
-	lines = ["Unblocked tasks:"]
-	for task in value:
-		if not isinstance(task, dict):
-			continue
-		lines.append(f"- {task.get('title', '')} ({task.get('id', '')})")
-
-	return lines

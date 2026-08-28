@@ -2549,25 +2549,15 @@ def test_human_write_output_includes_a_next_command(
 	assert "Next: progress task start tsk_test" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize(
-	("unblocked_tasks", "expected_output"),
-	[
-		(
-			[{"id": "tsk_dependent", "slug": "dependent", "title": "Dependent"}],
-			"- Dependent (tsk_dependent)",
-		),
-		([], "Unblocked tasks: none"),
-	],
-)
-def test_human_task_complete_output_names_unblocked_tasks(
-	tmp_path: Path, monkeypatch, capsys, unblocked_tasks, expected_output
+def test_human_task_complete_output_is_concise(
+	tmp_path: Path, monkeypatch, capsys
 ) -> None:
 	data = {
 		"id": "tsk_test",
 		"slug": "dependency",
 		"title": "Dependency",
 		"status": "done",
-		"unblocked_tasks": unblocked_tasks,
+		"unblocked_tasks": [{"id": "tsk_dependent", "title": "Dependent"}],
 	}
 
 	class _WriteStore:
@@ -2593,8 +2583,63 @@ def test_human_task_complete_output_names_unblocked_tasks(
 	)
 
 	output = capsys.readouterr().out
+	plain_lines = [
+		render_module._ANSI_ESCAPE_PATTERN.sub("", line) for line in output.splitlines()
+	]
 
-	assert expected_output in output
+	assert len(plain_lines) == 2
+	assert plain_lines[0].endswith("Completed task Dependency")
+	# Inequality after stripping ANSI proves the line carried styling.
+	assert plain_lines[0] != "Completed task Dependency"
+	assert plain_lines[1] == "Next: progress next"
+	assert "tsk_test" not in output
+	assert "Dependent" not in output
+
+
+def test_human_chunk_complete_output_is_concise(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {
+		"id": "chk_test",
+		"task_id": "tsk_parent",
+		"title": "CLI output",
+		"status": "done",
+	}
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def chunk_complete(self, chunk_id):
+			return data
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				"chunk",
+				"complete",
+				"chk_test",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+
+	output = capsys.readouterr().out
+	plain_lines = [
+		render_module._ANSI_ESCAPE_PATTERN.sub("", line) for line in output.splitlines()
+	]
+
+	assert len(plain_lines) == 2
+	assert plain_lines[0].endswith("Completed chunk CLI output")
+	# Inequality after stripping ANSI proves the line carried styling.
+	assert plain_lines[0] != "Completed chunk CLI output"
+	assert plain_lines[1] == "Next: progress next"
+	assert "chk_test" not in output
+	assert "tsk_parent" not in output
 
 
 def test_project_init_dispatches_to_the_nested_project_command(
