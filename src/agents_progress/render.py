@@ -49,6 +49,16 @@ _STATUS_TONES = {
 	"warning": "warning",
 }
 
+# Plain-text width the chunk-list status cell is padded to so chunk titles line up.
+# "pending" is the widest chunk status; the leading "- " stands in for cli-style's
+# one-column marker (rendered as an en dash), which does not change the width.
+_CHUNK_STATUS_COLUMN_WIDTH = len("- pending")
+
+# Plain-text width the task-list status cell is padded to so task titles line up.
+# "needs-decision" is the widest task status; the leading "! " stands in for
+# cli-style's one-column marker (rendered as a warning sign).
+_TASK_STATUS_COLUMN_WIDTH = len("! needs-decision")
+
 
 # Keys whose values _render_object wraps at 72 columns via row_group, per command.
 _OBJECT_ROW_GROUP_FIELDS = {
@@ -488,7 +498,7 @@ def _render_list(command: str, data: dict[str, object]) -> str:
 		name = item.get("title") or item.get("id") or "item"
 		status = item.get("status")
 		identifier = str(item.get("id", ""))
-		value = f"{status} ({identifier})" if status else f"({identifier})"
+		value = f"{status} {identifier}" if status else identifier
 		result_type = _status_result_type(status) if status else ""
 		item_block = render_row(
 			str(name),
@@ -510,6 +520,8 @@ def _render_chunk_list(data: dict[str, object]) -> str:
 	chunk_items = _render_chunk_items(data.get("items", []))
 	if chunk_items:
 		blocks.append(chunk_items)
+	else:
+		blocks.append(render_span("No chunks.", "muted", weight="normal"))
 
 	if data.get("has_more"):
 		next_offset = int(data.get("offset", 0)) + int(data.get("limit", 0))
@@ -558,21 +570,24 @@ def _render_chunk_item(item: dict[str, object]) -> tuple[str, str, bool]:
 	}.get(result_type, "active")
 	identifier = str(item.get("id", ""))
 	title = str(item.get("title") or item.get("id") or "item")
-	row_tone = "muted" if status_group != "active" else "text"
 	title_and_id = render_span(
 		f"{title} · {identifier}",
-		row_tone,
+		"text",
 		weight="normal",
 	)
 
 	if status_group == "done":
-		row = f"{render_status('success', 'done')}  {title_and_id}"
+		status = render_status("success", "done")
 	elif status_group == "active":
-		row = f"{render_status('info', 'active')}  {title_and_id}"
+		status = render_status("info", "active")
 	else:
-		# render_status('skipped') has no marker-only option and falls back to
-		# a "Skipped" label, so pending rows use a plain muted marker span instead.
-		row = f"{render_span('–', 'muted', weight='normal')} {title_and_id}"
+		status = render_status("skipped", "pending")
+
+	# Pad against the plain-text width because the status string carries ANSI
+	# colour codes that a fixed-width format spec would count.
+	status_width = len(_ANSI_ESCAPE_PATTERN.sub("", status))
+	padding = " " * max(0, _CHUNK_STATUS_COLUMN_WIDTH - status_width)
+	row = f"{status}{padding}  {title_and_id}"
 
 	description = item.get("description")
 	if status_group == "done" or not description:
@@ -587,20 +602,24 @@ def _render_chunk_item(item: dict[str, object]) -> tuple[str, str, bool]:
 
 
 def _render_task_list(data: dict[str, object]) -> str:
-	"""Render task rows grouped by release with status and the next available action."""
+	"""Render the task list: an empty-state line, or the release-grouped tables followed by the next-action line."""
+	task_groups = _group_task_items(data.get("items"))
+	if not task_groups:
+		return render_span("No tasks.", "muted", weight="normal")
+
 	get_command = render_span("progress task get TASK_ID", weight="bold")
 	move_command = render_span(
 		"progress task move TASK_ID --before/--after TASK_ID", weight="bold"
 	)
 	action_message = f"View a task with {get_command}; reorder with {move_command}."
-	blocks = [render_labelled_line("Next action", action_message)]
+	blocks = []
 	columns = [
-		{"key": "title", "label": "Title"},
 		{"key": "status", "label": "Status"},
+		{"key": "title", "label": "Title"},
 		{"key": "id", "label": "ID"},
 	]
-	for release_title, items in _group_task_items(data.get("items")):
-		blocks.append(render_span(release_title, "muted", weight="normal"))
+	for release_title, items in task_groups:
+		blocks.append(render_span(release_title, weight="normal"))
 		blocks.append(
 			render_table(columns, [_render_task_item(item) for item in items])
 		)
@@ -608,6 +627,8 @@ def _render_task_list(data: dict[str, object]) -> str:
 	if data.get("has_more"):
 		next_offset = int(data.get("offset", 0)) + int(data.get("limit", 0))
 		blocks.append(render_hint(f"More results: use --offset {next_offset}."))
+
+	blocks.append(render_labelled_line("Next action", action_message))
 
 	return "\n\n".join(blocks)
 
@@ -635,17 +656,22 @@ def _group_task_items(
 
 
 def _render_task_item(item: dict[str, object]) -> dict[str, str]:
-	"""Build one task row for the task-list table, flagging blocked titles with a warning marker."""
+	"""Build one task-list row, padding the status cell so titles align across releases."""
 	title = str(item.get("title") or item.get("id") or "item")
 	status = str(item.get("status", ""))
 	identifier = str(item.get("id", ""))
-	if status == "blocked":
-		title = f"{render_span('!', 'warning', weight='normal')} {title}"
+	rendered_status = render_status(_status_result_type(status), status)
+
+	# Each release group is rendered as its own table, so pad every status cell to
+	# one shared width here to line titles up across groups. Measure the plain
+	# text because the rendered status carries ANSI colour codes.
+	status_width = len(_ANSI_ESCAPE_PATTERN.sub("", rendered_status))
+	padding = " " * max(0, _TASK_STATUS_COLUMN_WIDTH - status_width)
 
 	return {
 		"title": title,
-		"status": render_status(_status_result_type(status), status),
-		"id": render_span(f"({identifier})", "muted", weight="normal"),
+		"status": f"{rendered_status}{padding}",
+		"id": render_span(identifier, "muted", weight="normal"),
 	}
 
 

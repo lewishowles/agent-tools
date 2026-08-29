@@ -1356,9 +1356,16 @@ def test_human_task_list_groups_rows_and_renders_hints(
 	assert output.out.index("Second release") < output.out.index("Done task")
 	assert "Unassigned" in output.out
 	assert "Unassigned task" in output.out
-	assert "! Blocked task" in output.out
-	assert "(tsk_ready)" in output.out
-	assert "(tsk_done)" in output.out
+	assert "! Blocked task" not in output.out
+	assert "(tsk_ready)" not in output.out
+	assert "(tsk_done)" not in output.out
+	assert "tsk_ready" in output.out
+	assert "tsk_done" in output.out
+	assert output.out.index("First release") < output.out.index("Next action")
+	assert output.out.index("Unassigned task") < output.out.index("Next action")
+	assert output.out.index("More results: use --offset 4.") < output.out.index(
+		"Next action"
+	)
 	assert "i Hint: View a task with" not in output.out
 	assert "i Hint: More results: use --offset 4." in output.out
 
@@ -1442,16 +1449,17 @@ def test_task_list_uses_release_priority_for_json_and_table_output(
 
 def test_chunk_list_renders_status_rows_and_descriptions(monkeypatch) -> None:
 	status_calls: list[tuple[str, str, str]] = []
+	span_calls: list[tuple[str, str, str | None]] = []
 
 	def fake_status(result_type: str, label: str = "", detail: str = "") -> str:
 		status_calls.append((result_type, label, detail))
 		return f"{result_type}:{label}" if label else result_type
 
-	monkeypatch.setattr(
-		render_module,
-		"render_span",
-		lambda value, *args, **kwargs: value,
-	)
+	def fake_span(value: str, tone: str = "info", weight: str | None = None) -> str:
+		span_calls.append((value, tone, weight))
+		return value
+
+	monkeypatch.setattr(render_module, "render_span", fake_span)
 	monkeypatch.setattr(render_module, "render_status", fake_status)
 	monkeypatch.setattr(
 		render_module,
@@ -1511,9 +1519,9 @@ def test_chunk_list_renders_status_rows_and_descriptions(monkeypatch) -> None:
 		f"info:active  Active output · {long_identifier}\n\n"
 		f"{active_description}\n\n"
 		"info:active  Other active output · chk_active_other\n\n"
-		"– Pending output · chk_pending\n\n"
+		"skipped:pending  Pending output · chk_pending\n\n"
 		f"{pending_description}\n\n"
-		"– Other pending output · chk_pending_other"
+		"skipped:pending  Other pending output · chk_pending_other"
 	)
 	assert "Done descriptions are hidden." not in output
 	assert any(long_identifier in line for line in output.splitlines())
@@ -1527,7 +1535,48 @@ def test_chunk_list_renders_status_rows_and_descriptions(monkeypatch) -> None:
 		("success", "done", ""),
 		("info", "active", ""),
 		("info", "active", ""),
+		("skipped", "pending", ""),
+		("skipped", "pending", ""),
 	]
+	assert ("Done output · chk_done", "text", "normal") in span_calls
+	assert ("Active output · " + long_identifier, "text", "normal") in span_calls
+	assert ("Pending output · chk_pending", "text", "normal") in span_calls
+	assert (active_description, "muted", "normal") in span_calls
+	assert (pending_description, "muted", "normal") in span_calls
+
+
+def test_chunk_list_aligns_status_columns(monkeypatch) -> None:
+	monkeypatch.setattr(
+		render_module,
+		"render_span",
+		lambda value, *args, **kwargs: value,
+	)
+	monkeypatch.setattr(
+		render_module,
+		"render_status",
+		lambda result_type, label="", detail="": label,
+	)
+
+	output = render_module._render_list(
+		"chunk list",
+		{
+			"items": [
+				{"id": "chk_done", "title": "Done output", "status": "done"},
+				{"id": "chk_active", "title": "Active output", "status": "active"},
+				{
+					"id": "chk_pending",
+					"title": "Pending output",
+					"status": "pending",
+				},
+			],
+			"has_more": False,
+		},
+	)
+
+	assert {
+		next(line.index(title) for line in output.splitlines() if title in line)
+		for title in ["Done output", "Active output", "Pending output"]
+	} == {11}
 
 
 @pytest.mark.parametrize("description", [None, ""])
@@ -1558,7 +1607,7 @@ def test_chunk_list_omits_empty_descriptions(description, monkeypatch) -> None:
 		},
 	)
 
-	assert output == "Chunks\n\n– Render output · chk_test"
+	assert output == "Chunks\n\nskipped  Render output · chk_test"
 	assert "Description" not in output
 
 
@@ -1589,11 +1638,12 @@ def test_chunk_list_renders_pagination_without_hint(monkeypatch) -> None:
 		},
 	)
 
-	assert output == "Chunks\n\nMore results: use --offset 1."
+	assert output == "Chunks\n\nNo chunks.\n\nMore results: use --offset 1."
 
 
 def test_task_list_action_styles_embedded_commands(monkeypatch) -> None:
 	spans: list[tuple[str, str, str | None]] = []
+	tables: list[tuple[list[dict[str, str]], list[dict[str, str]]]] = []
 
 	def fake_span(value: str, tone: str = "info", weight: str | None = None) -> str:
 		spans.append((value, tone, weight))
@@ -1601,16 +1651,33 @@ def test_task_list_action_styles_embedded_commands(monkeypatch) -> None:
 
 	monkeypatch.setattr(render_module, "render_span", fake_span)
 	monkeypatch.setattr(
+		render_module,
+		"render_status",
+		lambda result_type, label: f"{result_type}:{label}",
+	)
+	monkeypatch.setattr(
+		render_module,
+		"render_table",
+		lambda columns, rows: tables.append((columns, rows)) or "table",
+	)
+	monkeypatch.setattr(
 		render_module, "render_labelled_line", lambda label, message: message
 	)
 
-	output = render_module._render_task_list({"items": [], "has_more": False})
+	output = render_module._render_task_list(
+		{
+			"items": [{"id": "tsk_test", "title": "Task", "status": "ready"}],
+			"has_more": False,
+		}
+	)
 
 	assert output == (
+		"<Unassigned>\n\n"
+		"table\n\n"
 		"View a task with <progress task get TASK_ID>; reorder with "
 		"<progress task move TASK_ID --before/--after TASK_ID>."
 	)
-	assert spans == [
+	assert spans[:2] == [
 		("progress task get TASK_ID", "info", "bold"),
 		(
 			"progress task move TASK_ID --before/--after TASK_ID",
@@ -1618,6 +1685,43 @@ def test_task_list_action_styles_embedded_commands(monkeypatch) -> None:
 			"bold",
 		),
 	]
+	assert ("Unassigned", "info", "normal") in spans
+	assert tables == [
+		(
+			[
+				{"key": "status", "label": "Status"},
+				{"key": "title", "label": "Title"},
+				{"key": "id", "label": "ID"},
+			],
+			[
+				{
+					"id": "<tsk_test>",
+					"status": "skipped:ready   ",
+					"title": "Task",
+				}
+			],
+		)
+	]
+
+
+def test_task_list_renders_only_an_empty_state(monkeypatch) -> None:
+	span_calls: list[tuple[str, str, str | None]] = []
+
+	def fake_span(value: str, tone: str = "info", weight: str | None = None) -> str:
+		span_calls.append((value, tone, weight))
+		return value
+
+	monkeypatch.setattr(render_module, "render_span", fake_span)
+	monkeypatch.setattr(
+		render_module,
+		"render_labelled_line",
+		lambda label, message: pytest.fail("unexpected next action"),
+	)
+
+	assert (
+		render_module._render_task_list({"items": [], "has_more": True}) == "No tasks."
+	)
+	assert span_calls == [("No tasks.", "muted", "normal")]
 
 
 @pytest.mark.parametrize(
@@ -2027,9 +2131,9 @@ def test_task_rows_use_distinct_cli_style_results(
 	)
 
 	assert _status_result_type(status) == result_type
-	assert row["status"] == f"{result_type}:{status}"
-	assert row["title"] == ("! Task" if status == "blocked" else "Task")
-	assert row["id"] == "(tsk_test)"
+	assert row["status"] == f"{result_type}:{status}".ljust(16)
+	assert row["title"] == "Task"
+	assert row["id"] == "tsk_test"
 
 
 def test_json_task_list_does_not_request_release_titles(
@@ -2116,6 +2220,8 @@ def test_human_release_list_keeps_trailing_blank_line(
 	assert output.out.endswith("\n\n")
 	assert "Releases" in output.out
 	assert "First release" in output.out
+	assert "(rel_test)" not in output.out
+	assert "rel_test" in output.out
 
 
 def test_json_write_success_uses_the_changed_object_shape(
