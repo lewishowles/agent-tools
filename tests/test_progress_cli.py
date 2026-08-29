@@ -10,11 +10,20 @@ from agents_progress import cli
 from agents_progress.errors import (
 	AlreadyExistsError,
 	DuplicateDependencyError,
+	ProgressError,
 )
 from agents_progress.models import Task
 from agents_progress.projects import Project, ProjectStore
 from agents_progress.render import _status_result_type
 from agents_progress.writes import WriteStore
+
+
+def _stderr_error_message(captured_err: str) -> str:
+	"""Return the bare error message from captured stderr, with the status marker, "Error" label, and ANSI codes removed."""
+	stripped = render_module._ANSI_ESCAPE_PATTERN.sub("", captured_err)
+	_, _, after_marker = stripped.partition(" ")
+
+	return after_marker.removeprefix("Error ").rstrip("\n")
 
 
 def test_bare_invocation_prints_help_and_succeeds(capsys) -> None:
@@ -49,8 +58,8 @@ def test_missing_noun_subcommand_lists_valid_choices(
 	output = capsys.readouterr()
 
 	assert output.out == ""
-	assert output.err == (
-		f"Error: the following arguments are required: {expected_choices}\n"
+	assert _stderr_error_message(output.err) == (
+		f"the following arguments are required: {expected_choices}"
 	)
 
 
@@ -138,15 +147,16 @@ def test_unknown_commands_explain_the_correct_command_shape(
 
 	assert output.out == ""
 	if expected_message is not None:
-		assert output.err == f"Error: {expected_message}\n"
+		assert _stderr_error_message(output.err) == expected_message
 	elif expected_suggestions:
 		expected_lines = "\n".join(
 			f"  {suggestion}" for suggestion in expected_suggestions
 		)
-		assert output.err == (
-			f"Error: '{token}' is not a command on its own. Did you mean one of:\n"
-			f"{expected_lines}\n"
+		expected_error = (
+			f"'{token}' is not a command on its own. Did you mean one of:\n"
+			f"{expected_lines}"
 		)
+		assert _stderr_error_message(output.err) == expected_error
 	else:
 		assert f"invalid choice: '{token}'" in output.err
 		assert "(choose from" in output.err
@@ -169,7 +179,7 @@ def test_legacy_command_json_uses_the_same_replacement(capsys, command: str) -> 
 		"ok": False,
 		"error": {
 			"code": "usage",
-			"message": human_output.err.removeprefix("Error: ").rstrip("\n"),
+			"message": _stderr_error_message(human_output.err),
 			"details": {},
 		},
 	}
@@ -193,7 +203,7 @@ def test_unknown_command_json_uses_the_same_multiline_suggestion(capsys) -> None
 		"ok": False,
 		"error": {
 			"code": "usage",
-			"message": human_output.err.removeprefix("Error: ").rstrip("\n"),
+			"message": _stderr_error_message(human_output.err),
 			"details": {},
 		},
 	}
@@ -900,8 +910,8 @@ def test_missing_add_arguments_keep_argparse_error_on_non_tty_stdin(
 
 	output = capsys.readouterr()
 	assert output.out == ""
-	assert output.err == (
-		"Error: the following arguments are required: --task, --title, --description\n"
+	assert _stderr_error_message(output.err) == (
+		"the following arguments are required: --task, --title, --description"
 	)
 
 
@@ -949,9 +959,46 @@ def test_other_add_commands_do_not_prompt(capsys, monkeypatch) -> None:
 
 	assert cli.main(["release", "add"]) == 2
 
-	assert capsys.readouterr().err == (
-		"Error: the following arguments are required: --slug, --title, --overview\n"
+	assert _stderr_error_message(capsys.readouterr().err) == (
+		"the following arguments are required: --slug, --title, --overview"
 	)
+
+
+def test_progress_error_renders_a_failed_status_on_stderr(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_complete(self, task_id: str) -> None:
+			raise ProgressError("task cannot complete while it has pending chunks")
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"complete",
+				"tsk_test",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 1
+	)
+
+	output = capsys.readouterr()
+
+	assert output.out == ""
+	assert _stderr_error_message(output.err) == (
+		"task cannot complete while it has pending chunks"
+	)
+
+	plain_err = render_module._ANSI_ESCAPE_PATTERN.sub("", output.err)
+
+	assert plain_err.startswith(("x Error ", "× Error "))
 
 
 def test_task_clean_passes_force_to_the_write_store(

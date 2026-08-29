@@ -15,7 +15,7 @@ from .errors import ProgressError
 from .projects import ProjectStore
 from .reads import DEFAULT_LIMIT, MAX_LIMIT, ReadStore
 from .render import render
-from .style import span as render_span
+from .style import span as render_span, status as render_status
 from .writes import WriteStore
 
 
@@ -1341,7 +1341,7 @@ def _write_error(
 			}
 		)
 	else:
-		sys.stderr.write(f"Error: {message}\n")
+		sys.stderr.write(render_status("failed", "Error", message) + "\n")
 
 	return status
 
