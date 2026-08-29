@@ -7,6 +7,7 @@ import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TextIO
 
 from prompt_toolkit import prompt
 
@@ -18,14 +19,6 @@ from .render import render
 from .style import span as render_span, status as render_status
 from .writes import WriteStore
 
-
-# Human output for these commands gets leading/trailing blank-line framing.
-_FRAMED_HUMAN_COMMANDS = {
-	"chunk list",
-	"next",
-	"release list",
-	"task list",
-}
 
 # Top-level commands removed by prior releases, mapped to their direct replacement.
 _LEGACY_COMMAND_ALIASES = {
@@ -46,6 +39,15 @@ class CliUsageError(Exception):
 
 class ProgressArgumentParser(argparse.ArgumentParser):
 	"""Raise CliUsageError on a bad argument instead of exiting the process directly."""
+
+	def print_help(self, file: TextIO | None = None) -> None:
+		"""Give help text the same leading blank line every other human output gets.
+
+		Mirrors argparse's signature; `file` defaults to stdout when omitted.
+		"""
+		file = file or sys.stdout
+		file.write("\n")
+		super().print_help(file)
 
 	def error(self, message: str) -> None:
 		"""Turn an argparse usage error into a CliUsageError the caller can format."""
@@ -982,11 +984,11 @@ def main(argv: list[str] | None = None) -> int:
 		_write_json({"ok": True, "data": data})
 	else:
 		human_output = render(command, data)
-		if command in _FRAMED_HUMAN_COMMANDS:
-			framed_output = human_output.rstrip("\n")
-			sys.stdout.write(f"\n{framed_output}\n\n")
-		else:
-			sys.stdout.write(human_output)
+
+		# Every human command output gets one blank line above it and a trailing
+		# gap before any Next hint, so nothing butts against the previous prompt.
+		framed_output = human_output.rstrip("\n")
+		sys.stdout.write(f"\n{framed_output}\n\n")
 		hint = _human_hint(command, data)
 		if hint:
 			sys.stdout.write(f"Next: {hint}\n")
@@ -1341,7 +1343,7 @@ def _write_error(
 			}
 		)
 	else:
-		sys.stderr.write(render_status("failed", "Error", message) + "\n")
+		sys.stderr.write("\n" + render_status("failed", "Error", message) + "\n")
 
 	return status
 

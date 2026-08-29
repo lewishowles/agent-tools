@@ -32,7 +32,7 @@ def test_bare_invocation_prints_help_and_succeeds(capsys) -> None:
 	output = capsys.readouterr()
 
 	assert output.err == ""
-	assert output.out == cli.build_parser().format_help()
+	assert output.out == "\n" + cli.build_parser().format_help()
 
 
 @pytest.mark.parametrize(
@@ -347,7 +347,11 @@ def test_doctor_human_output_reports_findings_or_clean(
 
 	assert cli.main(["doctor", "--database", str(tmp_path / "db")]) == 0
 
-	assert expected_output in capsys.readouterr().out
+	output = capsys.readouterr().out
+
+	assert output.startswith("\n")
+	assert output.endswith("\n\n")
+	assert expected_output in output
 
 
 def test_doctor_dispatches_with_the_json_envelope(
@@ -741,8 +745,12 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 		)
 	)
 	assert output.out.count("press Enter to skip") == 7
-	assert output.out.startswith("\n")
-	assert output.out.count("\n\n") == len(prompts) - 1
+	# render is stubbed empty here, so main() adds only its blank-line frame and
+	# the Next hint after the guided prompts. Check spacing on the prompt section.
+	prompt_section, _, next_hint = output.out.partition("\n\n\n\nNext: ")
+	assert next_hint
+	assert prompt_section.startswith("\n")
+	assert prompt_section.count("\n\n") == len(prompts) - 1
 
 
 def test_chunk_add_prompts_for_required_and_optional_arguments(
@@ -893,8 +901,12 @@ def test_add_prompt_skips_arguments_already_supplied(
 	assert all(prompt != "slug: " for prompt in prompts)
 	assert "--slug" not in output.out
 	assert ") Display title" in output.out
-	assert output.out.startswith("\n")
-	assert output.out.count("\n\n") == len(prompts) - 1
+	# render is stubbed empty here, so main() adds only its blank-line frame and
+	# the Next hint after the guided prompts. Check spacing on the prompt section.
+	prompt_section, _, next_hint = output.out.partition("\n\n\n\nNext: ")
+	assert next_hint
+	assert prompt_section.startswith("\n")
+	assert prompt_section.count("\n\n") == len(prompts) - 1
 
 
 def test_missing_add_arguments_keep_argparse_error_on_non_tty_stdin(
@@ -998,7 +1010,8 @@ def test_progress_error_renders_a_failed_status_on_stderr(
 
 	plain_err = render_module._ANSI_ESCAPE_PATTERN.sub("", output.err)
 
-	assert plain_err.startswith(("x Error ", "× Error "))
+	assert plain_err.startswith("\n")
+	assert plain_err[1:].startswith(("x Error ", "× Error "))
 
 
 def test_task_clean_passes_force_to_the_write_store(
@@ -2634,11 +2647,13 @@ def test_human_task_complete_output_is_concise(
 		render_module._ANSI_ESCAPE_PATTERN.sub("", line) for line in output.splitlines()
 	]
 
-	assert len(plain_lines) == 2
-	assert plain_lines[0].endswith("Completed task Dependency")
+	assert output.startswith("\n")
+	assert output.endswith("\n\nNext: progress next\n")
+	assert len(plain_lines) == 4
+	assert plain_lines[1].endswith("Completed task Dependency")
 	# Inequality after stripping ANSI proves the line carried styling.
-	assert plain_lines[0] != "Completed task Dependency"
-	assert plain_lines[1] == "Next: progress next"
+	assert plain_lines[1] != "Completed task Dependency"
+	assert plain_lines[3] == "Next: progress next"
 	assert "tsk_test" not in output
 	assert "Dependent" not in output
 
@@ -2680,11 +2695,13 @@ def test_human_chunk_complete_output_is_concise(
 		render_module._ANSI_ESCAPE_PATTERN.sub("", line) for line in output.splitlines()
 	]
 
-	assert len(plain_lines) == 2
-	assert plain_lines[0].endswith("Completed chunk CLI output")
+	assert output.startswith("\n")
+	assert output.endswith("\n\nNext: progress next\n")
+	assert len(plain_lines) == 4
+	assert plain_lines[1].endswith("Completed chunk CLI output")
 	# Inequality after stripping ANSI proves the line carried styling.
-	assert plain_lines[0] != "Completed chunk CLI output"
-	assert plain_lines[1] == "Next: progress next"
+	assert plain_lines[1] != "Completed chunk CLI output"
+	assert plain_lines[3] == "Next: progress next"
 	assert "chk_test" not in output
 	assert "tsk_parent" not in output
 
