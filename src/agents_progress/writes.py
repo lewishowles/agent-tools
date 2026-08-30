@@ -257,6 +257,67 @@ class WriteStore(_StoreBase):
 				).fetchone()
 			).to_dict()
 
+	def release_move(
+		self,
+		release_id: str,
+		before_release_id: str | None = None,
+		after_release_id: str | None = None,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""Reposition a release relative to another release in the same project."""
+		validate_object_id(release_id, RELEASE_PREFIX)
+		if (before_release_id is None) == (after_release_id is None):
+			raise InvalidTransitionError(
+				"release move requires exactly one of before_release_id or after_release_id",
+				{"release_id": release_id},
+			)
+
+		target_release_id = before_release_id or after_release_id
+		validate_object_id(target_release_id, RELEASE_PREFIX)
+		if target_release_id == release_id:
+			raise InvalidTransitionError(
+				"a release cannot move relative to itself", {"release_id": release_id}
+			)
+
+		project = self.current_project(path)
+		with self.database.transaction() as connection:
+			release = connection.execute(
+				"SELECT 1 FROM releases WHERE id = ? AND project_id = ?",
+				(release_id, project.id),
+			).fetchone()
+			if release is None:
+				raise NotFoundError(
+					f"release {release_id} was not found", {"id": release_id}
+				)
+
+			target = connection.execute(
+				"SELECT 1 FROM releases WHERE id = ? AND project_id = ?",
+				(target_release_id, project.id),
+			).fetchone()
+			if target is None:
+				raise NotFoundError(
+					f"release {target_release_id} was not found",
+					{"id": target_release_id},
+				)
+
+			_reorder_queue(
+				connection,
+				"releases",
+				"project_id = ?",
+				(project.id,),
+				release_id,
+				target_release_id,
+				before_release_id,
+				after_release_id,
+			)
+			return Release.from_row(
+				connection.execute(
+					"SELECT id, project_id, slug, title, overview, status, position "
+					"FROM releases WHERE id = ?",
+					(release_id,),
+				).fetchone()
+			).to_dict()
+
 	def task_add(
 		self,
 		slug: str,
@@ -1688,6 +1749,39 @@ def _next_task_position(
 	return position
 
 
+def _reorder_queue(
+	connection: sqlite3.Connection,
+	table: str,
+	scope_filter: str,
+	scope_parameters: tuple[object, ...],
+	moved_id: str,
+	target_id: str,
+	before_id: str | None,
+	after_id: str | None,
+) -> None:
+	"""Move one row next to another and renumber the scoped queue gap-free."""
+	queue_rows = connection.execute(
+		f"SELECT id, position FROM {table} WHERE {scope_filter} ORDER BY position, id",
+		scope_parameters,
+	).fetchall()
+	ordered_ids = [row["id"] for row in queue_rows]
+	positions = {row["id"]: row["position"] for row in queue_rows}
+	ordered_ids.remove(moved_id)
+	target_index = ordered_ids.index(target_id)
+	insert_index = target_index if before_id is not None else target_index + 1
+	ordered_ids.insert(insert_index, moved_id)
+
+	first_position = min(positions.values(), default=1)
+	for index, ordered_id in enumerate(ordered_ids, start=first_position):
+		if positions[ordered_id] == index:
+			continue
+
+		connection.execute(
+			f"UPDATE {table} SET position = ? WHERE id = ?",
+			(index, ordered_id),
+		)
+
+
 def _reorder_task_queue(
 	connection: sqlite3.Connection,
 	project_id: str,
@@ -1705,27 +1799,16 @@ def _reorder_task_queue(
 		queue_filter = "release_id = ?"
 		queue_parameters = (project_id, release_id)
 
-	queue_rows = connection.execute(
-		f"SELECT id, position FROM tasks WHERE project_id = ? AND {queue_filter} "
-		"ORDER BY position, id",
+	_reorder_queue(
+		connection,
+		"tasks",
+		f"project_id = ? AND {queue_filter}",
 		queue_parameters,
-	).fetchall()
-	ordered_ids = [row["id"] for row in queue_rows]
-	positions = {row["id"]: row["position"] for row in queue_rows}
-	ordered_ids.remove(task_id)
-	target_index = ordered_ids.index(target_task_id)
-	insert_index = target_index if before_task_id is not None else target_index + 1
-	ordered_ids.insert(insert_index, task_id)
-
-	first_position = min(positions.values(), default=1)
-	for index, ordered_id in enumerate(ordered_ids, start=first_position):
-		if positions[ordered_id] == index:
-			continue
-
-		connection.execute(
-			"UPDATE tasks SET position = ? WHERE id = ?",
-			(index, ordered_id),
-		)
+		task_id,
+		target_task_id,
+		before_task_id,
+		after_task_id,
+	)
 
 
 def _next_chunk_position(connection: sqlite3.Connection, task_id: str) -> int:

@@ -265,6 +265,15 @@ _COMMAND_SPECS = (
 				),
 			),
 			_CommandSpec(
+				"move",
+				"move a release relative to another release",
+				arguments=(
+					_argument("release_id"),
+					_argument("--before", help="move before RELEASE_ID"),
+					_argument("--after", help="move after RELEASE_ID"),
+				),
+			),
+			_CommandSpec(
 				"list",
 				"list releases",
 				arguments=(_argument("--all", action="store_true"),),
@@ -1041,6 +1050,7 @@ def _run_command(
 			),
 			"release add",
 		),
+		("release", "move"): lambda: _run_release_move(args, database),
 		("release", "list"): lambda: (
 			ReadStore(database).release_list(
 				args.limit,
@@ -1218,6 +1228,23 @@ def _run_command(
 		raise CliUsageError("unknown progress command")
 
 	return handler()
+
+
+def _run_release_move(
+	args: argparse.Namespace, database: Database
+) -> tuple[object, str]:
+	"""Run release move after validating its relative target flags."""
+	if (args.before is None) == (args.after is None):
+		raise CliUsageError("release move requires exactly one of --before or --after")
+
+	return (
+		WriteStore(database).release_move(
+			args.release_id,
+			before_release_id=args.before,
+			after_release_id=args.after,
+		),
+		"release move",
+	)
 
 
 def _run_task_move(args: argparse.Namespace, database: Database) -> tuple[object, str]:

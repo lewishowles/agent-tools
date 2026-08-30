@@ -39,7 +39,7 @@ def test_bare_invocation_prints_help_and_succeeds(capsys) -> None:
 	("command", "expected_choices"),
 	[
 		("project", "{init,attach,current}"),
-		("release", "{add,list,get,remove,rename,edit,complete}"),
+		("release", "{add,move,list,get,remove,rename,edit,complete}"),
 		(
 			"task",
 			"{add,move,dependency,remove,clean,rename,edit,start,complete,block,unblock,get,list}",
@@ -504,6 +504,17 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 		(
 			["release", "edit", "rel_" + "r" * 22, "--overview", "Updated overview"],
 			"release_edit",
+			"write",
+		),
+		(
+			[
+				"release",
+				"move",
+				"rel_" + "r" * 22,
+				"--before",
+				"rel_" + "b" * 22,
+			],
+			"release_move",
 			"write",
 		),
 		(["release", "complete", "rel_" + "r" * 22], "release_complete", "write"),
@@ -1047,6 +1058,87 @@ def test_task_clean_passes_force_to_the_write_store(
 
 	assert arguments_seen == {"force": True}
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+def test_release_move_passes_relative_target_to_write_store(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {"id": "rel_test", "position": 2}
+	arguments_seen: dict[str, object] = {}
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def release_move(self, release_id, **arguments):
+			arguments_seen["release_id"] = release_id
+			arguments_seen.update(arguments)
+			return data
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				"release",
+				"move",
+				"rel_" + "r" * 22,
+				"--after",
+				"rel_" + "a" * 22,
+				"--database",
+				str(tmp_path / "db"),
+				"--json",
+			]
+		)
+		== 0
+	)
+
+	assert arguments_seen == {
+		"release_id": "rel_" + "r" * 22,
+		"before_release_id": None,
+		"after_release_id": "rel_" + "a" * 22,
+	}
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+@pytest.mark.parametrize(
+	"relative_arguments",
+	[
+		pytest.param([], id="neither"),
+		pytest.param(
+			[
+				"--before",
+				"rel_" + "b" * 22,
+				"--after",
+				"rel_" + "a" * 22,
+			],
+			id="both",
+		),
+	],
+)
+def test_release_move_requires_exactly_one_relative_target(
+	tmp_path: Path, capsys, relative_arguments: list[str]
+) -> None:
+	assert (
+		cli.main(
+			[
+				"release",
+				"move",
+				"rel_" + "r" * 22,
+				*relative_arguments,
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 2
+	)
+
+	output = capsys.readouterr()
+
+	assert output.out == ""
+	assert _stderr_error_message(output.err) == (
+		"release move requires exactly one of --before or --after"
+	)
 
 
 @pytest.mark.parametrize("release_arguments", [["--release", ""], ["--release"]])

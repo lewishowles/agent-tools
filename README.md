@@ -177,6 +177,21 @@ progress release edit <release_id> --overview <overview> [--json] [--database <p
 Release overviews are required and cannot be cleared. Pass replacement text
 when the overview needs changing.
 
+### `progress release move`
+
+Reorder a release within the current project:
+
+```text
+progress release move <release_id> --before <release_id> [--json] [--database <path>]
+progress release move <release_id> --after <release_id> [--json] [--database <path>]
+```
+
+Exactly one of `--before` or `--after` is required, and the target must be
+another release in the same project. The move changes release positions
+atomically, placing the selected release before or after the target and
+renumbering the rest so the order stays gap-free. `progress release list`
+reflects the new order.
+
 ### `progress release complete`
 
 Move a planned or active release to `done`:

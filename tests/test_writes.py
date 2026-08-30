@@ -1358,6 +1358,115 @@ def test_chunk_edit_rejects_blank_description(tmp_path: Path, description: str) 
 		store.chunk_edit(chunk["id"], description=description)
 
 
+def test_release_move_reorders_releases_and_normalises_positions(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	first = store.release_add("first", "First", overview="First overview")
+	second = store.release_add("second", "Second", overview="Second overview")
+	third = store.release_add("third", "Third", overview="Third overview")
+
+	moved = store.release_move(third["id"], before_release_id=first["id"])
+	releases = ReadStore(store.database, _ProjectStore(store.database)).release_list()
+
+	assert moved["id"] == third["id"]
+	assert moved["position"] == 1
+	assert [release["id"] for release in releases["items"]] == [
+		third["id"],
+		first["id"],
+		second["id"],
+	]
+	assert [release["position"] for release in releases["items"]] == [1, 2, 3]
+
+	store.release_move(first["id"], after_release_id=second["id"])
+	releases = ReadStore(store.database, _ProjectStore(store.database)).release_list()
+
+	assert [release["id"] for release in releases["items"]] == [
+		third["id"],
+		second["id"],
+		first["id"],
+	]
+
+
+def test_release_move_can_move_a_release_to_the_end(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first = store.release_add("first", "First", overview="First overview")
+	second = store.release_add("second", "Second", overview="Second overview")
+	third = store.release_add("third", "Third", overview="Third overview")
+
+	moved = store.release_move(first["id"], after_release_id=third["id"])
+	releases = ReadStore(store.database, _ProjectStore(store.database)).release_list()
+
+	assert moved["position"] == 3
+	assert [release["id"] for release in releases["items"]] == [
+		second["id"],
+		third["id"],
+		first["id"],
+	]
+
+
+def test_release_move_rejects_a_self_relative_target(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Release overview")
+
+	with pytest.raises(InvalidTransitionError, match="cannot move relative to itself"):
+		store.release_move(release["id"], before_release_id=release["id"])
+
+
+def test_release_move_rejects_unknown_moved_and_target_releases(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Release overview")
+	unknown_release_id = "rel_" + "u" * 22
+
+	with pytest.raises(
+		NotFoundError, match=f"release {unknown_release_id} was not found"
+	):
+		store.release_move(unknown_release_id, before_release_id=release["id"])
+
+	with pytest.raises(
+		NotFoundError, match=f"release {unknown_release_id} was not found"
+	):
+		store.release_move(release["id"], before_release_id=unknown_release_id)
+
+
+def test_release_move_is_scoped_to_the_current_project(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Release overview")
+	other_project_id = "prj_" + "o" * 22
+	other_release_id = "rel_" + "o" * 22
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(other_project_id, "other", "Other project", "2026-01-01T00:00:00+00:00"),
+		)
+		connection.execute(
+			"""
+			INSERT INTO releases (id, project_id, slug, title, overview, status, position)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			""",
+			(
+				other_release_id,
+				other_project_id,
+				"other-release",
+				"Other release",
+				"Other release overview",
+				"planned",
+				1,
+			),
+		)
+
+	with pytest.raises(
+		NotFoundError, match=f"release {other_release_id} was not found"
+	):
+		store.release_move(release["id"], before_release_id=other_release_id)
+
+	with pytest.raises(
+		NotFoundError, match=f"release {other_release_id} was not found"
+	):
+		store.release_move(other_release_id, before_release_id=release["id"])
+
+
 def test_release_edit_updates_only_overview_and_preserves_task_references(
 	tmp_path: Path,
 ) -> None:
