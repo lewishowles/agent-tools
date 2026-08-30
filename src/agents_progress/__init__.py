@@ -3,7 +3,7 @@
 # Single source of truth for the package version. hatchling reads this literal at
 # build time (see [tool.hatch.version] in pyproject.toml), and the CLI reports it
 # for `progress --version`, so keep it a plain string assignment.
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from .database import (
 	BUSY_TIMEOUT_SECONDS,
