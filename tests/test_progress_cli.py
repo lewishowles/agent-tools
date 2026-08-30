@@ -1700,7 +1700,7 @@ def test_chunk_list_omits_empty_descriptions(description, monkeypatch) -> None:
 		},
 	)
 
-	assert output == "Chunks\n\nskipped  Render output · chk_test"
+	assert output == "Chunks\n\nskipped    Render output · chk_test"
 	assert "Description" not in output
 
 

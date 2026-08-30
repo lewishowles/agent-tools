@@ -1559,9 +1559,9 @@ def test_release_complete_rejects_an_already_done_release(tmp_path: Path) -> Non
 		store.release_complete(release["id"])
 
 	assert (
-		ReadStore(store.database, _ProjectStore(store.database)).release_list()[
-			"items"
-		][0]["status"]
+		ReadStore(store.database, _ProjectStore(store.database)).release_list(
+			show_all=True
+		)["items"][0]["status"]
 		== "done"
 	)
 
