@@ -264,7 +264,12 @@ _COMMAND_SPECS = (
 					_argument("--position", type=int),
 				),
 			),
-			_CommandSpec("list", "list releases", page_options=True),
+			_CommandSpec(
+				"list",
+				"list releases",
+				arguments=(_argument("--all", action="store_true"),),
+				page_options=True,
+			),
 			_CommandSpec(
 				"get",
 				"show one release",
@@ -1006,6 +1011,10 @@ def _run_command(
 
 	database = Database(getattr(args, "database", None))
 	subcommand_name = getattr(args, f"{command_name}_command", None)
+
+	# include_release_titles is set only for human (non-JSON) output, so it also
+	# gates the human-only hidden-count hint on release list.
+	human_output = include_release_titles
 	dispatch = {
 		("next", None): lambda: (
 			(
@@ -1033,7 +1042,12 @@ def _run_command(
 			"release add",
 		),
 		("release", "list"): lambda: (
-			ReadStore(database).release_list(args.limit, args.offset),
+			ReadStore(database).release_list(
+				args.limit,
+				args.offset,
+				show_all=args.all,
+				include_hidden_count=human_output,
+			),
 			"release list",
 		),
 		("release", "get"): lambda: (

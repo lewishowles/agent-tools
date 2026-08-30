@@ -511,6 +511,17 @@ def _render_list(command: str, data: dict[str, object]) -> str:
 		next_offset = int(data.get("offset", 0)) + int(data.get("limit", 0))
 		blocks.append(render_hint(f"More results: use --offset {next_offset}."))
 
+	if command == "release list":
+		hidden_done_count = data.get("hidden_done_count", 0)
+		if hidden_done_count:
+			release_label = "release" if hidden_done_count == 1 else "releases"
+			blocks.append(
+				render_hint(
+					f"{hidden_done_count} completed {release_label} hidden. "
+					"Use --all to show them."
+				)
+			)
+
 	return "\n\n".join(blocks)
 
 

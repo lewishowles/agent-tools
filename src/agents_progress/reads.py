@@ -323,7 +323,9 @@ class ReadStore(_StoreBase):
 		"""Report records with blank fields from the required-in-practice list."""
 		# Bounded-list loader for each record type, used by the checks below.
 		page_loaders: dict[str, Callable[[int, int], dict[str, object]]] = {
-			"release": lambda limit, offset: self.release_list(limit, offset, path),
+			"release": lambda limit, offset: self.release_list(
+				limit, offset, path, show_all=True
+			),
 			"task": lambda limit, offset: self.task_list(None, limit, offset, path),
 			"chunk": lambda limit, offset: self._chunk_list_for_project(
 				limit, offset, path
@@ -376,24 +378,48 @@ class ReadStore(_StoreBase):
 		limit: int = DEFAULT_LIMIT,
 		offset: int = 0,
 		path: str | Path | None = None,
+		*,
+		show_all: bool = False,
+		include_hidden_count: bool = False,
 	) -> dict[str, object]:
-		"""List the current project's releases in position order, one bounded page at a time."""
+		"""List the current project's releases in position order, one bounded page at a time.
+
+		Only planned and active releases are listed by default. Pass show_all to include done
+		releases as well. The human output passes include_hidden_count to add hidden_done_count
+		to the result when done releases are hidden and at least one exists.
+		"""
 		limit, offset = validate_page(limit, offset)
 		project = self.current_project(path)
+		where = "project_id = ?"
+		parameters = (project.id,)
+
+		if not show_all:
+			where += " AND status IN ('planned', 'active')"
 
 		with self.database.connection() as connection:
-			return self._paged_query(
+			response = self._paged_query(
 				connection,
 				f"SELECT {_RELEASE_COLUMNS} FROM releases "
-				"WHERE project_id = ? ORDER BY position, id",
-				(project.id,),
+				f"WHERE {where} ORDER BY position, id",
+				parameters,
 				Release.from_row,
 				limit,
 				offset,
 				"releases",
-				"project_id = ?",
-				(project.id,),
+				where,
+				parameters,
 			)
+
+			if include_hidden_count and not show_all:
+				hidden_done_count = connection.execute(
+					"SELECT COUNT(*) FROM releases "
+					"WHERE project_id = ? AND status = 'done'",
+					(project.id,),
+				).fetchone()[0]
+				if hidden_done_count > 0:
+					response["hidden_done_count"] = hidden_done_count
+
+			return response
 
 	def release_get(
 		self,

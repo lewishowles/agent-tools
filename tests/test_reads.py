@@ -416,7 +416,8 @@ def test_doctor_reports_blank_required_fields_across_all_pages(
 		},
 	]
 
-	def release_list(limit: int, offset: int, path=None):
+	def release_list(limit: int, offset: int, path=None, *, show_all: bool = False):
+		assert show_all is True
 		release_offsets.append(offset)
 		return release_pages[offset]
 
@@ -480,6 +481,28 @@ def test_doctor_reports_clean_when_required_fields_are_populated(
 	store = _seed_store(tmp_path)
 
 	assert store.doctor() == {"findings": [], "ok": True}
+
+
+def test_doctor_reports_a_blank_overview_for_a_done_release(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE releases SET overview = ?, status = ? WHERE id = ?",
+			("", "done", RELEASE_A),
+		)
+
+	assert store.doctor() == {
+		"findings": [
+			{
+				"field": "release.overview",
+				"id": RELEASE_A,
+				"noun": "release",
+				"title": "Progress store",
+			}
+		],
+		"ok": False,
+	}
 
 
 def test_task_get_rejects_a_wrong_object_type_before_lookup(tmp_path: Path) -> None:

@@ -269,7 +269,8 @@ def test_commands_json_lists_the_registry_with_required_flags(
 		"names": ["--release", "--release-id"],
 		"required": False,
 	}
-	assert commands["release list"]["flags"][-4:] == [
+	assert commands["release list"]["flags"][-5:] == [
+		{"names": ["--all"], "required": False},
 		{"names": ["--limit"], "required": False},
 		{"names": ["--offset"], "required": False},
 		{"names": ["--json"], "required": False},
@@ -2192,9 +2193,11 @@ def test_human_release_list_keeps_trailing_blank_line(
 		def __init__(self, database) -> None:
 			pass
 
-		def release_list(self, limit, offset):
+		def release_list(self, limit, offset, *, show_all, include_hidden_count):
 			assert limit == 1
 			assert offset == 0
+			assert show_all is False
+			assert include_hidden_count is True
 			return data
 
 	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
@@ -2222,6 +2225,198 @@ def test_human_release_list_keeps_trailing_blank_line(
 	assert "First release" in output.out
 	assert "(rel_test)" not in output.out
 	assert "rel_test" in output.out
+
+
+def test_release_list_hides_done_releases_without_changing_json_keys(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	database_path = tmp_path / "progress.db"
+	project = Project(
+		"prj_" + "p" * 22,
+		"agents",
+		"Agent configuration",
+		"2026-01-01T00:00:00+00:00",
+	)
+	database = Database(database_path)
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(project.id, project.slug, project.name, project.created_at),
+		)
+
+	monkeypatch.setattr(ProjectStore, "current", lambda self, path=None: project)
+	writer = WriteStore(database)
+	planned_release = writer.release_add(
+		"planned-release",
+		"Planned release",
+		overview="Plan the release.",
+		status="planned",
+		position=1,
+	)
+	active_release = writer.release_add(
+		"active-release",
+		"Active release",
+		overview="Build the release.",
+		status="active",
+		position=2,
+	)
+	done_release = writer.release_add(
+		"done-release",
+		"Done release",
+		overview="Completed release.",
+		status="done",
+		position=3,
+	)
+	second_done_release = writer.release_add(
+		"second-done-release",
+		"Second done release",
+		overview="Another completed release.",
+		status="done",
+		position=4,
+	)
+
+	assert (
+		cli.main(
+			[
+				"release",
+				"list",
+				"--limit",
+				"2",
+				"--json",
+				"--database",
+				str(database_path),
+			]
+		)
+		== 0
+	)
+
+	default_response = json.loads(capsys.readouterr().out)["data"]
+	assert set(default_response) == {"items", "limit", "offset", "has_more"}
+	assert [item["id"] for item in default_response["items"]] == [
+		planned_release["id"],
+		active_release["id"],
+	]
+	assert default_response["has_more"] is False
+
+	assert cli.main(["release", "list", "--database", str(database_path)]) == 0
+
+	human_output = capsys.readouterr().out
+	assert "2 completed releases hidden. Use --all to show them." in human_output
+
+	assert (
+		cli.main(
+			[
+				"release",
+				"list",
+				"--all",
+				"--limit",
+				"4",
+				"--json",
+				"--database",
+				str(database_path),
+			]
+		)
+		== 0
+	)
+
+	all_response = json.loads(capsys.readouterr().out)["data"]
+	assert set(all_response) == {"items", "limit", "offset", "has_more"}
+	assert [item["id"] for item in all_response["items"]] == [
+		planned_release["id"],
+		active_release["id"],
+		done_release["id"],
+		second_done_release["id"],
+	]
+	assert all_response["has_more"] is False
+
+	assert cli.main(["release", "list", "--all", "--database", str(database_path)]) == 0
+	assert "completed release hidden" not in capsys.readouterr().out
+
+	assert (
+		cli.main(
+			[
+				"release",
+				"get",
+				done_release["id"],
+				"--json",
+				"--database",
+				str(database_path),
+			]
+		)
+		== 0
+	)
+	assert json.loads(capsys.readouterr().out)["data"]["status"] == "done"
+
+
+def test_release_list_uses_singular_wording_for_one_hidden_done_release(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	database_path = tmp_path / "progress.db"
+	project = Project(
+		"prj_" + "p" * 22,
+		"agents",
+		"Agent configuration",
+		"2026-01-01T00:00:00+00:00",
+	)
+	database = Database(database_path)
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(project.id, project.slug, project.name, project.created_at),
+		)
+
+	monkeypatch.setattr(ProjectStore, "current", lambda self, path=None: project)
+	writer = WriteStore(database)
+	writer.release_add(
+		"active-release",
+		"Active release",
+		overview="Build the release.",
+		status="active",
+		position=1,
+	)
+	writer.release_add(
+		"done-release",
+		"Done release",
+		overview="Completed release.",
+		status="done",
+		position=2,
+	)
+
+	assert cli.main(["release", "list", "--database", str(database_path)]) == 0
+
+	human_output = capsys.readouterr().out
+	assert "1 completed release hidden. Use --all to show them." in human_output
+	assert "releases hidden" not in human_output
+
+
+def test_release_list_does_not_show_a_hidden_count_hint_without_done_releases(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	database_path = tmp_path / "progress.db"
+	project = Project(
+		"prj_" + "p" * 22,
+		"agents",
+		"Agent configuration",
+		"2026-01-01T00:00:00+00:00",
+	)
+	database = Database(database_path)
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(project.id, project.slug, project.name, project.created_at),
+		)
+
+	monkeypatch.setattr(ProjectStore, "current", lambda self, path=None: project)
+	WriteStore(database).release_add(
+		"active-release",
+		"Active release",
+		overview="Build the release.",
+		status="active",
+	)
+
+	assert cli.main(["release", "list", "--database", str(database_path)]) == 0
+
+	assert "completed release" not in capsys.readouterr().out
 
 
 def test_json_write_success_uses_the_changed_object_shape(
