@@ -11,12 +11,17 @@ from typing import TextIO
 
 from prompt_toolkit import prompt
 
+from . import __version__
 from .database import Database
 from .errors import ProgressError
 from .projects import ProjectStore
 from .reads import DEFAULT_LIMIT, MAX_LIMIT, ReadStore
 from .render import render
-from .style import span as render_span, status as render_status
+from .style import (
+	labelled_line as render_labelled_line,
+	span as render_span,
+	status as render_status,
+)
 from .writes import WriteStore
 
 
@@ -958,6 +963,12 @@ def build_parser() -> argparse.ArgumentParser:
 		default=None,
 		help="use PATH instead of $AGENTS_PROGRESS_DATABASE or ~/.agents/progress.db",
 	)
+	parser.add_argument(
+		"--version",
+		action="store_true",
+		default=False,
+		help="show the package version and exit",
+	)
 	commands = parser.add_subparsers(dest="command", metavar="COMMAND")
 
 	_add_command_specs(commands, _COMMAND_SPECS)
@@ -977,6 +988,16 @@ def main(argv: list[str] | None = None) -> int:
 
 		args = parser.parse_args(arguments)
 		json_mode = bool(getattr(args, "json", json_mode))
+
+		# Handled before command dispatch so `progress --version` works with no
+		# subcommand and never touches the database.
+		if args.version:
+			if json_mode:
+				_write_json({"ok": True, "data": {"version": __version__}})
+			else:
+				sys.stdout.write(render_labelled_line("Version", __version__) + "\n")
+
+			return 0
 
 		if args.command is None:
 			parser.print_help()

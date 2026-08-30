@@ -1,5 +1,10 @@
 """Storage foundation for the progress CLI."""
 
+# Single source of truth for the package version. hatchling reads this literal at
+# build time (see [tool.hatch.version] in pyproject.toml), and the CLI reports it
+# for `progress --version`, so keep it a plain string assignment.
+__version__ = "0.1.0"
+
 from .database import (
 	BUSY_TIMEOUT_SECONDS,
 	DATABASE_ENVIRONMENT_VARIABLE,
@@ -48,6 +53,7 @@ from .reads import ReadStore
 from .writes import WriteStore
 
 __all__ = [
+	"__version__",
 	"AlreadyExistsError",
 	"AlreadyInitialisedError",
 	"BUSY_TIMEOUT_SECONDS",

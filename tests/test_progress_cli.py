@@ -6,7 +6,7 @@ import pytest
 from agents_progress.database import Database
 import agents_progress.render as render_module
 import agents_progress.style as style_module
-from agents_progress import cli
+from agents_progress import __version__, cli
 from agents_progress.errors import (
 	AlreadyExistsError,
 	DuplicateDependencyError,
@@ -33,6 +33,28 @@ def test_bare_invocation_prints_help_and_succeeds(capsys) -> None:
 
 	assert output.err == ""
 	assert output.out == "\n" + cli.build_parser().format_help()
+
+
+def test_version_prints_the_styled_package_version(capsys) -> None:
+	assert cli.main(["--version"]) == 0
+
+	output = capsys.readouterr()
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", output.out)
+
+	assert output.err == ""
+	assert plain_output in (
+		f"Version: {__version__}\n",
+		f"i Version: {__version__}\n",
+	)
+
+
+def test_version_json_uses_the_standard_envelope(capsys) -> None:
+	assert cli.main(["--json", "--version"]) == 0
+
+	output = capsys.readouterr()
+
+	assert output.err == ""
+	assert json.loads(output.out) == {"ok": True, "data": {"version": __version__}}
 
 
 @pytest.mark.parametrize(
