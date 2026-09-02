@@ -3030,6 +3030,7 @@ def test_human_task_complete_output_is_concise(
 	data = {
 		"id": "tsk_test",
 		"slug": "dependency",
+		"release_id": "rel_parent",
 		"title": "Dependency",
 		"status": "done",
 		"unblocked_tasks": [{"id": "tsk_dependent", "title": "Dependent"}],
@@ -3064,11 +3065,12 @@ def test_human_task_complete_output_is_concise(
 
 	assert output.startswith("\n")
 	assert output.endswith("\n\nNext: progress next\n")
-	assert len(plain_lines) == 4
+	assert len(plain_lines) == 5
 	assert plain_lines[1].endswith("Completed task Dependency")
 	# Inequality after stripping ANSI proves the line carried styling.
 	assert plain_lines[1] != "Completed task Dependency"
-	assert plain_lines[3] == "Next: progress next"
+	assert plain_lines[2] == "Release ID: rel_parent"
+	assert plain_lines[4] == "Next: progress next"
 	assert "tsk_test" not in output
 	assert "Dependent" not in output
 
@@ -3112,13 +3114,56 @@ def test_human_chunk_complete_output_is_concise(
 
 	assert output.startswith("\n")
 	assert output.endswith("\n\nNext: progress next\n")
-	assert len(plain_lines) == 4
+	assert len(plain_lines) == 5
 	assert plain_lines[1].endswith("Completed chunk CLI output")
 	# Inequality after stripping ANSI proves the line carried styling.
 	assert plain_lines[1] != "Completed chunk CLI output"
-	assert plain_lines[3] == "Next: progress next"
+	assert plain_lines[2] == "Task ID: tsk_parent"
+	assert plain_lines[4] == "Next: progress next"
 	assert "chk_test" not in output
-	assert "tsk_parent" not in output
+
+
+def test_human_task_complete_output_omits_null_release_id(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {
+		"id": "tsk_test",
+		"release_id": None,
+		"title": "Unassigned task",
+		"status": "done",
+	}
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_complete(self, task_id):
+			return data
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"complete",
+				"tsk_test",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+
+	output = capsys.readouterr().out
+	plain_lines = [
+		render_module._ANSI_ESCAPE_PATTERN.sub("", line) for line in output.splitlines()
+	]
+
+	assert len(plain_lines) == 4
+	assert plain_lines[1].endswith("Completed task Unassigned task")
+	assert "Release ID" not in output
+	assert plain_lines[3] == "Next: progress next"
 
 
 def test_project_init_dispatches_to_the_nested_project_command(

@@ -119,10 +119,17 @@ def render(command: str, data: object) -> str:
 		# rather than in _render_object so task get and chunk get still show all fields.
 		record_type = command.split()[0]  # "task" or "chunk"
 
+		# Completion also names the parent so the next command has its ID to hand.
+		# A task with no release gets no line.
+		parent_key = "task_id" if command == "chunk complete" else "release_id"
+		parent_id = data.get(parent_key)
+		parent_line = f"\n{_format_label(parent_key)}: {parent_id}" if parent_id else ""
+
 		return (
 			render_status(
 				"success", f"Completed {record_type}", str(data.get("title") or "")
 			)
+			+ parent_line
 			+ "\n"
 		)
 	if isinstance(data, dict) and "items" in data:
