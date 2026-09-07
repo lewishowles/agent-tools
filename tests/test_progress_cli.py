@@ -70,19 +70,30 @@ def test_version_json_uses_the_standard_envelope(capsys) -> None:
 		("discovery", "{add,list,remove}"),
 		("decision", "{add,list,remove}"),
 		("context", "{get,set}"),
+		("task dependency", "{add,remove}"),
 	],
 )
-def test_missing_noun_subcommand_lists_valid_choices(
+def test_group_without_subcommand_prints_its_help_and_succeeds(
 	capsys, command: str, expected_choices: str
 ) -> None:
-	assert cli.main([command]) == 2
+	arguments = command.split()
+
+	assert cli.main(arguments) == 0
 
 	output = capsys.readouterr()
 
-	assert output.out == ""
-	assert _stderr_error_message(output.err) == (
-		f"the following arguments are required: {expected_choices}"
-	)
+	assert output.err == ""
+	assert f"progress {command}" in output.out
+	assert expected_choices in output.out
+
+	with pytest.raises(SystemExit) as help_exit:
+		cli.main([*arguments, "-h"])
+
+	help_output = capsys.readouterr()
+
+	assert help_exit.value.code == 0
+	assert help_output.err == ""
+	assert output.out == help_output.out
 
 
 @pytest.mark.parametrize(

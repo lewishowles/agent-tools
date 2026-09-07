@@ -197,11 +197,14 @@ def _add_command_specs(
 			help=spec.help_text,
 			formatter_class=ProgressHelpFormatter,
 		)
+		# A group parser records itself so main() can show its help when it is
+		# named with no subcommand. Leaf parsers clear the value they would
+		# otherwise inherit from their group, so their command still dispatches.
+		parser.set_defaults(_help_parser=parser if spec.children else None)
 
 		if spec.children:
 			nested_commands = parser.add_subparsers(
 				dest=spec.destination,
-				required=True,
 				metavar=_command_metavar(spec.children),
 			)
 			_add_command_specs(nested_commands, spec.children)
@@ -1001,6 +1004,12 @@ def main(argv: list[str] | None = None) -> int:
 
 		if args.command is None:
 			parser.print_help()
+			return 0
+
+		# A command group named with no subcommand shows its own help, the same
+		# as bare `progress` does above.
+		if args._help_parser is not None:
+			args._help_parser.print_help()
 			return 0
 
 		data, command = _run_command(args, include_release_titles=not json_mode)
