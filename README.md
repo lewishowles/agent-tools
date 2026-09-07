@@ -91,6 +91,8 @@ progress project init --slug <slug> --name <name> [--json] [--database <path>]
 - `--slug <slug>`: short project identifier
 - `--name <name>`: display name
 
+If the repository is already bound to a project, this reports the bound project instead of failing (`--json` adds `already_initialised: true`).
+
 ### `progress project attach`
 
 Attach the current Git repository to an existing project:

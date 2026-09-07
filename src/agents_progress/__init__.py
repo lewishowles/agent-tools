@@ -14,7 +14,6 @@ from .database import (
 	resolve_database_path,
 )
 from .errors import (
-	AlreadyInitialisedError,
 	AlreadyExistsError,
 	DatabaseBusyError,
 	DuplicateDependencyError,
@@ -55,7 +54,6 @@ from .writes import WriteStore
 __all__ = [
 	"__version__",
 	"AlreadyExistsError",
-	"AlreadyInitialisedError",
 	"BUSY_TIMEOUT_SECONDS",
 	"CHUNK_PREFIX",
 	"Chunk",

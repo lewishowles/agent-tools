@@ -6,7 +6,6 @@ import pytest
 
 from agents_progress.database import Database
 from agents_progress.errors import (
-	AlreadyInitialisedError,
 	NotAProjectError,
 	NotFoundError,
 	OrphanedProjectError,
@@ -32,7 +31,11 @@ def test_init_binds_and_current_resolves_from_a_subdirectory_after_a_move(
 	(repository / "src").mkdir()
 	store = ProjectStore(Database(tmp_path / "progress.db"))
 
-	project = store.init("agents", "Agent configuration", repository / "src")
+	project, already_initialised = store.init(
+		"agents", "Agent configuration", repository / "src"
+	)
+
+	assert already_initialised is False
 
 	assert GitRepository(repository).get_binding() == project.id
 	assert store.current(repository / "src") == project
@@ -42,13 +45,40 @@ def test_init_binds_and_current_resolves_from_a_subdirectory_after_a_move(
 	assert store.current(moved_repository / "src") == project
 
 
-def test_init_refuses_to_replace_an_existing_binding(tmp_path) -> None:
+def test_init_returns_the_existing_project_without_changing_the_binding(
+	tmp_path,
+) -> None:
 	repository = _git_repository(tmp_path / "repository")
 	store = ProjectStore(Database(tmp_path / "progress.db"))
-	store.init("agents", "Agent configuration", repository)
+	project, _ = store.init("agents", "Agent configuration", repository)
 
-	with pytest.raises(AlreadyInitialisedError):
-		store.init("other", "Other project", repository)
+	existing_project, already_initialised = store.init(
+		"other", "Other project", repository
+	)
+
+	assert already_initialised is True
+	assert existing_project == project
+	assert GitRepository(repository).get_binding() == project.id
+	with store.database.connection() as connection:
+		assert connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("binding", ["malformed", "prj_" + "a" * 22])
+def test_init_reports_orphaned_bindings_without_replacing_them(
+	tmp_path, binding
+) -> None:
+	repository = _git_repository(tmp_path / "repository")
+	store = ProjectStore(Database(tmp_path / "progress.db"))
+	GitRepository(repository).set_binding(binding)
+
+	with pytest.raises(OrphanedProjectError) as current_error:
+		store.current(repository)
+	with pytest.raises(OrphanedProjectError) as init_error:
+		store.init("agents", "Agent configuration", repository)
+
+	assert init_error.value.message == current_error.value.message
+	assert init_error.value.details == current_error.value.details
+	assert GitRepository(repository).get_binding() == binding
 
 
 def test_current_reports_uninitialised_and_orphaned_repositories(tmp_path) -> None:
@@ -58,7 +88,7 @@ def test_current_reports_uninitialised_and_orphaned_repositories(tmp_path) -> No
 	with pytest.raises(UninitialisedProjectError):
 		store.current(repository)
 
-	project = store.init("agents", "Agent configuration", repository)
+	project, _ = store.init("agents", "Agent configuration", repository)
 	with store.database.transaction() as connection:
 		connection.execute("DELETE FROM projects WHERE id = ?", (project.id,))
 

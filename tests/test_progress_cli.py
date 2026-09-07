@@ -1,6 +1,7 @@
 import dataclasses
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 from agents_progress.database import Database
@@ -3192,7 +3193,7 @@ def test_project_init_dispatches_to_the_nested_project_command(
 
 		def init(self, slug, name):
 			assert (slug, name) == ("agents", "Agents")
-			return _Project()
+			return _Project(), False
 
 	monkeypatch.setattr(cli, "ProjectStore", _ProjectStore)
 
@@ -3214,3 +3215,45 @@ def test_project_init_dispatches_to_the_nested_project_command(
 	)
 
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_project_init_reports_the_existing_project(
+	tmp_path, monkeypatch, capsys, json_output
+) -> None:
+	subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+	monkeypatch.chdir(tmp_path)
+	database_args = ["--database", str(tmp_path / "progress.db")]
+	init_args = ["project", "init", "--slug", "agents", "--name", "Agents"]
+
+	assert cli.main([*init_args, *database_args, "--json"]) == 0
+	fresh_output = capsys.readouterr()
+	fresh_result = json.loads(fresh_output.out)
+	assert fresh_output.err == ""
+	assert fresh_result["ok"] is True
+	assert set(fresh_result["data"]) == {"id", "slug", "name"}
+	assert fresh_result["data"]["slug"] == "agents"
+	assert fresh_result["data"]["name"] == "Agents"
+
+	assert cli.main(["project", "current", *database_args]) == 0
+	current_output = capsys.readouterr()
+	assert current_output.err == ""
+
+	init_args = ["project", "init", "--slug", "other", "--name", "Other project"]
+	assert (
+		cli.main([*init_args, *database_args, *(["--json"] if json_output else [])])
+		== 0
+	)
+	existing_output = capsys.readouterr()
+
+	assert existing_output.err == ""
+	if json_output:
+		assert json.loads(existing_output.out) == {
+			"ok": True,
+			"data": {**fresh_result["data"], "already_initialised": True},
+		}
+	else:
+		assert "Repo already initialised" in existing_output.out
+		assert existing_output.out.strip().endswith(current_output.out.strip())
+		assert "already_initialised" not in existing_output.out
+		assert "Already initialised:" not in existing_output.out

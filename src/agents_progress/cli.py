@@ -1365,7 +1365,12 @@ def _run_project(args: argparse.Namespace, database: Database) -> dict[str, obje
 	"""Run the requested project binding subcommand."""
 	store = ProjectStore(database)
 	if args.project_command == "init":
-		return store.init(args.slug, args.name).to_dict()
+		project, already_initialised = store.init(args.slug, args.name)
+		data: dict[str, object] = project.to_dict()
+		if already_initialised:
+			data["already_initialised"] = True
+
+		return data
 	if args.project_command == "attach":
 		return store.attach(args.project_id).to_dict()
 	if args.project_command == "current":

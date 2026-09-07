@@ -82,12 +82,6 @@ class OrphanedProjectError(ProgressError):
 	code = "orphaned-project"
 
 
-class AlreadyInitialisedError(ProgressError):
-	"""Indicate that the project has already been set up, so initialising it again would overwrite that."""
-
-	code = "already-initialised"
-
-
 class NotFoundError(ProgressError):
 	"""Indicate that the requested record doesn't exist."""
 

@@ -106,6 +106,20 @@ _TASK_GET_FIELD_ORDER = (
 
 def render(command: str, data: object) -> str:
 	"""Render one command's stable data for a person at a terminal."""
+	if (
+		command == "project init"
+		and isinstance(data, dict)
+		and data.get("already_initialised")
+	):
+		# A repeat init reuses the project current layout, so drop the machine-readable flag first.
+		project = {
+			key: value for key, value in data.items() if key != "already_initialised"
+		}
+		return (
+			render_status("info", "Repo already initialised")
+			+ "\n"
+			+ _render_object("project current", project)
+		)
 	if command == "commands":
 		return _render_commands(data)
 	if command in {"next", "current"}:

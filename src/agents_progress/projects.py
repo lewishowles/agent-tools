@@ -8,7 +8,6 @@ from typing import Protocol
 
 from .database import Database
 from .errors import (
-	AlreadyInitialisedError,
 	EmptyValueError,
 	NotFoundError,
 	OrphanedProjectError,
@@ -126,16 +125,21 @@ class ProjectStore:
 				compensation_error,
 			) from cause
 
-	def init(self, slug: str, name: str, path: str | Path | None = None) -> Project:
-		"""Create a project row and bind the current Git repository to it."""
+	def init(
+		self, slug: str, name: str, path: str | Path | None = None
+	) -> tuple[Project, bool]:
+		"""Create and bind a project, or resolve the one already bound.
+
+		Returns the project together with a flag that is True when the
+		repository was already bound and False for a freshly created project.
+		"""
 		if not slug.strip() or not name.strip():
 			raise EmptyValueError("project slug and name must not be empty")
 
 		with self._repository(path) as repository:
-			if repository.get_binding() is not None:
-				raise AlreadyInitialisedError(
-					"project init refuses to replace an existing progress.project-id binding"
-				)
+			binding = repository.get_binding()
+			if binding is not None:
+				return self._resolve_bound_project(binding), True
 
 			# Generate one project ID for both the binding and database row.
 			project_id = generate_object_id(PROJECT_PREFIX, self._project_exists)
@@ -155,7 +159,7 @@ class ProjectStore:
 				self._compensate(repository, None, project.id, error)
 				raise
 
-		return project
+		return project, False
 
 	def attach(self, project_id: str, path: str | Path | None = None) -> Project:
 		"""Link an existing project to the current Git repository."""
@@ -189,19 +193,23 @@ class ProjectStore:
 					"this Git repository has no progress project; run progress project init"
 				)
 
-			try:
-				validate_object_id(binding, PROJECT_PREFIX)
-			except Exception as error:
-				raise OrphanedProjectError(
-					"progress.project-id is malformed; initialise or attach the repository explicitly",
-					{"binding": binding},
-				) from error
+			return self._resolve_bound_project(binding)
 
-			project = self._find(binding)
+	def _resolve_bound_project(self, binding: str) -> Project:
+		"""Resolve binding to its project, raising OrphanedProjectError if it's malformed or has no matching row."""
+		try:
+			validate_object_id(binding, PROJECT_PREFIX)
+		except Exception as error:
+			raise OrphanedProjectError(
+				"progress.project-id is malformed; initialise or attach the repository explicitly",
+				{"binding": binding},
+			) from error
+
+		project = self._find(binding)
 
 		if project is None:
 			raise OrphanedProjectError(
-				f"progress.project-id {binding} has no database row; restore the database or run progress project init",
+				f"progress.project-id {binding} has no database row; restore the database or run progress project attach",
 				{"binding": binding},
 			)
 
