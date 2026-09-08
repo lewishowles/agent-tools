@@ -15,13 +15,10 @@ from .style import (
 )
 
 
-# Column width task get wraps each field row and its divider to.
-_TASK_GET_ROW_WRAP_WIDTH = 72
+# Column width the long prose fields wrap to.
+_ROW_WRAP_WIDTH = 72
 
-# cli-style rows place two spaces between the label and value columns.
-_TASK_GET_ROW_SEPARATOR_WIDTH = 2
-
-# Match ANSI control sequences so row labels can be found in styled output.
+# Match ANSI control sequences so styled text can be measured by its width.
 _ANSI_ESCAPE_PATTERN = re.compile(
 	r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))"
 )
@@ -65,9 +62,6 @@ _OBJECT_ROW_GROUP_FIELDS = {
 	"chunk get": {"description"},
 }
 
-# Commands whose row-grouped fields omit blank values.
-_DROP_BLANK_ROW_GROUPS = frozenset({"task get"})
-
 # Explains why a non-force clean pass leaves task history in place.
 _TASK_CLEAN_KEPT_HINT = (
 	"Tasks with notes or dependencies are kept to avoid removing potentially "
@@ -79,29 +73,6 @@ _TASK_CLEAN_DEPENDENCY_LABELS = {
 	"depends_on": "Depends on:",
 	"required_by": "Required by:",
 }
-
-# Canonical field order for task get output.
-_TASK_GET_FIELD_ORDER = (
-	"id",
-	"slug",
-	"title",
-	"project_id",
-	"release_id",
-	"overview",
-	"purpose",
-	"contract",
-	"files",
-	"acceptance_criteria",
-	"verification",
-	"risks",
-	"status",
-	"status_reason",
-	"position",
-	"created_at",
-	"started_at",
-	"completed_at",
-	"updated_at",
-)
 
 
 def render(command: str, data: object) -> str:
@@ -124,13 +95,15 @@ def render(command: str, data: object) -> str:
 		return _render_commands(data)
 	if command in {"next", "current"}:
 		return _render_next(data)
+	if command == "task get" and isinstance(data, dict):
+		return _render_task(data)
 	if command == "doctor":
 		return _render_doctor(data)
 	if command == "task clean":
 		return _render_task_clean(data)
 	if command in {"task complete", "chunk complete"} and isinstance(data, dict):
 		# Completion prints one success line, not every record field; handled here
-		# rather than in _render_object so task get and chunk get still show all fields.
+		# rather than in _render_object so chunk get still shows all fields.
 		record_type = command.split()[0]  # "task" or "chunk"
 
 		# Completion also names the parent so the next command has its ID to hand.
@@ -362,8 +335,129 @@ def _render_task_clean_dependency(dependency: dict[str, object]) -> str:
 	)
 
 
+def _render_task(task: dict[str, object]) -> str:
+	"""Render one task record in full, shared by task get and next.
+
+	Both commands show the same task, so next carries the whole record and a
+	follow-up task get returns nothing new. Slug, position and timestamps are
+	left to --json.
+	"""
+	blocks = [render_span(str(task.get("title", "")), "text", weight="bold")]
+	status = task.get("status", "")
+	task_rows = [
+		{
+			"label": "Status",
+			"value": render_span(
+				str(status).replace("-", " "),
+				_STATUS_TONES.get(_status_result_type(status), "info"),
+				weight="bold",
+			),
+		},
+		{
+			"label": "ID",
+			"value": render_span(str(task.get("id", "")), "muted", weight="normal"),
+		},
+	]
+	status_reason = task.get("status_reason")
+	if status_reason:
+		task_rows.append(
+			{
+				"label": "Blocking reason",
+				"value": render_span(str(status_reason), "muted", weight="normal"),
+			}
+		)
+	blocks.append(render_row_group(task_rows))
+
+	for label, key in (("Overview", "overview"), ("Purpose", "purpose")):
+		value = task.get(key)
+		if not value:
+			continue
+		blocks.extend(
+			[
+				render_span(label),
+				render_span(
+					textwrap.fill(str(value), _ROW_WRAP_WIDTH),
+					"muted",
+					weight="normal",
+				),
+			]
+		)
+
+	chunks = task.get("chunks", [])
+	blocks.append(render_span("Chunks"))
+	chunk_items = _render_chunk_items(chunks)
+	blocks.append(
+		chunk_items
+		if chunk_items
+		else render_span("No chunks.", "muted", weight="normal")
+	)
+
+	split_rationale = task.get("split_rationale")
+	if split_rationale:
+		blocks.extend(
+			[
+				render_span("Split rationale"),
+				render_span(
+					textwrap.fill(str(split_rationale), _ROW_WRAP_WIDTH),
+					"muted",
+					weight="normal",
+				),
+			]
+		)
+
+	for label, key in (("Contract", "contract"), ("Files", "files")):
+		values = task.get(key)
+		if not isinstance(values, list) or not values:
+			continue
+		blocks.append(render_span(label))
+		blocks.extend(
+			render_span(f"- {item}", "muted", weight="normal") for item in values
+		)
+
+	for label, key in (
+		("Acceptance criteria", "acceptance_criteria"),
+		("Verification", "verification"),
+		("Risks", "risks"),
+	):
+		value = task.get(key)
+		if not value:
+			continue
+		blocks.extend(
+			[
+				render_span(label),
+				render_span(
+					textwrap.fill(str(value), _ROW_WRAP_WIDTH),
+					"muted",
+					weight="normal",
+				),
+			]
+		)
+
+	footer_rows = []
+	for label, key in (("Project ID", "project_id"), ("Release ID", "release_id")):
+		value = task.get(key)
+		if value is None or not str(value).strip():
+			continue
+		footer_rows.append(
+			{
+				"label": label,
+				"value": render_span(str(value), "muted", weight="normal"),
+			}
+		)
+	if footer_rows:
+		blocks.extend(
+			[render_divider(divider_colour="muted"), render_row_group(footer_rows)]
+		)
+
+	return "\n\n".join(blocks)
+
+
 def _render_next(data: object) -> str:
-	"""Render the selected task and its active chunk with cli-style primitives."""
+	"""Render the selected task and its active chunk.
+
+	Adds what only next knows to the shared task view: where the task and chunk
+	sit in their release, the dependency ids, and the active chunk.
+	"""
 	if not isinstance(data, dict):
 		return str(data)
 
@@ -383,63 +477,34 @@ def _render_next(data: object) -> str:
 	if not isinstance(task, dict):
 		blocks.append(render_row("Task", "No task is selected."))
 	else:
-		task_status = task.get("status", "")
-		task_rows = [
-			{
-				"label": "Task",
-				"value": _render_next_position_line(
-					"task",
-					task_status,
-					data.get("task_rank", ""),
-					data.get("task_total", ""),
-					"release",
-				),
-			},
-			{
-				"label": "Info",
-				"value": render_span(
-					f"progress task get {task.get('id', '')}",
-					"muted",
-					weight="normal",
-				),
-			},
-		]
-		status_reason = task.get("status_reason")
-		if status_reason:
-			task_rows.append(
-				{
-					"label": "Blocking reason",
-					"value": render_span(str(status_reason), "muted", weight="normal"),
-				}
+		blocks.append(
+			render_row_group(
+				[
+					{
+						"label": "Task",
+						"value": _render_next_position_line(
+							"task",
+							task.get("status", ""),
+							data.get("task_rank", ""),
+							data.get("task_total", ""),
+							"release",
+						),
+					}
+				]
 			)
+		)
+		blocks.append(_render_task(task))
 
 		dependency_ids = data.get("dependency_ids")
 		if isinstance(dependency_ids, list) and dependency_ids:
-			task_rows.append(
-				{
-					"label": "Dependency IDs",
-					"value": render_span(
-						", ".join(str(item) for item in dependency_ids),
-						"muted",
-						weight="normal",
-					),
-				}
-			)
-
-		blocks.append(render_row_group(task_rows))
-		blocks.append(render_span(str(task.get("title", "")), "text", weight="bold"))
-		task_overview = task.get("overview") or task.get("purpose")
-		if task_overview:
 			blocks.append(
-				render_span(
-					textwrap.fill(str(task_overview), _TASK_GET_ROW_WRAP_WIDTH),
-					"muted",
-					weight="normal",
+				render_row(
+					"Dependency IDs",
+					", ".join(str(item) for item in dependency_ids),
 				)
 			)
 
 		if isinstance(chunk, dict):
-			chunk_status = chunk.get("status", "")
 			blocks.append(render_divider(divider_colour="muted"))
 			blocks.append(
 				render_row_group(
@@ -448,7 +513,7 @@ def _render_next(data: object) -> str:
 							"label": "Chunk",
 							"value": _render_next_position_line(
 								"chunk",
-								chunk_status,
+								chunk.get("status", ""),
 								data.get("chunk_rank", ""),
 								data.get("chunk_total", ""),
 								"task",
@@ -472,7 +537,7 @@ def _render_next(data: object) -> str:
 			if chunk_description:
 				blocks.append(
 					render_span(
-						textwrap.fill(str(chunk_description), _TASK_GET_ROW_WRAP_WIDTH),
+						textwrap.fill(str(chunk_description), _ROW_WRAP_WIDTH),
 						"muted",
 						weight="normal",
 					)
@@ -626,7 +691,7 @@ def _render_chunk_item(item: dict[str, object]) -> tuple[str, str, bool]:
 		return row, status_group, False
 
 	description_block = render_span(
-		textwrap.fill(str(description), _TASK_GET_ROW_WRAP_WIDTH),
+		textwrap.fill(str(description), _ROW_WRAP_WIDTH),
 		"muted",
 		weight="normal",
 	)
@@ -716,22 +781,13 @@ def _render_object(command: str, data: dict[str, object]) -> str:
 	"""Render one stable public object as labelled rows."""
 	lines = []
 	grouped_rows = []
-	row_group_fields = (
-		set(data)
-		if command in _DROP_BLANK_ROW_GROUPS
-		else _OBJECT_ROW_GROUP_FIELDS.get(command, set())
-	)
-	field_order = _TASK_GET_FIELD_ORDER if command in _DROP_BLANK_ROW_GROUPS else data
-	for key in field_order:
+	row_group_fields = _OBJECT_ROW_GROUP_FIELDS.get(command, set())
+	for key in data:
 		if key not in data:
 			continue
 
 		value = data[key]
 		if key in row_group_fields:
-			if command in _DROP_BLANK_ROW_GROUPS and (
-				value is None or (isinstance(value, str) and not value.strip())
-			):
-				continue
 			grouped_rows.append(
 				{
 					"label": _format_label(key),
@@ -751,68 +807,9 @@ def _render_object(command: str, data: dict[str, object]) -> str:
 		lines.append(f"{_format_label(key)}: {'' if value is None else value}")
 
 	if grouped_rows:
-		if command == "task get":
-			lines.append(_render_task_get_row_group(grouped_rows))
-		else:
-			lines.append(render_row_group(grouped_rows))
-
-	if command == "task get":
-		return "\n" + "\n".join(lines) + "\n\n"
+		lines.append(render_row_group(grouped_rows))
 
 	return "\n".join(lines) + "\n"
-
-
-def _render_task_get_row_group(rows: list[dict[str, str]]) -> str:
-	"""Render task fields as aligned rows separated by border-coloured dividers."""
-	label_width = max(len(row["label"]) for row in rows)
-	rendered_rows = render_row_group(rows)
-	row_divider = render_divider(
-		divider_width=(
-			label_width + _TASK_GET_ROW_SEPARATOR_WIDTH + _TASK_GET_ROW_WRAP_WIDTH
-		),
-		divider_colour="border",
-	)
-	row_blocks = _split_task_get_row_group(rendered_rows, rows, label_width)
-	return f"\n{row_divider}\n".join(row_blocks)
-
-
-def _split_task_get_row_group(
-	rendered_rows: str,
-	rows: list[dict[str, str]],
-	label_width: int,
-) -> list[str]:
-	"""Split one styled row group while keeping wrapped value lines with their row."""
-	rendered_lines = rendered_rows.splitlines()
-	row_labels = [row["label"].ljust(label_width) for row in rows]
-	row_blocks = []
-	current_block = []
-	next_label_index = 0
-
-	for line in rendered_lines:
-		plain_line = _ANSI_ESCAPE_PATTERN.sub("", line)
-		if next_label_index < len(row_labels) and plain_line.startswith(
-			row_labels[next_label_index]
-		):
-			if current_block:
-				row_blocks.append("\n".join(current_block))
-			current_block = [line]
-			next_label_index += 1
-			continue
-
-		if not current_block:
-			raise ValueError(
-				"cli-style row-group output did not start with a row label"
-			)
-
-		current_block.append(line)
-
-	if current_block:
-		row_blocks.append("\n".join(current_block))
-
-	if len(row_blocks) != len(rows):
-		raise ValueError("cli-style row-group output did not contain every row")
-
-	return row_blocks
 
 
 def _format_label(key: str) -> str:

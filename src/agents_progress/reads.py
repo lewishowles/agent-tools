@@ -243,6 +243,18 @@ def _task_values_by_id(
 	return values
 
 
+def _task_chunks(
+	connection: sqlite3.Connection, task_id: str
+) -> list[dict[str, object]]:
+	"""Read one task's chunks in the order they are worked through."""
+	chunk_rows = connection.execute(
+		f"SELECT {_CHUNK_COLUMNS} FROM chunks WHERE task_id = ? ORDER BY position, id",
+		(task_id,),
+	).fetchall()
+
+	return [Chunk.from_row(row).to_dict() for row in chunk_rows]
+
+
 def _task_public_row(
 	connection: sqlite3.Connection,
 	task_row: object,
@@ -277,10 +289,13 @@ def _task_response(
 		else None
 	)
 	chunk = Chunk.from_row(chunk_row) if chunk_row is not None else None
+	task_data = task.to_dict() if task is not None else None
+	if task_data is not None:
+		task_data["chunks"] = _task_chunks(connection, task.id)
 
 	return {
 		"project": project.to_dict(),
-		"task": task.to_dict() if task is not None else None,
+		"task": task_data,
 		"chunk": chunk.to_dict() if chunk is not None else None,
 		"dependency_ids": list(dependency_ids),
 		"hint_command": ReadStore._next_hint(task, chunk, empty_hint),
@@ -534,7 +549,10 @@ class ReadStore(_StoreBase):
 			if row is None:
 				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
 
-			return Task.from_row(_task_public_row(connection, row)).to_dict()
+			task = Task.from_row(_task_public_row(connection, row)).to_dict()
+			task["chunks"] = _task_chunks(connection, task_id)
+
+			return task
 
 	def task_list(
 		self,

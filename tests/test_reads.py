@@ -141,6 +141,7 @@ def test_next_returns_the_task_chunk_and_next_command(tmp_path: Path) -> None:
 		"name": "Agent configuration",
 	}
 	assert result["task"]["id"] == TASK_A
+	assert [chunk["id"] for chunk in result["task"]["chunks"]] == [CHUNK_A]
 	assert result["chunk"]["id"] == CHUNK_A
 	assert result["hint_command"] == f"progress chunk complete {CHUNK_A}"
 
@@ -162,7 +163,9 @@ def test_next_uses_live_totals_and_ranks_after_sibling_removals(
 	first_chunk = writer.chunk_add(
 		task["id"], "First chunk", "First chunk description", position=1
 	)
-	writer.chunk_add(task["id"], "Second chunk", "Second chunk description", position=2)
+	second_chunk = writer.chunk_add(
+		task["id"], "Second chunk", "Second chunk description", position=2
+	)
 	third_chunk = writer.chunk_add(
 		task["id"], "Third chunk", "Third chunk description", position=3
 	)
@@ -179,6 +182,10 @@ def test_next_uses_live_totals_and_ranks_after_sibling_removals(
 	result = store.next(include_position_totals=True)
 
 	assert result["task"]["id"] == task["id"]
+	assert [chunk["id"] for chunk in result["task"]["chunks"]] == [
+		second_chunk["id"],
+		third_chunk["id"],
+	]
 	assert result["task"]["position"] == 3
 	assert result["task_rank"] == 2
 	assert result["task_total"] == 2
@@ -599,6 +606,10 @@ def test_task_get_accepts_an_id_or_slug(
 	task = store.task_get(reference)
 
 	assert task["id"] == expected_id
+	assert isinstance(task["chunks"], list)
+	assert [chunk["id"] for chunk in task["chunks"]] == (
+		[CHUNK_A] if expected_id == TASK_A else []
+	)
 
 
 @pytest.mark.parametrize("reference", ["missing-release", "rel_" + "r" * 22])

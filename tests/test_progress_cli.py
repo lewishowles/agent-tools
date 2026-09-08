@@ -1,4 +1,3 @@
-import dataclasses
 import json
 from pathlib import Path
 import subprocess
@@ -13,7 +12,6 @@ from agents_progress.errors import (
 	DuplicateDependencyError,
 	ProgressError,
 )
-from agents_progress.models import Task
 from agents_progress.projects import Project, ProjectStore
 from agents_progress.render import _status_result_type
 from agents_progress.writes import WriteStore
@@ -1351,8 +1349,8 @@ def test_human_success_renders_readable_output(
 	assert "Project" in output.out and "Agents" in output.out
 	assert "Task" in output.out and "Read surface" in output.out
 	assert "in progress" in output.out and "task 2 / 7 for release" in output.out
-	assert "Info" in output.out and "progress task get tsk_test" in output.out
 	assert "Blocking reason" in output.out and "Waiting for a decision" in output.out
+	assert "ID" in output.out and "tsk_test" in output.out
 	assert "Dependency IDs" in output.out and "tsk_dependency" in output.out
 	assert "Chunk" in output.out and "chunk 1 / 3 for task" in output.out
 	assert "progress chunk get chk_test" in output.out
@@ -1872,51 +1870,6 @@ def test_task_list_renders_only_an_empty_state(monkeypatch) -> None:
 	("command", "data", "expected_rows"),
 	[
 		(
-			"task get",
-			{
-				"id": "tsk_test",
-				"project_id": "prj_test",
-				"slug": "test-task",
-				"release_id": "",
-				"title": "Test task",
-				"overview": "A task overview.",
-				"purpose": "A task purpose.",
-				"contract": ["A task contract."],
-				"files": ["src/task.py"],
-				"acceptance_criteria": "Task output is readable.",
-				"verification": "Run focused tests.",
-				"risks": "Low risk.",
-				"status": "ready",
-				"status_reason": None,
-				"position": 2,
-				"created_at": "2026-08-21T10:00:00+00:00",
-				"started_at": "2026-08-21T10:05:00+00:00",
-				"completed_at": "",
-				"updated_at": "2026-08-21T10:10:00+00:00",
-			},
-			[
-				{"label": "ID", "value": "tsk_test"},
-				{"label": "Slug", "value": "test-task"},
-				{"label": "Title", "value": "Test task"},
-				{"label": "Project ID", "value": "prj_test"},
-				{"label": "Overview", "value": "A task overview."},
-				{"label": "Purpose", "value": "A task purpose."},
-				{"label": "Contract", "value": "['A task contract.']"},
-				{"label": "Files", "value": "['src/task.py']"},
-				{
-					"label": "Acceptance criteria",
-					"value": "Task output is readable.",
-				},
-				{"label": "Verification", "value": "Run focused tests."},
-				{"label": "Risks", "value": "Low risk."},
-				{"label": "Status", "value": "ready"},
-				{"label": "Position", "value": "2"},
-				{"label": "Created at", "value": "2026-08-21T10:00:00+00:00"},
-				{"label": "Started at", "value": "2026-08-21T10:05:00+00:00"},
-				{"label": "Updated at", "value": "2026-08-21T10:10:00+00:00"},
-			],
-		),
-		(
 			"chunk get",
 			{
 				"id": "chk_test",
@@ -1952,99 +1905,129 @@ def test_object_planning_fields_use_row_group(
 
 	output = render_module.render(command, data)
 
-	if command == "task get":
-		label_width = max(len(row["label"]) for row in expected_rows)
-		expected_output = "\nMuted divider\n".join(
-			f"{row['label'].ljust(label_width)}  {row['value']}"
-			for row in expected_rows
-		)
-
-		assert output == f"\n{expected_output}\n\n"
-		assert groups == [expected_rows]
-		assert divider_calls == [
-			{"divider_width": label_width + 2 + 72, "divider_colour": "border"}
-		]
-	else:
-		assert "Description  A chunk description." in output
-		assert groups == [expected_rows]
-		assert divider_calls == []
+	assert "Description  A chunk description." in output
+	assert groups == [expected_rows]
+	assert divider_calls == []
 
 
-@pytest.mark.parametrize(
-	("rendered_rows", "rows", "expected_message"),
-	[
-		(
-			"Unexpected output",
-			[{"label": "ID", "value": "tsk_test"}],
-			"cli-style row-group output did not start with a row label",
-		),
-		(
-			"ID     tsk_test",
-			[
-				{"label": "ID", "value": "tsk_test"},
-				{"label": "Status", "value": "ready"},
-			],
-			"cli-style row-group output did not contain every row",
-		),
-	],
-)
-def test_split_task_get_row_group_rejects_invalid_cli_style_output(
-	rendered_rows: str,
-	rows: list[dict[str, str]],
-	expected_message: str,
-) -> None:
-	with pytest.raises(ValueError, match=expected_message):
-		render_module._split_task_get_row_group(
-			rendered_rows,
-			rows,
-			label_width=6,
-		)
+def test_task_get_uses_one_readable_task_view() -> None:
+	data = {
+		"id": "tsk_task_view",
+		"project_id": "prj_task_view",
+		"release_id": "rel_task_view",
+		"slug": "hidden-task-slug",
+		"title": "Readable task",
+		"status": "needs-decision",
+		"status_reason": "Waiting for product input.",
+		"overview": "The task overview.",
+		"purpose": "The task purpose.",
+		"chunks": [
+			{
+				"id": "chk_first",
+				"title": "First chunk",
+				"description": "First chunk description.",
+				"status": "done",
+			},
+			{
+				"id": "chk_second",
+				"title": "Second chunk",
+				"description": "Second chunk description.",
+				"status": "pending",
+			},
+		],
+		"split_rationale": "Keep the two chunks independently reviewable.",
+		"contract": ["First contract step.", "Second contract step."],
+		"files": ["src/task.py", "tests/test_task.py"],
+		"acceptance_criteria": "The task view is complete.",
+		"verification": "Run the task tests.",
+		"risks": "The output may be long.",
+		"position": 99,
+		"created_at": "hidden-created-at",
+		"started_at": "hidden-started-at",
+		"completed_at": "hidden-completed-at",
+		"updated_at": "hidden-updated-at",
+	}
+
+	output = render_module.render("task get", data)
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", output)
+
+	assert plain_output.startswith("Readable task")
+	assert "Status" in plain_output and "needs decision" in plain_output
+	assert "ID" in plain_output and "tsk_task_view" in plain_output
+	assert "Waiting for product input." in plain_output
+	assert "Overview" in plain_output and "The task overview." in plain_output
+	assert "Purpose" in plain_output and "The task purpose." in plain_output
+	assert "Chunks" in plain_output
+	assert "First chunk" in plain_output and "Second chunk" in plain_output
+	assert "Split rationale" in plain_output
+	assert "First contract step." in plain_output
+	assert "Second contract step." in plain_output
+	assert "src/task.py" in plain_output and "tests/test_task.py" in plain_output
+	assert "Acceptance criteria" in plain_output
+	assert "Verification" in plain_output
+	assert "Risks" in plain_output
+	assert "Project ID" in plain_output and "prj_task_view" in plain_output
+	assert "Release ID" in plain_output and "rel_task_view" in plain_output
+	assert "hidden-task-slug" not in plain_output
+	assert "hidden-created-at" not in plain_output
+	assert "hidden-started-at" not in plain_output
+	assert "hidden-completed-at" not in plain_output
+	assert "hidden-updated-at" not in plain_output
+	assert "position" not in plain_output.lower()
+	assert plain_output.index("Readable task") < plain_output.index("Status")
+	assert plain_output.index("Status") < plain_output.index("Overview")
+	assert plain_output.index("Overview") < plain_output.index("Purpose")
+	assert plain_output.index("Purpose") < plain_output.index("Chunks")
+	assert plain_output.index("Risks") < plain_output.index("Project ID")
 
 
-def test_task_get_row_group_keeps_wrapped_values_with_one_divider_call(
+def test_task_get_routes_around_the_generic_object_renderer(monkeypatch) -> None:
+	monkeypatch.setattr(
+		render_module,
+		"_render_object",
+		lambda command, data: pytest.fail("task get used the generic renderer"),
+	)
+	monkeypatch.setattr(render_module, "_render_task", lambda task: "task view")
+
+	assert render_module.render("task get", {"id": "tsk_test"}) == "task view"
+
+
+def test_next_reuses_the_task_view_and_keeps_position_and_active_chunk(
 	monkeypatch,
 ) -> None:
-	rows = [
-		{"label": "ID", "value": "tsk_test"},
-		{"label": "Overview", "value": "A wrapped overview."},
-		{"label": "Status", "value": "ready"},
-	]
-	divider_calls: list[dict[str, object]] = []
-
-	def fake_row_group(rows: list[dict[str, str]]) -> str:
-		return "\n".join(
-			[
-				"ID        tsk_test",
-				"Overview  A wrapped",
-				"          overview.",
-				"Status    ready",
-			]
-		)
-
-	def fake_divider(**kwargs: object) -> str:
-		divider_calls.append(kwargs)
-		return "Muted divider"
-
-	monkeypatch.setattr(render_module, "render_row_group", fake_row_group)
-	monkeypatch.setattr(render_module, "render_divider", fake_divider)
-
-	assert render_module._render_task_get_row_group(rows) == (
-		"ID        tsk_test\n"
-		"Muted divider\n"
-		"Overview  A wrapped\n"
-		"          overview.\n"
-		"Muted divider\n"
-		"Status    ready"
-	)
-	assert divider_calls == [{"divider_width": 82, "divider_colour": "border"}]
-
-
-def test_task_get_field_order_matches_task_dataclass() -> None:
-	expected_fields = {field.name for field in dataclasses.fields(Task)}
-
-	assert set(render_module._TASK_GET_FIELD_ORDER) == expected_fields - {
-		"split_rationale"
+	task = {"id": "tsk_test", "status": "ready"}
+	chunk = {
+		"id": "chk_test",
+		"title": "Active chunk",
+		"description": "Active chunk description.",
+		"status": "active",
 	}
+	calls = []
+
+	def fake_render_task(task_data: dict[str, object]) -> str:
+		calls.append(task_data)
+		return "shared task view"
+
+	monkeypatch.setattr(render_module, "_render_task", fake_render_task)
+
+	output = render_module._render_next(
+		{
+			"project": {"name": "Agents"},
+			"task": task,
+			"chunk": chunk,
+			"task_rank": 2,
+			"task_total": 4,
+			"chunk_rank": 1,
+			"chunk_total": 3,
+		}
+	)
+
+	assert calls == [task]
+	assert "task 2 / 4 for release" in output
+	assert "shared task view" in output
+	assert "chunk 1 / 3 for task" in output
+	assert "Active chunk" in output
+	assert "Active chunk description." in output
 
 
 def test_human_next_renders_done_chunk_with_success_status(
