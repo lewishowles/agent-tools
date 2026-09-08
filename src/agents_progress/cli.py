@@ -45,6 +45,15 @@ class CliUsageError(Exception):
 class ProgressArgumentParser(argparse.ArgumentParser):
 	"""Raise CliUsageError on a bad argument instead of exiting the process directly."""
 
+	def __init__(self, *args: object, **kwargs: object) -> None:
+		"""Turn off argparse's abbreviation matching for this parser and every subparser built from it.
+
+		A removed flag would otherwise keep working wherever its name is a prefix of a longer one, so
+		`--contract` would still reach `--contract-step`.
+		"""
+		kwargs["allow_abbrev"] = False
+		super().__init__(*args, **kwargs)
+
 	def print_help(self, file: TextIO | None = None) -> None:
 		"""Give help text the same leading blank line every other human output gets.
 
@@ -346,11 +355,23 @@ _COMMAND_SPECS = (
 						type=_non_empty_text_argument("--purpose"),
 					),
 					_argument(
-						"--contract",
+						"--contract-step",
+						dest="contract",
 						required=True,
-						type=_non_empty_text_argument("--contract"),
+						action="append",
+						type=_non_empty_text_argument("--contract-step"),
 					),
-					_argument("--files", default=None),
+					_argument(
+						"--file",
+						dest="files",
+						action="append",
+						default=None,
+						type=_non_empty_text_argument("--file"),
+					),
+					_argument(
+						"--split-rationale",
+						type=_non_empty_text_argument("--split-rationale"),
+					),
 					_argument("--acceptance-criteria", default=""),
 					_argument("--verification", default=""),
 					_argument("--risks", default=""),
@@ -436,16 +457,34 @@ _COMMAND_SPECS = (
 						type=_non_empty_text_argument("--purpose"),
 					),
 					_argument(
-						"--contract",
+						"--contract-step",
+						dest="contract",
 						default=argparse.SUPPRESS,
-						type=_non_empty_text_argument("--contract"),
+						action="append",
+						type=_non_empty_text_argument("--contract-step"),
 					),
-					_argument("--files", default=argparse.SUPPRESS),
+					_argument(
+						"--file",
+						dest="files",
+						action="append",
+						default=argparse.SUPPRESS,
+						type=_non_empty_text_argument("--file"),
+					),
+					_argument(
+						"--split-rationale",
+						default=argparse.SUPPRESS,
+						type=_non_empty_text_argument("--split-rationale"),
+					),
 					_argument("--acceptance-criteria", default=argparse.SUPPRESS),
 					_argument("--verification", default=argparse.SUPPRESS),
 					_argument("--risks", default=argparse.SUPPRESS),
 					_argument(
 						"--clear-files",
+						action="store_true",
+						default=argparse.SUPPRESS,
+					),
+					_argument(
+						"--clear-split-rationale",
 						action="store_true",
 						default=argparse.SUPPRESS,
 					),
@@ -697,8 +736,14 @@ _TASK_ADD_PROMPT_ARGUMENTS = (
 	_PromptArgument(("--title",), "display title", required=True),
 	_PromptArgument(("--overview",), "non-empty task summary", required=True),
 	_PromptArgument(("--purpose",), "non-empty task purpose", required=True),
-	_PromptArgument(("--contract",), "non-empty task contract", required=True),
-	_PromptArgument(("--files",), "optional files covered by the task"),
+	_PromptArgument(
+		("--contract-step",),
+		"non-empty task contract step",
+		required=True,
+		repeatable=True,
+	),
+	_PromptArgument(("--file",), "optional file covered by the task", repeatable=True),
+	_PromptArgument(("--split-rationale",), "optional reason for splitting the task"),
 	_PromptArgument(("--acceptance-criteria",), "optional completion conditions"),
 	_PromptArgument(("--verification",), "optional verification instructions"),
 	_PromptArgument(("--risks",), "optional risks"),
@@ -748,7 +793,7 @@ def _prompt_value(argument: _PromptArgument, *, repeatable_value: bool = False) 
 	names = "/".join(argument.names)
 	field_name = argument.names[0].removeprefix("--")
 	optional_hint = ""
-	if not argument.required:
+	if not argument.required or repeatable_value:
 		optional_hint = (
 			"; press Enter when finished"
 			if repeatable_value
@@ -805,9 +850,12 @@ def _prompt_add_arguments(arguments: list[str]) -> list[str]:
 
 		if argument.required:
 			prompted_arguments.extend((argument.names[0], _prompt_value(argument)))
-			continue
+			if not argument.repeatable:
+				continue
+			has_value = True
+		else:
+			has_value = False
 
-		has_value = False
 		while True:
 			value = _prompt_value(argument, repeatable_value=has_value)
 			if not value:
@@ -1121,6 +1169,7 @@ def _run_command(
 				purpose=args.purpose,
 				contract=args.contract,
 				files=args.files,
+				split_rationale=args.split_rationale,
 				acceptance_criteria=args.acceptance_criteria,
 				verification=args.verification,
 				risks=args.risks,
@@ -1305,10 +1354,12 @@ def _run_task_edit(args: argparse.Namespace, database: Database) -> tuple[object
 			purpose=getattr(args, "purpose", None),
 			contract=getattr(args, "contract", None),
 			files=getattr(args, "files", None),
+			split_rationale=getattr(args, "split_rationale", None),
 			acceptance_criteria=getattr(args, "acceptance_criteria", None),
 			verification=getattr(args, "verification", None),
 			risks=getattr(args, "risks", None),
 			clear_files=getattr(args, "clear_files", False),
+			clear_split_rationale=getattr(args, "clear_split_rationale", False),
 			clear_acceptance_criteria=getattr(args, "clear_acceptance_criteria", False),
 			clear_verification=getattr(args, "clear_verification", False),
 			clear_risks=getattr(args, "clear_risks", False),

@@ -299,7 +299,11 @@ def test_commands_json_lists_the_registry_with_required_flags(
 		"names": ["body"],
 		"required": True,
 	}
-	assert commands["task add"]["flags"][9] == {
+	assert commands["task add"]["flags"][4] == {
+		"names": ["--contract-step"],
+		"required": True,
+	}
+	assert commands["task add"]["flags"][10] == {
 		"names": ["--release", "--release-id"],
 		"required": False,
 	}
@@ -494,7 +498,7 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 				"Task overview",
 				"--purpose",
 				"Task purpose",
-				"--contract",
+				"--contract-step",
 				"Task contract",
 			],
 			"task_add",
@@ -690,7 +694,9 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 			"Task title",
 			"Task overview",
 			"Task purpose",
-			"Task contract",
+			"Task contract step",
+			"",
+			"",
 			"",
 			"",
 			"",
@@ -730,8 +736,9 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 		"title": "Task title",
 		"overview": "Task overview",
 		"purpose": "Task purpose",
-		"contract": "Task contract",
+		"contract": ["Task contract step"],
 		"files": None,
+		"split_rationale": None,
 		"acceptance_criteria": "",
 		"verification": "",
 		"risks": "",
@@ -744,8 +751,10 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 		"title: ",
 		"overview: ",
 		"purpose: ",
-		"contract: ",
-		"files: ",
+		"contract-step: ",
+		"contract-step: ",
+		"file: ",
+		"split-rationale: ",
 		"acceptance-criteria: ",
 		"verification: ",
 		"risks: ",
@@ -763,8 +772,9 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 			"Display title",
 			"Non-empty task summary",
 			"Non-empty task purpose",
-			"Non-empty task contract",
-			"Optional files covered by the task; press Enter to skip",
+			"Non-empty task contract step",
+			"Optional file covered by the task; press Enter to skip",
+			"Optional reason for splitting the task; press Enter to skip",
 			"Optional completion conditions; press Enter to skip",
 			"Optional verification instructions; press Enter to skip",
 			"Optional risks; press Enter to skip",
@@ -780,8 +790,9 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 			"--title",
 			"--overview",
 			"--purpose",
-			"--contract",
-			"--files",
+			"--contract-step",
+			"--file",
+			"--split-rationale",
 			"--acceptance-criteria",
 			"--verification",
 			"--risks",
@@ -790,7 +801,7 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 			"--position",
 		)
 	)
-	assert output.out.count("press Enter to skip") == 7
+	assert output.out.count("press Enter to skip") == 8
 	# render is stubbed empty here, so main() adds only its blank-line frame and
 	# the Next hint after the guided prompts. Check spacing on the prompt section.
 	prompt_section, _, next_hint = output.out.partition("\n\n\n\nNext: ")
@@ -905,7 +916,13 @@ def test_add_prompt_skips_arguments_already_supplied(
 	data = {"id": "tsk_test"}
 	prompts: list[str] = []
 	prompt_values = iter(
-		["Task title", "Task overview", "Task purpose", "Task contract", *([""] * 7)]
+		[
+			"Task title",
+			"Task overview",
+			"Task purpose",
+			"Task contract step",
+			*([""] * 9),
+		]
 	)
 
 	class _WriteStore:
@@ -996,7 +1013,7 @@ def test_json_mode_keeps_missing_add_arguments_non_interactive(
 			"code": "usage",
 			"message": (
 				"the following arguments are required: "
-				"--slug, --title, --overview, --purpose, --contract"
+				"--slug, --title, --overview, --purpose, --contract-step"
 			),
 			"details": {},
 		},
@@ -1535,7 +1552,7 @@ def test_task_list_uses_release_priority_for_json_and_table_output(
 		"Project review context",
 		overview="Review context.",
 		purpose="Review project context.",
-		contract="Review context contract.",
+		contract=["Review context contract."],
 		release_id=later_release["id"],
 		position=1,
 	)
@@ -1544,7 +1561,7 @@ def test_task_list_uses_release_priority_for_json_and_table_output(
 		"Progress CLI read parity",
 		overview="Keep read commands aligned.",
 		purpose="Keep CLI reads aligned.",
-		contract="Keep read ordering aligned.",
+		contract=["Keep read ordering aligned."],
 		release_id=active_release["id"],
 		position=1,
 	)
@@ -1553,7 +1570,7 @@ def test_task_list_uses_release_priority_for_json_and_table_output(
 		"Unassigned task",
 		overview="An unassigned task.",
 		purpose="Check unassigned ordering.",
-		contract="Unassigned tasks use the final queue bucket.",
+		contract=["Unassigned tasks use the final queue bucket."],
 		position=1,
 	)
 
@@ -1864,8 +1881,8 @@ def test_task_list_renders_only_an_empty_state(monkeypatch) -> None:
 				"title": "Test task",
 				"overview": "A task overview.",
 				"purpose": "A task purpose.",
-				"contract": "A task contract.",
-				"files": "src/task.py",
+				"contract": ["A task contract."],
+				"files": ["src/task.py"],
 				"acceptance_criteria": "Task output is readable.",
 				"verification": "Run focused tests.",
 				"risks": "Low risk.",
@@ -1884,8 +1901,8 @@ def test_task_list_renders_only_an_empty_state(monkeypatch) -> None:
 				{"label": "Project ID", "value": "prj_test"},
 				{"label": "Overview", "value": "A task overview."},
 				{"label": "Purpose", "value": "A task purpose."},
-				{"label": "Contract", "value": "A task contract."},
-				{"label": "Files", "value": "src/task.py"},
+				{"label": "Contract", "value": "['A task contract.']"},
+				{"label": "Files", "value": "['src/task.py']"},
 				{
 					"label": "Acceptance criteria",
 					"value": "Task output is readable.",
@@ -2025,7 +2042,9 @@ def test_task_get_row_group_keeps_wrapped_values_with_one_divider_call(
 def test_task_get_field_order_matches_task_dataclass() -> None:
 	expected_fields = {field.name for field in dataclasses.fields(Task)}
 
-	assert set(render_module._TASK_GET_FIELD_ORDER) == expected_fields
+	assert set(render_module._TASK_GET_FIELD_ORDER) == expected_fields - {
+		"split_rationale"
+	}
 
 
 def test_human_next_renders_done_chunk_with_success_status(
@@ -2580,7 +2599,7 @@ def test_json_write_success_uses_the_changed_object_shape(
 				"Write surface overview",
 				"--purpose",
 				"Write surface purpose",
-				"--contract",
+				"--contract-step",
 				"Write surface contract",
 				"--database",
 				str(tmp_path / "db"),
@@ -2611,7 +2630,7 @@ def test_json_write_success_uses_the_changed_object_shape(
 				"Task",
 				"--overview",
 				"Task overview",
-				"--contract",
+				"--contract-step",
 				"Task contract",
 			],
 			"--purpose",
@@ -2630,7 +2649,7 @@ def test_json_write_success_uses_the_changed_object_shape(
 				"--purpose",
 				"Task purpose",
 			],
-			"--contract",
+			"--contract-step",
 			id="task-contract",
 		),
 		pytest.param(
@@ -2702,7 +2721,7 @@ def test_add_rejects_an_omitted_planning_field(
 				"Task overview",
 				"--purpose",
 				" \t",
-				"--contract",
+				"--contract-step",
 				"Task contract",
 			],
 			"--purpose",
@@ -2720,10 +2739,10 @@ def test_add_rejects_an_omitted_planning_field(
 				"Task overview",
 				"--purpose",
 				"Task purpose",
-				"--contract",
+				"--contract-step",
 				" \t",
 			],
-			"--contract",
+			"--contract-step",
 			id="task-contract",
 		),
 		pytest.param(
@@ -2856,9 +2875,14 @@ def test_edit_rejects_removed_clear_flags(
 			id="task-purpose-whitespace",
 		),
 		pytest.param(
-			["task", "edit", "tsk_test", "--contract", ""],
-			"--contract",
+			["task", "edit", "tsk_test", "--contract-step", ""],
+			"--contract-step",
 			id="task-contract-empty",
+		),
+		pytest.param(
+			["task", "edit", "tsk_test", "--split-rationale", ""],
+			"--split-rationale",
+			id="task-split-rationale-empty",
 		),
 		pytest.param(
 			["chunk", "edit", "chk_test", "--description", " \t"],
@@ -2939,15 +2963,201 @@ def test_task_edit_dispatches_values_and_optional_clear_flags(
 		"purpose": None,
 		"contract": None,
 		"files": None,
+		"split_rationale": None,
 		"acceptance_criteria": None,
 		"verification": None,
 		"risks": None,
 		"clear_files": False,
+		"clear_split_rationale": False,
 		"clear_acceptance_criteria": False,
 		"clear_verification": False,
 		"clear_risks": False,
 	}
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+def test_task_add_dispatches_repeatable_contract_steps_and_files(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {"id": "tsk_test"}
+	arguments_seen: dict[str, object] = {}
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_add(self, **arguments):
+			arguments_seen.update(arguments)
+			return data
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"add",
+				"--slug",
+				"task",
+				"--title",
+				"Task",
+				"--overview",
+				"Task overview",
+				"--purpose",
+				"Task purpose",
+				"--contract-step",
+				"First step",
+				"--contract-step",
+				"Second step",
+				"--file",
+				"src/first.py",
+				"--file",
+				"src/second.py",
+				"--split-rationale",
+				"Keep each behaviour slice reviewable",
+				"--database",
+				str(tmp_path / "db"),
+				"--json",
+			]
+		)
+		== 0
+	)
+
+	assert arguments_seen["contract"] == ["First step", "Second step"]
+	assert arguments_seen["files"] == ["src/first.py", "src/second.py"]
+	assert arguments_seen["split_rationale"] == "Keep each behaviour slice reviewable"
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+def test_task_edit_dispatches_repeatable_contract_steps_and_files(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {"id": "tsk_test"}
+	arguments_seen: dict[str, object] = {}
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_edit(self, task_id, **arguments):
+			arguments_seen["task_id"] = task_id
+			arguments_seen.update(arguments)
+			return data
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"edit",
+				"tsk_test",
+				"--contract-step",
+				"Updated first",
+				"--contract-step",
+				"Updated second",
+				"--file",
+				"src/updated.py",
+				"--split-rationale",
+				"The chunks have separate review questions",
+				"--database",
+				str(tmp_path / "db"),
+				"--json",
+			]
+		)
+		== 0
+	)
+
+	assert arguments_seen == {
+		"task_id": "tsk_test",
+		"overview": None,
+		"purpose": None,
+		"contract": ["Updated first", "Updated second"],
+		"files": ["src/updated.py"],
+		"split_rationale": "The chunks have separate review questions",
+		"acceptance_criteria": None,
+		"verification": None,
+		"risks": None,
+		"clear_files": False,
+		"clear_split_rationale": False,
+		"clear_acceptance_criteria": False,
+		"clear_verification": False,
+		"clear_risks": False,
+	}
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+def test_task_edit_dispatches_split_rationale_clear_flags(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {"id": "tsk_test"}
+	arguments_seen: dict[str, object] = {}
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_edit(self, task_id, **arguments):
+			arguments_seen["task_id"] = task_id
+			arguments_seen.update(arguments)
+			return data
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"edit",
+				"tsk_test",
+				"--clear-files",
+				"--clear-split-rationale",
+				"--database",
+				str(tmp_path / "db"),
+				"--json",
+			]
+		)
+		== 0
+	)
+
+	assert arguments_seen["files"] is None
+	assert arguments_seen["split_rationale"] is None
+	assert arguments_seen["clear_files"] is True
+	assert arguments_seen["clear_split_rationale"] is True
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+def test_removed_task_contract_and_files_flags_are_rejected(capsys) -> None:
+	assert (
+		cli.main(
+			[
+				"task",
+				"add",
+				"--slug",
+				"task",
+				"--title",
+				"Task",
+				"--overview",
+				"Task overview",
+				"--purpose",
+				"Task purpose",
+				"--contract-step",
+				"Current step",
+				"--contract",
+				"Old",
+				"--json",
+			]
+		)
+		== 2
+	)
+	first = json.loads(capsys.readouterr().out)
+	assert first["ok"] is False
+	assert first["error"]["message"] == "unrecognized arguments: --contract Old"
+
+	assert cli.main(["task", "edit", "tsk_test", "--files", "old", "--json"]) == 2
+	second = json.loads(capsys.readouterr().out)
+	assert second["ok"] is False
+	assert second["error"]["message"] == "unrecognized arguments: --files old"
 
 
 def test_chunk_edit_dispatches_description(

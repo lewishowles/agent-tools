@@ -51,7 +51,7 @@ def _add_task(store: WriteStore, slug: str, title: str, **arguments):
 	"""Create a valid test task with default planning text."""
 	arguments.setdefault("overview", f"{title} overview")
 	arguments.setdefault("purpose", f"{title} purpose")
-	arguments.setdefault("contract", f"{title} contract")
+	arguments.setdefault("contract", [f"{title} contract"])
 	return store.task_add(slug, title, **arguments)
 
 
@@ -102,12 +102,12 @@ def test_task_add_requires_an_overview_argument(tmp_path: Path) -> None:
 	[
 		pytest.param({"purpose": ""}, id="empty-purpose"),
 		pytest.param({"purpose": " \t"}, id="whitespace-purpose"),
-		pytest.param({"contract": ""}, id="empty-contract"),
-		pytest.param({"contract": " \t"}, id="whitespace-contract"),
+		pytest.param({"contract": [""]}, id="empty-contract"),
+		pytest.param({"contract": [" \t"]}, id="whitespace-contract"),
 	],
 )
 def test_task_add_rejects_blank_purpose_and_contract(
-	tmp_path: Path, arguments: dict[str, str]
+	tmp_path: Path, arguments: dict[str, object]
 ) -> None:
 	store = _seed_store(tmp_path)
 
@@ -117,7 +117,27 @@ def test_task_add_rejects_blank_purpose_and_contract(
 			"Task",
 			overview="Task overview",
 			purpose=arguments.get("purpose", "Task purpose"),
-			contract=arguments.get("contract", "Task contract"),
+			contract=arguments.get("contract", ["Task contract"]),
+		)
+
+	tasks = ReadStore(store.database, _ProjectStore(store.database)).task_list()
+
+	assert tasks["items"] == []
+
+
+@pytest.mark.parametrize("field", ["contract", "files"])
+def test_task_add_rejects_scalar_task_values(tmp_path: Path, field: str) -> None:
+	store = _seed_store(tmp_path)
+	arguments = {"contract": ["Task contract"], "files": None}
+	arguments[field] = "Task value"
+
+	with pytest.raises(ProgressError, match="must be a list of text"):
+		store.task_add(
+			"task",
+			"Task",
+			overview="Task overview",
+			purpose="Task purpose",
+			**arguments,
 		)
 
 	tasks = ReadStore(store.database, _ProjectStore(store.database)).task_list()
@@ -1273,8 +1293,8 @@ def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
 		"Task",
 		overview="Original overview",
 		purpose="Original purpose",
-		contract="Original contract",
-		files="original.py",
+		contract=["Original contract"],
+		files=["original.py"],
 		acceptance_criteria="Original criteria",
 		verification="Original verification",
 		risks="Original risks",
@@ -1285,7 +1305,7 @@ def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
 	updated = store.task_edit(
 		task["id"],
 		overview="Updated overview",
-		files="updated.py",
+		files=["updated.py"],
 	)
 
 	assert updated["id"] == task["id"]
@@ -1321,6 +1341,39 @@ def test_task_edit_clears_task_files(tmp_path: Path) -> None:
 			connection.execute(
 				"SELECT 1 FROM task_files WHERE task_id = ?", (task["id"],)
 			).fetchone()
+			is None
+		)
+
+
+def test_task_edit_updates_and_clears_split_rationale(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "task", "Task", split_rationale="Initial rationale")
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT split_rationale FROM tasks WHERE id = ?", (task["id"],)
+			).fetchone()[0]
+			== "Initial rationale"
+		)
+
+	updated = store.task_edit(task["id"], split_rationale="Updated rationale")
+
+	assert updated["id"] == task["id"]
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT split_rationale FROM tasks WHERE id = ?", (task["id"],)
+			).fetchone()[0]
+			== "Updated rationale"
+		)
+
+	store.task_edit(task["id"], clear_split_rationale=True)
+
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT split_rationale FROM tasks WHERE id = ?", (task["id"],)
+			).fetchone()[0]
 			is None
 		)
 
@@ -1421,11 +1474,11 @@ def test_task_edit_requires_at_least_one_field(tmp_path: Path) -> None:
 	[
 		("overview", ""),
 		("purpose", " \t"),
-		("contract", ""),
+		("contract", [""]),
 	],
 )
 def test_task_edit_rejects_blank_required_text(
-	tmp_path: Path, field: str, value: str
+	tmp_path: Path, field: str, value: str | list[str]
 ) -> None:
 	store = _seed_store(tmp_path)
 	task = _add_task(store, "task", "Task")

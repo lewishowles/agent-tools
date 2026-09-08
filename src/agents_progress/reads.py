@@ -34,7 +34,7 @@ _RELEASE_COLUMNS = "id, project_id, slug, title, overview, status, position"
 # Columns selected from tasks in list and single-row queries.
 _TASK_COLUMNS = (
 	"id, project_id, slug, release_id, title, overview, purpose, "
-	"acceptance_criteria, verification, risks, status, "
+	"acceptance_criteria, verification, risks, split_rationale, status, "
 	"status_reason, position, created_at, started_at, completed_at, updated_at"
 )
 

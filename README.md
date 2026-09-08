@@ -215,15 +215,16 @@ chunks, notes, and dependencies.
 Create a task:
 
 ```text
-progress task add --slug <slug> --title <title> --overview <overview> --purpose <purpose> --contract <contract> [--files <files>] [--acceptance-criteria <acceptance_criteria>] [--verification <verification>] [--risks <risks>] [--release <release_id> | --release-id <release_id>] [--depends-on <task_id> | --dependency <task_id>] [--position <position>] [--json] [--database <path>]
+progress task add --slug <slug> --title <title> --overview <overview> --purpose <purpose> --contract-step <contract_step> [--contract-step <contract_step> ...] [--file <file> ...] [--split-rationale <split_rationale>] [--acceptance-criteria <acceptance_criteria>] [--verification <verification>] [--risks <risks>] [--release <release_id> | --release-id <release_id>] [--depends-on <task_id> | --dependency <task_id>] [--position <position>] [--json] [--database <path>]
 ```
 
 - `--slug <slug>`: stable slug stored on the task
 - `--title <title>`: display title
 - `--overview <overview>`: non-empty task summary
 - `--purpose <purpose>`: non-empty task purpose
-- `--contract <contract>`: non-empty task contract
-- `--files <files>`: optional files covered by the task
+- `--contract-step <contract_step>`: non-empty task contract step; repeat for each step
+- `--file <file>`: optional file covered by the task; repeat for each file
+- `--split-rationale <split_rationale>`: optional reason for splitting the task
 - `--acceptance-criteria <acceptance_criteria>`: optional completion conditions
 - `--verification <verification>`: optional verification instructions
 - `--risks <risks>`: optional risks
@@ -356,12 +357,13 @@ progress task rename <task_id> --title <title> [--json] [--database <path>]
 Update task planning fields:
 
 ```text
-progress task edit <task_id> [--overview <overview>] [--purpose <purpose>] [--contract <contract>] [--files <files>] [--acceptance-criteria <acceptance_criteria>] [--verification <verification>] [--risks <risks>] [--clear-files] [--clear-acceptance-criteria] [--clear-verification] [--clear-risks] [--json] [--database <path>]
+progress task edit <task_id> [--overview <overview>] [--purpose <purpose>] [--contract-step <contract_step> ...] [--file <file> ...] [--split-rationale <split_rationale>] [--acceptance-criteria <acceptance_criteria>] [--verification <verification>] [--risks <risks>] [--clear-files] [--clear-split-rationale] [--clear-acceptance-criteria] [--clear-verification] [--clear-risks] [--json] [--database <path>]
 ```
 
-`--overview`, `--purpose`, and `--contract` must contain text. These fields
-are required and cannot be cleared. Pass replacement text when one needs
-changing.
+`--overview`, `--purpose`, each `--contract-step`, and `--split-rationale` value
+must contain text. `--overview`, `--purpose`, and `--contract-step` are required
+when creating a task and cannot be cleared. Pass replacement values when one
+needs changing. Use `--clear-split-rationale` to remove the optional rationale.
 
 ### `progress task start`
 

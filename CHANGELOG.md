@@ -4,6 +4,16 @@ All notable changes to `progress` are documented here. The format is based on [K
 
 ## [Unreleased]
 
+### Changed
+
+- Breaking: abbreviated flags no longer work anywhere in the CLI.
+- `task add` and `task edit` now accept repeatable `--contract-step` and `--file` flags, plus an optional `--split-rationale`.
+- `task edit --clear-split-rationale` removes a task's split rationale, and `--clear-files` now clears the whole file list rather than a single value.
+
+### Removed
+
+- Breaking: `--contract` and `--files` have been removed. Use `--contract-step` and `--file` instead.
+
 ## [0.2.0] - 2026-08-30
 
 ### Added

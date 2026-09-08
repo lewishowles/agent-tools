@@ -155,7 +155,7 @@ def test_next_uses_live_totals_and_ranks_after_sibling_removals(
 		"Third task",
 		overview="Third task overview",
 		purpose="Third task purpose",
-		contract="Third task contract",
+		contract=["Third task contract"],
 		release_id=RELEASE_A,
 		position=3,
 	)
@@ -198,7 +198,7 @@ def test_next_returns_the_earliest_ready_task_when_nothing_is_in_progress(
 		"First ready",
 		overview="First ready overview",
 		purpose="First ready purpose",
-		contract="First ready contract",
+		contract=["First ready contract"],
 		release_id=RELEASE_A,
 		position=0,
 	)
@@ -231,7 +231,7 @@ def test_next_prefers_active_release_over_lower_position_planned_release(
 		"Planned task",
 		overview="Planned task overview",
 		purpose="Planned task purpose",
-		contract="Planned task contract",
+		contract=["Planned task contract"],
 		release_id=planned_release["id"],
 		position=0,
 	)
@@ -255,7 +255,7 @@ def test_next_reports_the_earliest_blocked_task_without_changing_it(
 		"Blocked",
 		overview="Blocked task overview",
 		purpose="Blocked task purpose",
-		contract="Blocked task contract",
+		contract=["Blocked task contract"],
 		release_id=RELEASE_A,
 		depends_on=[TASK_A],
 		position=3,
@@ -348,7 +348,9 @@ def test_task_list_leaves_unassigned_tasks_without_release_titles(
 	assert "release_title" not in unassigned
 
 
-def test_task_reads_return_contract_and_files_in_order(tmp_path: Path) -> None:
+def test_task_reads_return_contract_files_and_split_rationale_in_order(
+	tmp_path: Path,
+) -> None:
 	store = _seed_store(tmp_path)
 	task = WriteStore(store.database, _ProjectStore(store.database)).task_add(
 		"ordered",
@@ -357,16 +359,19 @@ def test_task_reads_return_contract_and_files_in_order(tmp_path: Path) -> None:
 		purpose="Ordered task purpose",
 		contract=["First step", "Second step"],
 		files=["src/first.py", "src/second.py"],
+		split_rationale="Keep each step reviewable",
 	)
 
 	assert store.task_get(task["id"])["contract"] == ["First step", "Second step"]
 	assert store.task_get(task["id"])["files"] == ["src/first.py", "src/second.py"]
+	assert store.task_get(task["id"])["split_rationale"] == "Keep each step reviewable"
 	listed = next(
 		item for item in store.task_list()["items"] if item["id"] == task["id"]
 	)
 
 	assert listed["contract"] == ["First step", "Second step"]
 	assert listed["files"] == ["src/first.py", "src/second.py"]
+	assert listed["split_rationale"] == "Keep each step reviewable"
 
 
 def test_doctor_reports_blank_required_fields_across_all_pages(
@@ -404,7 +409,7 @@ def test_doctor_reports_blank_required_fields_across_all_pages(
 					"title": "Blank task",
 					"overview": "  ",
 					"purpose": "",
-					"contract": " \t",
+					"contract": [" \t"],
 				}
 			],
 			"limit": 1,

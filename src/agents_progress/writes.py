@@ -330,8 +330,9 @@ class WriteStore(_StoreBase):
 		title: str,
 		overview: str,
 		purpose: str = "",
-		contract: str | Sequence[str] = "",
-		files: str | Sequence[str] | None = None,
+		contract: Sequence[str] = (),
+		files: Sequence[str] | None = None,
+		split_rationale: str | None = None,
 		acceptance_criteria: str = "",
 		verification: str = "",
 		risks: str = "",
@@ -349,6 +350,8 @@ class WriteStore(_StoreBase):
 			contract, "task contract", required=True
 		)
 		file_paths = _normalise_task_values(files, "task file")
+		if split_rationale is not None:
+			_require_text(split_rationale, "task split rationale")
 		dependency_ids = _normalise_dependencies(depends_on)
 		for dependency_id in dependency_ids:
 			validate_object_id(dependency_id, TASK_PREFIX)
@@ -401,9 +404,9 @@ class WriteStore(_StoreBase):
 					"""
 						INSERT INTO tasks (
 							id, project_id, slug, release_id, title, overview, purpose,
-							acceptance_criteria, verification, risks, status,
+							acceptance_criteria, verification, risks, split_rationale, status,
 							status_reason, position, created_at, started_at, completed_at, updated_at
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 					""",
 					(
 						task_id,
@@ -416,6 +419,7 @@ class WriteStore(_StoreBase):
 						acceptance_criteria,
 						verification,
 						risks,
+						split_rationale,
 						status,
 						status_reason,
 						task_position,
@@ -626,12 +630,14 @@ class WriteStore(_StoreBase):
 		task_id: str,
 		overview: str | None = None,
 		purpose: str | None = None,
-		contract: str | Sequence[str] | None = None,
-		files: str | Sequence[str] | None = None,
+		contract: Sequence[str] | None = None,
+		files: Sequence[str] | None = None,
+		split_rationale: str | None = None,
 		acceptance_criteria: str | None = None,
 		verification: str | None = None,
 		risks: str | None = None,
 		clear_files: bool = False,
+		clear_split_rationale: bool = False,
 		clear_acceptance_criteria: bool = False,
 		clear_verification: bool = False,
 		clear_risks: bool = False,
@@ -653,16 +659,20 @@ class WriteStore(_StoreBase):
 			"purpose": purpose,
 			"contract": contract,
 			"files": files,
+			"split_rationale": split_rationale,
 			"acceptance_criteria": acceptance_criteria,
 			"verification": verification,
 			"risks": risks,
 		}
 		clear_fields = {
 			"files": clear_files,
+			"split_rationale": clear_split_rationale,
 			"acceptance_criteria": clear_acceptance_criteria,
 			"verification": clear_verification,
 			"risks": clear_risks,
 		}
+		# Fields whose column is nullable, so clearing them stores NULL rather than empty text.
+		nullable_fields = {"split_rationale"}
 
 		if not any(
 			value is not None or clear_fields.get(field, False)
@@ -677,6 +687,7 @@ class WriteStore(_StoreBase):
 			"overview": "task overview",
 			"purpose": "task purpose",
 			"contract": "task contract",
+			"split_rationale": "task split rationale",
 		}
 		for field, value in values.items():
 			if clear_fields.get(field, False) and value is not None:
@@ -713,7 +724,10 @@ class WriteStore(_StoreBase):
 				continue
 
 			if clear_fields.get(field, False):
-				value = ""
+				if field in nullable_fields:
+					value = None
+				else:
+					value = ""
 
 			updates.append(f"{field} = ?")
 			parameters.append(value)
@@ -1690,24 +1704,21 @@ def _unblock_task(
 
 
 def _normalise_task_values(
-	value: str | Sequence[str] | None,
+	value: Sequence[str] | None,
 	label: str,
 	*,
 	required: bool = False,
 ) -> tuple[str, ...]:
 	"""Turn a task's contract or files input into an ordered tuple of non-empty text.
 
-	A bare string becomes a single entry, so existing callers passing one string still work.
 	Set required to reject an empty result the way a missing required field is rejected.
 	"""
 	if value is None:
 		values = ()
-	elif isinstance(value, str):
-		values = (value,)
-	elif isinstance(value, Sequence):
+	elif isinstance(value, Sequence) and not isinstance(value, str):
 		values = tuple(value)
 	else:
-		raise ProgressError(f"{label} must be text or a list of text")
+		raise ProgressError(f"{label} must be a list of text")
 
 	for item in values:
 		if not isinstance(item, str):
