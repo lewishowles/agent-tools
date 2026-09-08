@@ -1609,8 +1609,8 @@ def test_chunk_list_renders_status_rows_and_descriptions(monkeypatch) -> None:
 		lambda message: pytest.fail(f"unexpected hint: {message}"),
 	)
 
-	active_description = "The active chunk description."
-	pending_description = "The pending chunk description."
+	active_description = "The active chunk description.\nThis line is hidden."
+	pending_description = "The pending chunk description.\nThis line is hidden too."
 	long_identifier = "chk_QByCeE0lGXmeVEbAF7oFKg"
 	output = render_module._render_list(
 		"chunk list",
@@ -1659,13 +1659,15 @@ def test_chunk_list_renders_status_rows_and_descriptions(monkeypatch) -> None:
 		"success:done  Done output · chk_done\n"
 		"success:done  Other done output · chk_done_other\n\n"
 		f"info:active  Active output · {long_identifier}\n\n"
-		f"{active_description}\n\n"
+		f"{active_description.splitlines()[0]}\n\n"
 		"info:active  Other active output · chk_active_other\n\n"
 		"skipped:pending  Pending output · chk_pending\n\n"
-		f"{pending_description}\n\n"
+		f"{pending_description.splitlines()[0]}\n\n"
 		"skipped:pending  Other pending output · chk_pending_other"
 	)
 	assert "Done descriptions are hidden." not in output
+	assert "This line is hidden." not in output
+	assert "This line is hidden too." not in output
 	assert any(long_identifier in line for line in output.splitlines())
 	assert "Description" not in output
 	assert (
@@ -1683,8 +1685,55 @@ def test_chunk_list_renders_status_rows_and_descriptions(monkeypatch) -> None:
 	assert ("Done output · chk_done", "text", "normal") in span_calls
 	assert ("Active output · " + long_identifier, "text", "normal") in span_calls
 	assert ("Pending output · chk_pending", "text", "normal") in span_calls
-	assert (active_description, "muted", "normal") in span_calls
-	assert (pending_description, "muted", "normal") in span_calls
+	assert (active_description.splitlines()[0], "muted", "normal") in span_calls
+	assert (pending_description.splitlines()[0], "muted", "normal") in span_calls
+
+
+def test_skipped_chunks_use_the_skipped_tone_and_pending_group(monkeypatch) -> None:
+	status_calls: list[tuple[str, str, str]] = []
+
+	def fake_status(result_type: str, label: str = "", detail: str = "") -> str:
+		status_calls.append((result_type, label, detail))
+		return f"{result_type}:{label}" if label else result_type
+
+	monkeypatch.setattr(
+		render_module,
+		"render_span",
+		lambda value, *args, **kwargs: value,
+	)
+	monkeypatch.setattr(render_module, "render_status", fake_status)
+
+	output = render_module.render(
+		"chunk list",
+		{
+			"items": [
+				{"id": "chk_active", "title": "Active output", "status": "active"},
+				{
+					"id": "chk_skipped",
+					"title": "Skipped output",
+					"status": "skipped",
+				},
+				{
+					"id": "chk_pending",
+					"title": "Pending output",
+					"status": "pending",
+				},
+			],
+			"has_more": False,
+		},
+	)
+
+	assert output == (
+		"Chunks\n\n"
+		"info:active  Active output · chk_active\n\n"
+		"skipped:pending  Skipped output · chk_skipped\n"
+		"skipped:pending  Pending output · chk_pending"
+	)
+	assert status_calls == [
+		("info", "active", ""),
+		("skipped", "pending", ""),
+		("skipped", "pending", ""),
+	]
 
 
 def test_chunk_list_aligns_status_columns(monkeypatch) -> None:
@@ -1866,48 +1915,66 @@ def test_task_list_renders_only_an_empty_state(monkeypatch) -> None:
 	assert span_calls == [("No tasks.", "muted", "normal")]
 
 
-@pytest.mark.parametrize(
-	("command", "data", "expected_rows"),
-	[
-		(
-			"chunk get",
-			{
-				"id": "chk_test",
-				"description": "A chunk description.",
-				"status": "pending",
-			},
-			[{"label": "Description", "value": "A chunk description."}],
-		),
-	],
-)
-def test_object_planning_fields_use_row_group(
-	command: str,
-	data: dict[str, object],
-	expected_rows: list[dict[str, str]],
-	monkeypatch,
-) -> None:
-	groups: list[list[dict[str, str]]] = []
-	divider_calls: list[dict[str, object]] = []
+def test_chunk_get_renders_one_readable_chunk_view() -> None:
+	data = {
+		"id": "chk_chunk_view",
+		"task_id": "tsk_chunk_view",
+		"title": "Readable chunk",
+		"status": "skipped",
+		"description": "The complete chunk description.\nThe second line remains.",
+		"position": 99,
+		"started_at": "hidden-started-at",
+		"completed_at": "hidden-completed-at",
+	}
 
-	def fake_row_group(rows: list[dict[str, str]]) -> str:
-		groups.append(rows)
-		label_width = max(len(row["label"]) for row in rows)
-		return "\n".join(
-			f"{row['label'].ljust(label_width)}  {row['value']}" for row in rows
-		)
+	output = render_module.render("chunk get", data)
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", output)
 
-	def fake_divider(**kwargs: object) -> str:
-		divider_calls.append(kwargs)
-		return "Muted divider"
+	assert plain_output.startswith("Readable chunk")
+	assert "Status" in plain_output and "skipped" in plain_output
+	assert "Chunk ID" in plain_output and "chk_chunk_view" in plain_output
+	assert "Task ID" in plain_output and "tsk_chunk_view" in plain_output
+	assert "Description" in plain_output
+	assert "The complete chunk description." in plain_output
+	assert "The second line remains." in plain_output
+	assert "hidden-started-at" not in plain_output
+	assert "hidden-completed-at" not in plain_output
+	assert plain_output.index("Readable chunk") < plain_output.index("Status")
+	assert plain_output.index("Status") < plain_output.index("Description")
 
-	monkeypatch.setattr(render_module, "render_row_group", fake_row_group)
-	monkeypatch.setattr(render_module, "render_divider", fake_divider)
 
-	output = render_module.render(command, data)
+def test_chunk_get_tones_the_status_by_its_result_type(monkeypatch) -> None:
+	span_calls: list[tuple[str, str, str | None]] = []
 
-	assert "Description  A chunk description." in output
-	assert groups == [expected_rows]
-	assert divider_calls == []
+	def fake_span(value: str, tone: str = "info", weight: str | None = None) -> str:
+		span_calls.append((value, tone, weight))
+		return value
+
+	monkeypatch.setattr(render_module, "render_span", fake_span)
+
+	render_module.render(
+		"chunk get",
+		{
+			"id": "chk_toned",
+			"task_id": "tsk_toned",
+			"title": "Toned chunk",
+			"status": "skipped",
+			"description": "A description.",
+		},
+	)
+
+	assert ("skipped", "muted", "bold") in span_calls
+
+
+def test_chunk_get_routes_to_the_dedicated_chunk_view(monkeypatch) -> None:
+	monkeypatch.setattr(
+		render_module,
+		"_render_object",
+		lambda data: pytest.fail("chunk get used the generic renderer"),
+	)
+	monkeypatch.setattr(render_module, "_render_chunk", lambda chunk: "chunk view")
+
+	assert render_module.render("chunk get", {"id": "chk_test"}) == "chunk view"
 
 
 def test_task_get_uses_one_readable_task_view() -> None:
@@ -1925,13 +1992,13 @@ def test_task_get_uses_one_readable_task_view() -> None:
 			{
 				"id": "chk_first",
 				"title": "First chunk",
-				"description": "First chunk description.",
+				"description": "First chunk description.\nHidden first chunk line.",
 				"status": "done",
 			},
 			{
 				"id": "chk_second",
 				"title": "Second chunk",
-				"description": "Second chunk description.",
+				"description": "Second chunk description.\nHidden second chunk line.",
 				"status": "pending",
 			},
 		],
@@ -1959,6 +2026,10 @@ def test_task_get_uses_one_readable_task_view() -> None:
 	assert "Purpose" in plain_output and "The task purpose." in plain_output
 	assert "Chunks" in plain_output
 	assert "First chunk" in plain_output and "Second chunk" in plain_output
+	assert "First chunk description." not in plain_output
+	assert "Second chunk description." in plain_output
+	assert "Hidden first chunk line." not in plain_output
+	assert "Hidden second chunk line." not in plain_output
 	assert "Split rationale" in plain_output
 	assert "First contract step." in plain_output
 	assert "Second contract step." in plain_output
@@ -1985,7 +2056,7 @@ def test_task_get_routes_around_the_generic_object_renderer(monkeypatch) -> None
 	monkeypatch.setattr(
 		render_module,
 		"_render_object",
-		lambda command, data: pytest.fail("task get used the generic renderer"),
+		lambda data: pytest.fail("task get used the generic renderer"),
 	)
 	monkeypatch.setattr(render_module, "_render_task", lambda task: "task view")
 

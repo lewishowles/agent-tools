@@ -35,6 +35,7 @@ _STATUS_RESULT_TYPES = {
 	"needs-decision": "warning",
 	"pending": "skipped",
 	"ready": "skipped",
+	"skipped": "skipped",
 }
 
 # Maps a _STATUS_RESULT_TYPES result type to the span() tone that renders it.
@@ -56,11 +57,6 @@ _CHUNK_STATUS_COLUMN_WIDTH = len("- pending")
 # cli-style's one-column marker (rendered as a warning sign).
 _TASK_STATUS_COLUMN_WIDTH = len("! needs-decision")
 
-
-# Keys whose values _render_object wraps at 72 columns via row_group, per command.
-_OBJECT_ROW_GROUP_FIELDS = {
-	"chunk get": {"description"},
-}
 
 # Explains why a non-force clean pass leaves task history in place.
 _TASK_CLEAN_KEPT_HINT = (
@@ -89,7 +85,7 @@ def render(command: str, data: object) -> str:
 		return (
 			render_status("info", "Repo already initialised")
 			+ "\n"
-			+ _render_object("project current", project)
+			+ _render_object(project)
 		)
 	if command == "commands":
 		return _render_commands(data)
@@ -97,13 +93,15 @@ def render(command: str, data: object) -> str:
 		return _render_next(data)
 	if command == "task get" and isinstance(data, dict):
 		return _render_task(data)
+	if command == "chunk get" and isinstance(data, dict):
+		return _render_chunk(data)
 	if command == "doctor":
 		return _render_doctor(data)
 	if command == "task clean":
 		return _render_task_clean(data)
 	if command in {"task complete", "chunk complete"} and isinstance(data, dict):
 		# Completion prints one success line, not every record field; handled here
-		# rather than in _render_object so chunk get still shows all fields.
+		# rather than in _render_object so a plain get still shows all fields.
 		record_type = command.split()[0]  # "task" or "chunk"
 
 		# Completion also names the parent so the next command has its ID to hand.
@@ -122,7 +120,7 @@ def render(command: str, data: object) -> str:
 	if isinstance(data, dict) and "items" in data:
 		return _render_list(command, data)
 	if isinstance(data, dict):
-		return _render_object(command, data)
+		return _render_object(data)
 
 	return str(data)
 
@@ -452,6 +450,52 @@ def _render_task(task: dict[str, object]) -> str:
 	return "\n\n".join(blocks)
 
 
+def _render_chunk(chunk: dict[str, object]) -> str:
+	"""Render one chunk record in full for chunk get.
+
+	The description is shown whole here; chunk list keeps only its first line.
+	Position and timestamps are left to --json.
+	"""
+	blocks = [render_span(str(chunk.get("title", "")), "text", weight="bold")]
+	status = chunk.get("status", "")
+	chunk_rows = [
+		{
+			"label": "Status",
+			"value": render_span(
+				str(status).replace("-", " "),
+				_STATUS_TONES.get(_status_result_type(status), "info"),
+				weight="bold",
+			),
+		},
+		{
+			"label": "Chunk ID",
+			"value": render_span(str(chunk.get("id", "")), "muted", weight="normal"),
+		},
+		{
+			"label": "Task ID",
+			"value": render_span(
+				str(chunk.get("task_id", "")), "muted", weight="normal"
+			),
+		},
+	]
+	blocks.append(render_row_group(chunk_rows))
+
+	description = chunk.get("description")
+	if description:
+		blocks.extend(
+			[
+				render_span("Description"),
+				render_span(
+					textwrap.fill(str(description), _ROW_WRAP_WIDTH),
+					"muted",
+					weight="normal",
+				),
+			]
+		)
+
+	return "\n\n".join(blocks)
+
+
 def _render_next(data: object) -> str:
 	"""Render the selected task and its active chunk.
 
@@ -659,7 +703,11 @@ def _render_chunk_items(items: object) -> str:
 
 
 def _render_chunk_item(item: dict[str, object]) -> tuple[str, str, bool]:
-	"""Render one chunk row and return its status group and description state."""
+	"""Render one chunk row and return its status group and description state.
+
+	Only the first line of the description is kept, so a long chunk record does not
+	swamp the list. Use chunk get to read the whole description.
+	"""
 	result_type = _status_result_type(item.get("status"))
 	status_group = {
 		"skipped": "pending",
@@ -691,7 +739,7 @@ def _render_chunk_item(item: dict[str, object]) -> tuple[str, str, bool]:
 		return row, status_group, False
 
 	description_block = render_span(
-		textwrap.fill(str(description), _ROW_WRAP_WIDTH),
+		textwrap.fill(str(description).splitlines()[0], _ROW_WRAP_WIDTH),
 		"muted",
 		weight="normal",
 	)
@@ -777,37 +825,19 @@ def _status_result_type(status: object) -> str:
 	return _STATUS_RESULT_TYPES.get(str(status), "info")
 
 
-def _render_object(command: str, data: dict[str, object]) -> str:
+def _render_object(data: dict[str, object]) -> str:
 	"""Render one stable public object as labelled rows."""
 	lines = []
-	grouped_rows = []
-	row_group_fields = _OBJECT_ROW_GROUP_FIELDS.get(command, set())
 	for key in data:
 		if key not in data:
 			continue
 
 		value = data[key]
-		if key in row_group_fields:
-			grouped_rows.append(
-				{
-					"label": _format_label(key),
-					"value": "" if value is None else str(value),
-				}
-			)
-			continue
-
-		if grouped_rows:
-			lines.append(render_row_group(grouped_rows))
-			grouped_rows = []
-
 		if key == "demoted_task":
 			lines.append(f"Demoted task: {_format_demoted_task(value)}")
 			continue
 
 		lines.append(f"{_format_label(key)}: {'' if value is None else value}")
-
-	if grouped_rows:
-		lines.append(render_row_group(grouped_rows))
 
 	return "\n".join(lines) + "\n"
 
