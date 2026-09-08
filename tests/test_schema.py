@@ -30,10 +30,10 @@ def _insert_task(
 	connection.execute(
 		"""
 		INSERT INTO tasks (
-			id, project_id, slug, title, overview, purpose, contract,
+			id, project_id, slug, title, overview, purpose,
 			acceptance_criteria, verification, risks, status, position,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		""",
 		(
 			task_id,
@@ -42,11 +42,46 @@ def _insert_task(
 			"Task",
 			"Overview",
 			"Purpose",
-			"Contract",
 			"Acceptance",
 			"Verification",
 			"Risks",
 			status,
+			1,
+			"2026-01-01T00:00:00+00:00",
+			"2026-01-01T00:00:00+00:00",
+		),
+	)
+
+
+def _insert_legacy_task(
+	connection: sqlite3.Connection,
+	project_id: str,
+	task_id: str,
+	slug: str,
+	contract: str,
+	files: str | None,
+) -> None:
+	connection.execute(
+		"""
+		INSERT INTO tasks (
+			id, project_id, slug, title, overview, purpose, contract, files,
+			acceptance_criteria, verification, risks, status, position,
+			created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		""",
+		(
+			task_id,
+			project_id,
+			slug,
+			"Task",
+			"Overview",
+			"Purpose",
+			contract,
+			files,
+			"Acceptance",
+			"Verification",
+			"Risks",
+			"ready",
 			1,
 			"2026-01-01T00:00:00+00:00",
 			"2026-01-01T00:00:00+00:00",
@@ -72,6 +107,8 @@ def test_first_connection_creates_the_schema_and_sqlite_safety_settings(
 			"releases",
 			"tasks",
 			"task_dependencies",
+			"task_contract_steps",
+			"task_files",
 			"chunks",
 			"notes",
 			"context",
@@ -83,8 +120,16 @@ def test_first_connection_creates_the_schema_and_sqlite_safety_settings(
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 1
+			== 2
 		)
+		assert "split_rationale" in {
+			row[1] for row in connection.execute("PRAGMA table_info(tasks)")
+		}
+		task_columns = {
+			row[1] for row in connection.execute("PRAGMA table_info(tasks)")
+		}
+		assert "contract" not in task_columns
+		assert "files" not in task_columns
 
 
 def test_an_older_schema_version_migrates_forward(tmp_path) -> None:
@@ -103,9 +148,85 @@ def test_an_older_schema_version_migrates_forward(tmp_path) -> None:
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 1
+			== 2
 		)
 		assert connection.execute("SELECT 1 FROM projects").fetchone() is None
+		assert (
+			connection.execute("SELECT 1 FROM task_contract_steps").fetchone() is None
+		)
+		assert connection.execute("SELECT 1 FROM task_files").fetchone() is None
+
+
+def test_schema_version_two_migrates_contract_and_file_values_in_order(
+	tmp_path,
+) -> None:
+	database_path = tmp_path / "progress.db"
+	with sqlite3.connect(database_path) as connection:
+		schema._create_schema(connection)
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.execute(
+			"INSERT INTO schema_migrations (version, applied_at) VALUES (1, ?)",
+			("2026-01-01T00:00:00+00:00",),
+		)
+		project_id = generate_object_id(PROJECT_PREFIX)
+		_insert_project(connection, project_id)
+		_insert_legacy_task(
+			connection,
+			project_id,
+			generate_object_id(TASK_PREFIX),
+			"numbered",
+			contract="1) First step 2) Second step\n3) Third step",
+			files=" src/first.py; ;src/second.py ",
+		)
+		fallback_task_id = generate_object_id(TASK_PREFIX)
+		_insert_legacy_task(
+			connection,
+			project_id,
+			fallback_task_id,
+			"fallback",
+			contract="Intro before 1) step",
+			files=None,
+		)
+
+	with Database(database_path).connection() as connection:
+		numbered_task_id = connection.execute(
+			"SELECT id FROM tasks WHERE slug = 'numbered'"
+		).fetchone()[0]
+		task_columns = {
+			row[1] for row in connection.execute("PRAGMA table_info(tasks)")
+		}
+		assert "contract" not in task_columns
+		assert "files" not in task_columns
+		assert [
+			tuple(row)
+			for row in connection.execute(
+				"SELECT position, text FROM task_contract_steps WHERE task_id = ? ORDER BY position",
+				(numbered_task_id,),
+			).fetchall()
+		] == [(1, "First step"), (2, "Second step"), (3, "Third step")]
+		assert [
+			tuple(row)
+			for row in connection.execute(
+				"SELECT position, text FROM task_files WHERE task_id = ? ORDER BY position",
+				(numbered_task_id,),
+			).fetchall()
+		] == [(1, "src/first.py"), (2, "src/second.py")]
+		assert [
+			tuple(row)
+			for row in connection.execute(
+				"SELECT position, text FROM task_contract_steps WHERE task_id = ? ORDER BY position",
+				(fallback_task_id,),
+			).fetchall()
+		] == [(1, "Intro before 1) step")]
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_files WHERE task_id = ?",
+				(fallback_task_id,),
+			).fetchone()
+			is None
+		)
 
 
 def test_failed_migration_rolls_back_schema_and_version(tmp_path, monkeypatch) -> None:

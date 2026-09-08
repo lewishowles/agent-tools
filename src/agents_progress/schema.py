@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from datetime import datetime, timezone
+import re
 import sqlite3
 
 from .errors import DatabaseBusyError, MigrationFailedError, StaleSchemaError
@@ -10,9 +11,13 @@ from .errors import DatabaseBusyError, MigrationFailedError, StaleSchemaError
 Migration = Callable[[sqlite3.Connection], None]
 
 # the schema version this package writes when creating a database from empty
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 # the newest schema version this package knows how to migrate to
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION
+
+# Matches a contract's step markers, `1)` or `1.` at a word boundary. The number and
+# separator are captured so a split can reject a run that skips or restyles a marker.
+_NUMBERED_STEP_PATTERN = re.compile(r"(?<!\S)(\d+)([.)])[ \t]+")
 
 
 def utc_timestamp() -> str:
@@ -141,8 +146,94 @@ def _create_schema(connection: sqlite3.Connection) -> None:
 		connection.execute(statement)
 
 
+def _split_contract(contract: str) -> list[str]:
+	"""Split a version 1 contract into its numbered steps, or return it as a single step.
+
+	A contract only splits when it opens on step 1 and every later marker continues that
+	run with the same separator. Anything else, including a run that skips a number or
+	changes separator part way through, is kept whole: an unsplit contract is obvious to
+	whoever reads it next, a wrongly split one is not. A number written mid-sentence still
+	splits when it happens to continue the run, because nothing here distinguishes it from
+	a real step marker.
+	"""
+	matches = list(_NUMBERED_STEP_PATTERN.finditer(contract))
+	if not matches or matches[0].start() != 0:
+		return [contract]
+
+	separator = matches[0].group(2)
+	steps = []
+	for position, match in enumerate(matches, start=1):
+		if int(match.group(1)) != position or match.group(2) != separator:
+			return [contract]
+
+		end = matches[position].start() if position < len(matches) else len(contract)
+		step = contract[match.end() : end].strip()
+		if not step:
+			return [contract]
+		steps.append(step)
+
+	return steps
+
+
+def _split_files(files: str | None) -> list[str]:
+	"""Split a version 1 semicolon-separated file list, dropping blank entries."""
+	if files is None:
+		return []
+
+	return [file.strip() for file in files.split(";") if file.strip()]
+
+
+def _migrate_to_version_2(connection: sqlite3.Connection) -> None:
+	"""Move each task's contract and files into ordered tables and add the split rationale.
+
+	The original columns are dropped once their content has been copied across, leaving the
+	normalised rows as the only source of truth. An older binary cannot read the result.
+	"""
+	connection.execute("ALTER TABLE tasks ADD COLUMN split_rationale TEXT")
+	connection.execute(
+		"""
+		CREATE TABLE task_contract_steps (
+			task_id TEXT NOT NULL,
+			position INTEGER NOT NULL,
+			text TEXT NOT NULL,
+			PRIMARY KEY (task_id, position),
+			FOREIGN KEY (task_id) REFERENCES tasks (id)
+		)
+		"""
+	)
+	connection.execute(
+		"""
+		CREATE TABLE task_files (
+			task_id TEXT NOT NULL,
+			position INTEGER NOT NULL,
+			text TEXT NOT NULL,
+			PRIMARY KEY (task_id, position),
+			FOREIGN KEY (task_id) REFERENCES tasks (id)
+		)
+		"""
+	)
+
+	for task_id, contract, files in connection.execute(
+		"SELECT id, contract, files FROM tasks"
+	).fetchall():
+		for position, text in enumerate(_split_contract(contract), start=1):
+			connection.execute(
+				"INSERT INTO task_contract_steps (task_id, position, text) VALUES (?, ?, ?)",
+				(task_id, position, text),
+			)
+
+		for position, text in enumerate(_split_files(files), start=1):
+			connection.execute(
+				"INSERT INTO task_files (task_id, position, text) VALUES (?, ?, ?)",
+				(task_id, position, text),
+			)
+
+	connection.execute("ALTER TABLE tasks DROP COLUMN contract")
+	connection.execute("ALTER TABLE tasks DROP COLUMN files")
+
+
 # maps each supported schema version to the migration that produces it
-MIGRATIONS: dict[int, Migration] = {1: _create_schema}
+MIGRATIONS: dict[int, Migration] = {1: _create_schema, 2: _migrate_to_version_2}
 
 
 def is_busy_error(error: sqlite3.OperationalError) -> bool:

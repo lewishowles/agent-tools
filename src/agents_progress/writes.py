@@ -1,6 +1,6 @@
 """Transactional creation and lifecycle writes for progress storage."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 import sqlite3
 
@@ -27,7 +27,13 @@ from .ids import (
 )
 from .models import Chunk, Context, Note, Release, Task
 from .projects import _StoreBase
-from .reads import _TASK_COLUMNS, resolve_identifier, validate_identifier
+from .reads import (
+	_TASK_COLUMNS,
+	_TASK_LIST_TABLES,
+	_task_public_row,
+	resolve_identifier,
+	validate_identifier,
+)
 from .schema import utc_timestamp
 
 # Status values accepted when creating or updating a release.
@@ -324,8 +330,8 @@ class WriteStore(_StoreBase):
 		title: str,
 		overview: str,
 		purpose: str = "",
-		contract: str = "",
-		files: str | None = None,
+		contract: str | Sequence[str] = "",
+		files: str | Sequence[str] | None = None,
 		acceptance_criteria: str = "",
 		verification: str = "",
 		risks: str = "",
@@ -339,7 +345,10 @@ class WriteStore(_StoreBase):
 		_require_text(title, "task title")
 		_require_text(overview, "task overview")
 		_require_text(purpose, "task purpose")
-		_require_text(contract, "task contract")
+		contract_steps = _normalise_task_values(
+			contract, "task contract", required=True
+		)
+		file_paths = _normalise_task_values(files, "task file")
 		dependency_ids = _normalise_dependencies(depends_on)
 		for dependency_id in dependency_ids:
 			validate_object_id(dependency_id, TASK_PREFIX)
@@ -391,10 +400,10 @@ class WriteStore(_StoreBase):
 				connection.execute(
 					"""
 						INSERT INTO tasks (
-							id, project_id, slug, release_id, title, overview, purpose, contract,
-							files, acceptance_criteria, verification, risks, status,
+							id, project_id, slug, release_id, title, overview, purpose,
+							acceptance_criteria, verification, risks, status,
 							status_reason, position, created_at, started_at, completed_at, updated_at
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 					""",
 					(
 						task_id,
@@ -404,8 +413,6 @@ class WriteStore(_StoreBase):
 						title,
 						overview,
 						purpose,
-						contract,
-						files,
 						acceptance_criteria,
 						verification,
 						risks,
@@ -429,6 +436,9 @@ class WriteStore(_StoreBase):
 					"INSERT INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)",
 					(task_id, dependency_id),
 				)
+
+			_write_task_values(connection, "contract", task_id, contract_steps)
+			_write_task_values(connection, "files", task_id, file_paths)
 
 			return _task_dict(connection, task_id, project.id)
 
@@ -484,6 +494,7 @@ class WriteStore(_StoreBase):
 
 			_raise_if_referenced("task", task_id, references)
 
+			_delete_task_values(connection, task_id)
 			connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
 		return {"id": task_id}
@@ -559,6 +570,7 @@ class WriteStore(_StoreBase):
 			)
 
 			for task_id in task_ids:
+				_delete_task_values(connection, task_id)
 				connection.execute(
 					"DELETE FROM tasks WHERE id = ? AND project_id = ?",
 					(task_id, project.id),
@@ -614,8 +626,8 @@ class WriteStore(_StoreBase):
 		task_id: str,
 		overview: str | None = None,
 		purpose: str | None = None,
-		contract: str | None = None,
-		files: str | None = None,
+		contract: str | Sequence[str] | None = None,
+		files: str | Sequence[str] | None = None,
 		acceptance_criteria: str | None = None,
 		verification: str | None = None,
 		risks: str | None = None,
@@ -627,6 +639,14 @@ class WriteStore(_StoreBase):
 	) -> dict[str, object]:
 		"""Update selected planning fields without changing task lifecycle data."""
 		validate_object_id(task_id, TASK_PREFIX)
+
+		list_values: dict[str, tuple[str, ...]] = {}
+		if contract is not None:
+			list_values["contract"] = _normalise_task_values(
+				contract, "task contract", required=True
+			)
+		if files is not None:
+			list_values["files"] = _normalise_task_values(files, "task file")
 
 		values = {
 			"overview": overview,
@@ -665,6 +685,12 @@ class WriteStore(_StoreBase):
 					f"--clear-{field.replace('_', '-')}, not both",
 					{"id": task_id, "field": field},
 				)
+
+			# _normalise_task_values has already checked contract and files, and they hold
+			# lists rather than text, so the text checks below would reject them.
+			if field in list_values:
+				continue
+
 			if value is not None and not isinstance(value, str):
 				raise ProgressError(
 					f"task {field} must be text",
@@ -672,17 +698,22 @@ class WriteStore(_StoreBase):
 				)
 			if value is not None and field in required_text_labels:
 				_require_text(value, required_text_labels[field])
+		if clear_files:
+			list_values["files"] = ()
 
 		project = self.current_project(path)
-		nullable_fields = {"files"}
 		updates = []
 		parameters: list[object] = []
 		for field, value in values.items():
+			# contract and files live in their own tables, so they never join a tasks UPDATE.
+			if field in list_values:
+				continue
+
 			if value is None and not clear_fields.get(field, False):
 				continue
 
 			if clear_fields.get(field, False):
-				value = None if field in nullable_fields else ""
+				value = ""
 
 			updates.append(f"{field} = ?")
 			parameters.append(value)
@@ -691,10 +722,14 @@ class WriteStore(_StoreBase):
 			if _task_row(connection, task_id, project.id) is None:
 				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
 
-			connection.execute(
-				f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?",
-				(*parameters, task_id),
-			)
+			if updates:
+				connection.execute(
+					f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?",
+					(*parameters, task_id),
+				)
+			for field, task_values in list_values.items():
+				_write_task_values(connection, field, task_id, task_values)
+
 			return _task_dict(connection, task_id, project.id)
 
 	def task_move(
@@ -1654,6 +1689,59 @@ def _unblock_task(
 	)
 
 
+def _normalise_task_values(
+	value: str | Sequence[str] | None,
+	label: str,
+	*,
+	required: bool = False,
+) -> tuple[str, ...]:
+	"""Turn a task's contract or files input into an ordered tuple of non-empty text.
+
+	A bare string becomes a single entry, so existing callers passing one string still work.
+	Set required to reject an empty result the way a missing required field is rejected.
+	"""
+	if value is None:
+		values = ()
+	elif isinstance(value, str):
+		values = (value,)
+	elif isinstance(value, Sequence):
+		values = tuple(value)
+	else:
+		raise ProgressError(f"{label} must be text or a list of text")
+
+	for item in values:
+		if not isinstance(item, str):
+			raise ProgressError(f"{label} must be text")
+		_require_text(item, label)
+
+	if required and not values:
+		_require_text("", label)
+
+	return values
+
+
+def _write_task_values(
+	connection: sqlite3.Connection,
+	field: str,
+	task_id: str,
+	values: Sequence[str],
+) -> None:
+	"""Replace one task's stored contract steps or files, numbering them from one."""
+	table = _TASK_LIST_TABLES[field]
+	connection.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
+	for position, text in enumerate(values, start=1):
+		connection.execute(
+			f"INSERT INTO {table} (task_id, position, text) VALUES (?, ?, ?)",
+			(task_id, position, text),
+		)
+
+
+def _delete_task_values(connection: sqlite3.Connection, task_id: str) -> None:
+	"""Remove one task's contract steps and files before the task row itself is deleted."""
+	for table in _TASK_LIST_TABLES.values():
+		connection.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
+
+
 def _require_text(value: str, label: str) -> None:
 	"""Reject required text values that contain no non-whitespace characters."""
 	if not value.strip():
@@ -1842,7 +1930,7 @@ def _task_dict(
 	if row is None:
 		raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
 
-	return Task.from_row(row).to_dict()
+	return Task.from_row(_task_public_row(connection, row)).to_dict()
 
 
 def _chunk_row(

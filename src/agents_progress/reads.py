@@ -33,8 +33,8 @@ _RELEASE_COLUMNS = "id, project_id, slug, title, overview, status, position"
 
 # Columns selected from tasks in list and single-row queries.
 _TASK_COLUMNS = (
-	"id, project_id, slug, release_id, title, overview, purpose, contract, "
-	"files, acceptance_criteria, verification, risks, status, "
+	"id, project_id, slug, release_id, title, overview, purpose, "
+	"acceptance_criteria, verification, risks, status, "
 	"status_reason, position, created_at, started_at, completed_at, updated_at"
 )
 
@@ -42,6 +42,12 @@ _TASK_COLUMNS = (
 _TASK_COLUMNS_QUALIFIED = ", ".join(
 	f"tasks.{column.strip()}" for column in _TASK_COLUMNS.split(",")
 )
+
+# Task fields stored as ordered rows rather than columns, mapped to the table holding them.
+_TASK_LIST_TABLES = {
+	"contract": "task_contract_steps",
+	"files": "task_files",
+}
 
 # Queue order used by `next`. Unassigned tasks land in the final priority bucket,
 # where their NULL release position sorts before done releases in that bucket.
@@ -165,8 +171,17 @@ def _all_pages(
 
 
 def _is_blank(value: object) -> bool:
-	"""Return whether a required field is missing or contains only whitespace."""
-	return value is None or (isinstance(value, str) and not value.strip())
+	"""Return whether a required field is missing, blank, or a list with nothing in it."""
+	if value is None:
+		return True
+
+	if isinstance(value, str):
+		return not value.strip()
+
+	if isinstance(value, Sequence):
+		return not value or all(_is_blank(item) for item in value)
+
+	return False
 
 
 def _add_release_titles(
@@ -202,7 +217,53 @@ def _add_release_titles(
 			item["release_title"] = titles.get(str(release_id))
 
 
+def _task_values_by_id(
+	connection: sqlite3.Connection,
+	task_ids: Sequence[str],
+) -> dict[str, dict[str, list[str]]]:
+	"""Load the ordered contract steps and files for several tasks, one query per field.
+
+	Returns each field mapped to the tasks that have values, in position order. A task with
+	no rows for a field is absent rather than present with an empty list.
+	"""
+	values: dict[str, dict[str, list[str]]] = {field: {} for field in _TASK_LIST_TABLES}
+	if not task_ids:
+		return values
+
+	placeholders = ", ".join("?" for _ in task_ids)
+	for field, table in _TASK_LIST_TABLES.items():
+		rows = connection.execute(
+			f"SELECT task_id, text FROM {table} WHERE task_id IN ({placeholders}) "
+			"ORDER BY task_id, position",
+			tuple(task_ids),
+		).fetchall()
+		for row in rows:
+			values[field].setdefault(row["task_id"], []).append(row["text"])
+
+	return values
+
+
+def _task_public_row(
+	connection: sqlite3.Connection,
+	task_row: object,
+	values: dict[str, dict[str, list[str]]] | None = None,
+) -> dict[str, object]:
+	"""Return a task row as a dictionary, with its list fields read from the ordered tables.
+
+	Pass values when building a page of tasks so each field is queried once for the whole
+	page instead of once per row.
+	"""
+	data = dict(task_row)
+	task_id = str(data["id"])
+	values = values or _task_values_by_id(connection, [task_id])
+	for field in _TASK_LIST_TABLES:
+		data[field] = values[field].get(task_id, [])
+
+	return data
+
+
 def _task_response(
+	connection: sqlite3.Connection,
 	project: Project,
 	task_row: sqlite3.Row | None,
 	chunk_row: sqlite3.Row | None,
@@ -210,7 +271,11 @@ def _task_response(
 	dependency_ids: Sequence[str],
 ) -> dict[str, object]:
 	"""Build the stable response used by the next command."""
-	task = Task.from_row(task_row) if task_row is not None else None
+	task = (
+		Task.from_row(_task_public_row(connection, task_row))
+		if task_row is not None
+		else None
+	)
 	chunk = Chunk.from_row(chunk_row) if chunk_row is not None else None
 
 	return {
@@ -296,10 +361,14 @@ class ReadStore(_StoreBase):
 				if task_row is not None
 				else []
 			)
-
-		response = _task_response(
-			project, task_row, chunk_row, "progress task list", dependency_ids
-		)
+			response = _task_response(
+				connection,
+				project,
+				task_row,
+				chunk_row,
+				"progress task list",
+				dependency_ids,
+			)
 		if not include_position_totals or task_row is None:
 			return response
 
@@ -462,11 +531,10 @@ class ReadStore(_StoreBase):
 				f"SELECT {_TASK_COLUMNS} FROM tasks WHERE id = ? AND project_id = ?",
 				(task_id, project.id),
 			).fetchone()
+			if row is None:
+				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
 
-		if row is None:
-			raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
-
-		return Task.from_row(row).to_dict()
+			return Task.from_row(_task_public_row(connection, row)).to_dict()
 
 	def task_list(
 		self,
@@ -493,19 +561,29 @@ class ReadStore(_StoreBase):
 			parameters += (status,)
 
 		with self.database.connection() as connection:
-			response = self._paged_query(
-				connection,
+			rows = connection.execute(
 				f"SELECT {_TASK_COLUMNS_QUALIFIED} FROM tasks "
 				"LEFT JOIN releases ON releases.id = tasks.release_id "
 				"AND releases.project_id = tasks.project_id "
-				f"WHERE {where} ORDER BY {_TASK_QUEUE_ORDER}",
-				parameters,
-				Task.from_row,
+				f"WHERE {where} ORDER BY {_TASK_QUEUE_ORDER} LIMIT ? OFFSET ?",
+				(*parameters, limit, offset),
+			).fetchall()
+			total = connection.execute(
+				f"SELECT COUNT(*) FROM tasks WHERE {where}", parameters
+			).fetchone()[0]
+			task_values = _task_values_by_id(
+				connection, [str(row["id"]) for row in rows]
+			)
+			response = page_response(
+				[
+					Task.from_row(
+						_task_public_row(connection, row, task_values)
+					).to_dict()
+					for row in rows
+				],
 				limit,
 				offset,
-				"tasks",
-				where,
-				parameters,
+				total,
 			)
 			if include_release_titles:
 				items = response["items"]

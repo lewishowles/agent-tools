@@ -56,10 +56,10 @@ def _seed_store(tmp_path: Path) -> ReadStore:
 		):
 			connection.execute(
 				"INSERT INTO tasks ("
-				"id, project_id, slug, release_id, title, overview, purpose, contract, "
-				"files, acceptance_criteria, verification, risks, status, "
+				"id, project_id, slug, release_id, title, overview, purpose, "
+				"acceptance_criteria, verification, risks, status, "
 				"status_reason, position, created_at, started_at, completed_at, updated_at"
-				") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				(
 					task_id,
 					PROJECT_ID,
@@ -68,8 +68,6 @@ def _seed_store(tmp_path: Path) -> ReadStore:
 					title,
 					f"Overview for {slug}.",
 					f"Purpose for {slug}.",
-					f"Contract for {slug}.",
-					None,
 					"Acceptance criteria.",
 					"Verification.",
 					"Risks.",
@@ -81,6 +79,10 @@ def _seed_store(tmp_path: Path) -> ReadStore:
 					None,
 					"2026-01-01T00:00:00+00:00",
 				),
+			)
+			connection.execute(
+				"INSERT INTO task_contract_steps (task_id, position, text) VALUES (?, ?, ?)",
+				(task_id, 1, f"Contract for {slug}."),
 			)
 		connection.execute(
 			"INSERT INTO chunks (id, task_id, position, title, description, status, started_at, completed_at) "
@@ -344,6 +346,27 @@ def test_task_list_leaves_unassigned_tasks_without_release_titles(
 	assert assigned["release_title"] == "Progress store"
 	assert unassigned["release_id"] is None
 	assert "release_title" not in unassigned
+
+
+def test_task_reads_return_contract_and_files_in_order(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = WriteStore(store.database, _ProjectStore(store.database)).task_add(
+		"ordered",
+		"Ordered task",
+		overview="Ordered task overview",
+		purpose="Ordered task purpose",
+		contract=["First step", "Second step"],
+		files=["src/first.py", "src/second.py"],
+	)
+
+	assert store.task_get(task["id"])["contract"] == ["First step", "Second step"]
+	assert store.task_get(task["id"])["files"] == ["src/first.py", "src/second.py"]
+	listed = next(
+		item for item in store.task_list()["items"] if item["id"] == task["id"]
+	)
+
+	assert listed["contract"] == ["First step", "Second step"]
+	assert listed["files"] == ["src/first.py", "src/second.py"]
 
 
 def test_doctor_reports_blank_required_fields_across_all_pages(

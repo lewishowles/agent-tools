@@ -37,8 +37,8 @@ class Task:
 	title: str
 	overview: str
 	purpose: str
-	contract: str
-	files: str | None
+	contract: list[str]
+	files: list[str]
 	acceptance_criteria: str
 	verification: str
 	risks: str

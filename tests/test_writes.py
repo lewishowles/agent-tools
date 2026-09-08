@@ -1159,6 +1159,38 @@ def test_task_clean_removes_safe_done_tasks_and_reports_blockers(
 	assert blocked_release["id"] in release_ids
 
 
+def test_task_clean_deletes_contract_and_file_rows(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(
+		store,
+		"task",
+		"Task",
+		contract=["Task step"],
+		files=["src/task.py"],
+	)
+	chunk = _add_chunk(store, task["id"], "Chunk")
+	store.task_start(task["id"])
+	store.chunk_complete(chunk["id"])
+	store.task_complete(task["id"])
+
+	result = store.task_clean()
+
+	assert result["removed"] == [{"id": task["id"], "title": "Task"}]
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_contract_steps WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_files WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+
+
 def test_task_clean_force_removes_only_blocked_done_tasks_and_notes(
 	tmp_path: Path,
 ) -> None:
@@ -1264,7 +1296,7 @@ def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
 	assert updated["overview"] == "Updated overview"
 	assert updated["purpose"] == task["purpose"]
 	assert updated["contract"] == task["contract"]
-	assert updated["files"] == "updated.py"
+	assert updated["files"] == ["updated.py"]
 	assert updated["acceptance_criteria"] == task["acceptance_criteria"]
 	assert updated["verification"] == task["verification"]
 	assert updated["risks"] == task["risks"]
@@ -1275,6 +1307,91 @@ def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
 	assert updated["started_at"] == task["started_at"]
 	assert updated["completed_at"] == task["completed_at"]
 	assert updated["updated_at"] == task["updated_at"]
+
+
+def test_task_edit_clears_task_files(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "task", "Task", files=["src/task.py"])
+
+	updated = store.task_edit(task["id"], clear_files=True)
+
+	assert updated["files"] == []
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_files WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+
+
+def test_task_contract_and_files_round_trip_in_order(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(
+		store,
+		"task",
+		"Task",
+		contract=["First step", "Second step"],
+		files=["src/first.py", "src/second.py"],
+	)
+
+	assert task["contract"] == ["First step", "Second step"]
+	assert task["files"] == ["src/first.py", "src/second.py"]
+	with store.database.connection() as connection:
+		assert [
+			tuple(row)
+			for row in connection.execute(
+				"SELECT position, text FROM task_contract_steps WHERE task_id = ? ORDER BY position",
+				(task["id"],),
+			).fetchall()
+		] == [(1, "First step"), (2, "Second step")]
+		assert [
+			tuple(row)
+			for row in connection.execute(
+				"SELECT position, text FROM task_files WHERE task_id = ? ORDER BY position",
+				(task["id"],),
+			).fetchall()
+		] == [(1, "src/first.py"), (2, "src/second.py")]
+
+	updated = store.task_edit(
+		task["id"],
+		contract=("Updated first", "Updated second", "Updated third"),
+		files=("src/updated.py",),
+	)
+
+	assert updated["contract"] == [
+		"Updated first",
+		"Updated second",
+		"Updated third",
+	]
+	assert updated["files"] == ["src/updated.py"]
+
+
+def test_task_remove_deletes_contract_and_file_rows(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(
+		store,
+		"task",
+		"Task",
+		contract=["Task step"],
+		files=["src/task.py"],
+	)
+
+	store.task_remove(task["id"])
+
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_contract_steps WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_files WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
 
 
 def test_task_edit_validates_all_values_before_writing(tmp_path: Path) -> None:
