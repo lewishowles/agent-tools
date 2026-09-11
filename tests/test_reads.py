@@ -355,6 +355,176 @@ def test_task_list_leaves_unassigned_tasks_without_release_titles(
 	assert "release_title" not in unassigned
 
 
+def test_search_reports_a_matching_task_file_path(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO task_files (task_id, position, text) VALUES (?, ?, ?)",
+			(TASK_A, 1, "packages/button.py"),
+		)
+
+	result = store.search("button")
+
+	assert result["items"] == [
+		{
+			"type": "task",
+			"id": TASK_A,
+			"title": "First task",
+			"status": "in-progress",
+			"matched": ["files"],
+			"snippets": {"files": ["packages/button.py"]},
+		}
+	]
+
+
+def test_search_reports_a_matching_task_contract_step(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO task_contract_steps (task_id, position, text) VALUES (?, ?, ?)",
+			(TASK_A, 2, "The button contract is ready."),
+		)
+
+	item = store.search("button", fields=["contract"])["items"][0]
+
+	assert item["matched"] == ["contract"]
+	assert item["snippets"]["contract"] == "The button contract is ready."
+
+
+def test_search_reports_a_matching_chunk_description(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE chunks SET description = ? WHERE id = ?",
+			("Implement the button read query.", CHUNK_A),
+		)
+
+	result = store.search("button", fields=["description"])
+
+	assert result["items"] == [
+		{
+			"type": "chunk",
+			"id": CHUNK_A,
+			"title": "Read surface",
+			"status": "active",
+			"task_id": TASK_A,
+			"task_title": "First task",
+			"matched": ["description"],
+			"snippets": {"description": "Implement the button read query."},
+		}
+	]
+
+
+def test_search_in_fields_narrows_matches(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO task_files (task_id, position, text) VALUES (?, ?, ?)",
+			(TASK_A, 1, "packages/button.py"),
+		)
+		connection.execute(
+			"UPDATE chunks SET description = ? WHERE id = ?",
+			("Implement the button read query.", CHUNK_A),
+		)
+
+	assert store.search("button", fields=["title"])["items"] == []
+	assert [
+		item["type"] for item in store.search("button", fields=["files"])["items"]
+	] == ["task"]
+
+
+def test_search_status_filters_tasks_and_chunk_parents(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE tasks SET overview = ?, status = ? WHERE id = ?",
+			("Done button task.", "done", TASK_B),
+		)
+		connection.execute(
+			"UPDATE chunks SET description = ? WHERE id = ?",
+			("In-progress button chunk.", CHUNK_A),
+		)
+
+	result = store.search("button", status="done")
+
+	assert [item["id"] for item in result["items"]] == [TASK_B]
+
+
+def test_search_snippet_has_bounded_context_on_both_sides(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	overview = "prefix words " * 8 + "button" + " suffix words" * 8
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE tasks SET overview = ? WHERE id = ?",
+			(overview, TASK_A),
+		)
+
+	snippet = store.search("button", fields=["overview"])["items"][0]["snippets"][
+		"overview"
+	]
+
+	assert isinstance(snippet, str)
+	assert snippet.startswith("...")
+	assert snippet.endswith("...")
+	assert "button" in snippet
+
+
+def test_search_snippet_keeps_character_context_without_word_boundaries(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	overview = "x" * 60 + "button" + "y" * 60
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE tasks SET overview = ? WHERE id = ?",
+			(overview, TASK_A),
+		)
+
+	snippet = store.search("button", fields=["overview"])["items"][0]["snippets"][
+		"overview"
+	]
+
+	assert snippet == "..." + "x" * 40 + "button" + "y" * 40 + "..."
+
+
+@pytest.mark.parametrize("term", ["a_b", "a%b"])
+def test_search_escapes_like_wildcards(tmp_path: Path, term: str) -> None:
+	store = _seed_store(tmp_path)
+	other_term = term.replace("_", "x").replace("%", "x")
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE tasks SET overview = ? WHERE id = ?",
+			(f"Literal {term}.", TASK_A),
+		)
+		connection.execute(
+			"UPDATE tasks SET overview = ? WHERE id = ?",
+			(f"Literal {other_term}.", TASK_B),
+		)
+
+	result = store.search(term, fields=["overview"])
+
+	assert [item["id"] for item in result["items"]] == [TASK_A]
+
+
+def test_search_returns_an_empty_page_when_nothing_matches(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+
+	assert store.search("missing term") == {
+		"items": [],
+		"limit": 50,
+		"offset": 0,
+		"has_more": False,
+	}
+
+
 def test_task_reads_return_contract_files_and_split_rationale_in_order(
 	tmp_path: Path,
 ) -> None:

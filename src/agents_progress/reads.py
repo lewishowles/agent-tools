@@ -339,6 +339,200 @@ def _dependency_ids(connection: sqlite3.Connection, task_id: str) -> list[str]:
 	return [row["depends_on_task_id"] for row in rows]
 
 
+def _search_like_pattern(term: str) -> str:
+	"""Wrap the term in LIKE wildcards, escaping any % or _ the user typed so they match literally."""
+	escaped_term = term.replace("\\", "\\\\")
+	escaped_term = escaped_term.replace("%", "\\%")
+	escaped_term = escaped_term.replace("_", "\\_")
+
+	return f"%{escaped_term}%"
+
+
+def _search_value_matches(value: object, term: str) -> bool:
+	"""Report whether a stored value is text that mentions the term, ignoring case."""
+	return isinstance(value, str) and term.lower() in value.lower()
+
+
+def _search_snippet(text: str, term: str) -> str | None:
+	"""Cut a short excerpt around the term's first appearance, or None when it is absent.
+
+	The window is about 40 characters each side, trimmed to whole words when a space falls
+	inside it and kept as-is otherwise, so a long path or URL still shows some context.
+	An ellipsis marks each side that was cut.
+	"""
+	term_position = text.lower().find(term.lower())
+	if term_position < 0:
+		return None
+
+	term_end = term_position + len(term)
+	context_start = max(0, term_position - 40)
+	context_end = min(len(text), term_end + 40)
+
+	if context_start > 0:
+		boundary_position = next(
+			(
+				position
+				for position in range(context_start, term_position)
+				if text[position].isspace()
+			),
+			None,
+		)
+		if boundary_position is not None:
+			context_start = boundary_position + 1
+
+	if context_end < len(text):
+		boundary_position = next(
+			(
+				position
+				for position in range(context_end - 1, term_end - 1, -1)
+				if text[position].isspace()
+			),
+			None,
+		)
+		if boundary_position is not None:
+			context_end = boundary_position
+
+	return (
+		("..." if context_start > 0 else "")
+		+ text[context_start:context_end]
+		+ ("..." if context_end < len(text) else "")
+	)
+
+
+def _search_where_clause(
+	condition_map: dict[str, str],
+	selected_fields: Sequence[str],
+	project_id: str,
+	status: str | None,
+	like_pattern: str,
+) -> tuple[str, tuple[object, ...]]:
+	"""Build the WHERE clause and its parameters shared by the task and chunk queries.
+
+	The clause scopes to the project, optionally the task status, then ORs one LIKE
+	condition per selected field. Parameters come back in the same order as the
+	placeholders, with the pattern repeated once per field.
+	"""
+	where = ["tasks.project_id = ?"]
+	parameters: tuple[object, ...] = (project_id,)
+
+	if status is not None:
+		where.append("tasks.status = ?")
+		parameters += (status,)
+
+	where.append(
+		"(" + " OR ".join(condition_map[field] for field in selected_fields) + ")"
+	)
+	parameters += (like_pattern,) * len(selected_fields)
+
+	return " AND ".join(where), parameters
+
+
+def _search_task_item(
+	connection: sqlite3.Connection,
+	row: sqlite3.Row,
+	selected_fields: Sequence[str],
+	term: str,
+) -> dict[str, object]:
+	"""Turn one matching task row into a search result item.
+
+	Contract steps and file paths are loaded from their child tables when selected.
+	File matches list every matching path; a contract match shows an excerpt of the
+	first matching step; the title gets no excerpt because the item already shows it.
+	"""
+	child_values: dict[str, list[str]] = {}
+	for field, table in _TASK_LIST_TABLES.items():
+		if field not in selected_fields:
+			continue
+		child_values[field] = [
+			str(child_row["text"])
+			for child_row in connection.execute(
+				f"SELECT text FROM {table} WHERE task_id = ? ORDER BY position",
+				(row["id"],),
+			).fetchall()
+		]
+
+	task_values = {
+		"title": row["title"],
+		"overview": row["overview"],
+		"purpose": row["purpose"],
+		"acceptance-criteria": row["acceptance_criteria"],
+		"verification": row["verification"],
+		"risks": row["risks"],
+	}
+	matched: list[str] = []
+	snippets: dict[str, object] = {}
+
+	for field in selected_fields:
+		if field in child_values:
+			matching_values = [
+				value
+				for value in child_values[field]
+				if _search_value_matches(value, term)
+			]
+			if not matching_values:
+				continue
+			matched.append(field)
+			if field == "files":
+				snippets[field] = matching_values
+			else:
+				snippet = _search_snippet(matching_values[0], term)
+				if snippet is not None:
+					snippets[field] = snippet
+			continue
+
+		value = task_values[field]
+		if not _search_value_matches(value, term):
+			continue
+		matched.append(field)
+		if field != "title":
+			snippet = _search_snippet(str(value), term)
+			if snippet is not None:
+				snippets[field] = snippet
+
+	return {
+		"type": "task",
+		"id": row["id"],
+		"title": row["title"],
+		"status": row["status"],
+		"matched": matched,
+		"snippets": snippets,
+	}
+
+
+def _search_chunk_item(
+	row: sqlite3.Row,
+	selected_fields: Sequence[str],
+	term: str,
+) -> dict[str, object]:
+	"""Turn one matching chunk row into a search result item, with the parent task named for context."""
+	chunk_values = {
+		"title": row["title"],
+		"description": row["description"],
+	}
+	matched: list[str] = []
+	snippets: dict[str, object] = {}
+	for field in selected_fields:
+		value = chunk_values[field]
+		if not _search_value_matches(value, term):
+			continue
+		matched.append(field)
+		if field != "title":
+			snippet = _search_snippet(str(value), term)
+			if snippet is not None:
+				snippets[field] = snippet
+
+	return {
+		"type": "chunk",
+		"id": row["id"],
+		"title": row["title"],
+		"status": row["status"],
+		"task_id": row["task_id"],
+		"task_title": row["task_title"],
+		"matched": matched,
+		"snippets": snippets,
+	}
+
+
 class ReadStore(_StoreBase):
 	"""Run the current project's read queries against the progress database."""
 
@@ -609,6 +803,126 @@ class ReadStore(_StoreBase):
 					_add_release_titles(connection, project.id, items)
 
 			return response
+
+	def search(
+		self,
+		term: str,
+		fields: Sequence[str] | None = None,
+		status: str | None = None,
+		limit: int = DEFAULT_LIMIT,
+		offset: int = 0,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""List current-project tasks and chunks whose text mentions the term.
+
+		Each item names the fields that matched and, for each matched field other than the
+		title, a short excerpt; a files match lists the matching paths instead. `fields`
+		limits which searchable fields are checked; None or an empty sequence means all of
+		them. `status` keeps tasks with that status and chunks whose parent task has it.
+		Tasks come first, then chunks, and both share one page.
+		"""
+		limit, offset = validate_page(limit, offset)
+		if status is not None and status not in TASK_STATUSES:
+			raise InvalidStatusError(
+				f"unknown task status {status!r}",
+				{"status": status, "valid_statuses": sorted(TASK_STATUSES)},
+			)
+
+		task_fields = (
+			"title",
+			"overview",
+			"purpose",
+			"acceptance-criteria",
+			"verification",
+			"risks",
+			"contract",
+			"files",
+		)
+		all_fields = (*task_fields, "description")
+		requested_fields = set(all_fields if not fields else fields)
+		unknown_fields = requested_fields.difference(all_fields)
+		if unknown_fields:
+			raise ValueError(f"unknown search field {sorted(unknown_fields)[0]!r}")
+
+		selected_fields = tuple(
+			field for field in all_fields if field in requested_fields
+		)
+		like_pattern = _search_like_pattern(term)
+		project = self.current_project(path)
+
+		with self.database.connection() as connection:
+			task_conditions = {
+				"title": "tasks.title LIKE ? ESCAPE '\\'",
+				"overview": "tasks.overview LIKE ? ESCAPE '\\'",
+				"purpose": "tasks.purpose LIKE ? ESCAPE '\\'",
+				"acceptance-criteria": "tasks.acceptance_criteria LIKE ? ESCAPE '\\'",
+				"verification": "tasks.verification LIKE ? ESCAPE '\\'",
+				"risks": "tasks.risks LIKE ? ESCAPE '\\'",
+				"contract": "EXISTS (SELECT 1 FROM task_contract_steps "
+				"WHERE task_id = tasks.id AND text LIKE ? ESCAPE '\\')",
+				"files": "EXISTS (SELECT 1 FROM task_files "
+				"WHERE task_id = tasks.id AND text LIKE ? ESCAPE '\\')",
+			}
+			chunk_conditions = {
+				"title": "chunks.title LIKE ? ESCAPE '\\'",
+				"description": "chunks.description LIKE ? ESCAPE '\\'",
+			}
+			selected_task_fields = tuple(
+				field for field in selected_fields if field in task_conditions
+			)
+			selected_chunk_fields = tuple(
+				field for field in selected_fields if field in chunk_conditions
+			)
+
+			task_rows: list[sqlite3.Row] = []
+			if selected_task_fields:
+				task_where, task_parameters = _search_where_clause(
+					task_conditions,
+					selected_task_fields,
+					project.id,
+					status,
+					like_pattern,
+				)
+				task_rows = connection.execute(
+					"SELECT tasks.id, tasks.title, tasks.status, tasks.overview, "
+					"tasks.purpose, tasks.acceptance_criteria, tasks.verification, "
+					"tasks.risks, tasks.updated_at, tasks.position "
+					"FROM tasks WHERE "
+					+ task_where
+					+ " ORDER BY tasks.updated_at DESC, tasks.id",
+					task_parameters,
+				).fetchall()
+
+			chunk_rows: list[sqlite3.Row] = []
+			if selected_chunk_fields:
+				chunk_where, chunk_parameters = _search_where_clause(
+					chunk_conditions,
+					selected_chunk_fields,
+					project.id,
+					status,
+					like_pattern,
+				)
+				chunk_rows = connection.execute(
+					"SELECT chunks.id, chunks.task_id, chunks.position, chunks.title, "
+					"chunks.description, chunks.status, tasks.title AS task_title, "
+					"tasks.updated_at AS task_updated_at "
+					"FROM chunks JOIN tasks ON tasks.id = chunks.task_id WHERE "
+					+ chunk_where
+					+ " ORDER BY tasks.updated_at DESC, chunks.position, chunks.id",
+					chunk_parameters,
+				).fetchall()
+
+			candidate_rows = [("task", row) for row in task_rows]
+			candidate_rows.extend(("chunk", row) for row in chunk_rows)
+			page_rows = candidate_rows[offset : offset + limit]
+			items = [
+				_search_task_item(connection, row, selected_task_fields, term)
+				if record_type == "task"
+				else _search_chunk_item(row, selected_chunk_fields, term)
+				for record_type, row in page_rows
+			]
+
+			return page_response(items, limit, offset, len(candidate_rows))
 
 	def task_count_for_release(
 		self, release_id: str | None, path: str | Path | None = None
