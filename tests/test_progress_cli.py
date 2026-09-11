@@ -1512,6 +1512,71 @@ def test_human_task_list_groups_rows_and_renders_hints(
 	assert "i Hint: More results: use --offset 4." in output.out
 
 
+def test_search_dispatches_parsed_arguments(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {
+		"items": [
+			{
+				"type": "task",
+				"id": "tsk_search",
+				"title": "Search task",
+				"status": "done",
+				"snippets": {"overview": "A button result."},
+			}
+		],
+		"limit": 7,
+		"offset": 3,
+		"has_more": False,
+	}
+	calls = []
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def search(self, term, fields, status, limit, offset):
+			calls.append((term, fields, status, limit, offset))
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+	monkeypatch.setattr(
+		render_module,
+		"render_span",
+		lambda value, tone="info", weight=None: (
+			f"<{value}>" if weight == "bold" else value
+		),
+	)
+
+	assert (
+		cli.main(
+			[
+				"search",
+				"button",
+				"--in",
+				"overview",
+				"--in",
+				"files",
+				"--status",
+				"done",
+				"--limit",
+				"7",
+				"--offset",
+				"3",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+
+	output = capsys.readouterr()
+
+	assert output.err == ""
+	assert calls == [("button", ["overview", "files"], "done", 7, 3)]
+	assert "  overview: A <button> result." in output.out
+
+
 def test_task_list_uses_release_priority_for_json_and_table_output(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -1687,6 +1752,71 @@ def test_chunk_list_renders_status_rows_and_descriptions(monkeypatch) -> None:
 	assert ("Pending output · chk_pending", "text", "normal") in span_calls
 	assert (active_description.splitlines()[0], "muted", "normal") in span_calls
 	assert (pending_description.splitlines()[0], "muted", "normal") in span_calls
+
+
+def test_search_renders_task_and_chunk_rows_with_highlighted_snippets(
+	monkeypatch,
+) -> None:
+	def fake_span(value: str, tone: str = "info", weight: str | None = None) -> str:
+		return f"<{value}>" if weight == "bold" else value
+
+	monkeypatch.setattr(render_module, "render_span", fake_span)
+	monkeypatch.setattr(
+		render_module, "render_hint", lambda message: f"Hint: {message}"
+	)
+	monkeypatch.setattr(
+		render_module,
+		"render_labelled_line",
+		lambda label, message: f"{label}: {message}",
+	)
+
+	output = render_module._render_list(
+		"search",
+		{
+			"term": "button",
+			"items": [
+				{
+					"type": "task",
+					"id": "tsk_task",
+					"title": "Search task",
+					"status": "in-progress",
+					"snippets": {
+						"overview": "A Button option with button support.",
+						"files": ["packages/Button.py", "src/button.ts"],
+					},
+				},
+				{
+					"type": "chunk",
+					"id": "chk_chunk",
+					"title": "Read chunk",
+					"status": "active",
+					"task_title": "Search task",
+					"snippets": {"description": "Implement the BUTTON query."},
+				},
+			],
+			"limit": 2,
+			"offset": 0,
+			"has_more": True,
+		},
+	)
+
+	assert "Task" in output
+	assert "in progress" in output
+	assert "Search task" in output
+	assert "tsk_task" in output
+	assert "Chunk" in output
+	assert "active" in output
+	assert "Read chunk" in output
+	assert "chk_chunk" in output
+	assert "parent: Search task" in output
+	assert "  overview: A <Button> option with <button> support." in output
+	assert "  files: packages/<Button>.py" in output
+	assert "  files: src/<button>.ts" in output
+	assert "  description: Implement the <BUTTON> query." in output
+	assert "Hint: More results: use --offset 2." in output
+	assert "Next action: View a task with" in output
+
+	assert render_module._render_list("search", {"items": []}) == "No matches."
 
 
 def test_skipped_chunks_use_the_skipped_tone_and_pending_group(monkeypatch) -> None:
@@ -2376,6 +2506,59 @@ def test_json_task_list_does_not_request_release_titles(
 		'{"ok":true,"data":{"items":[{"id":"tsk_test","title":"Read surface",'
 		'"status":"ready"}],"limit":50,"offset":0,"has_more":false}}\n'
 	)
+
+
+def test_json_search_keeps_rows_plain_and_unchanged(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {
+		"items": [
+			{
+				"type": "task",
+				"id": "tsk_test",
+				"title": "Search task",
+				"status": "ready",
+				"matched": ["overview"],
+				"snippets": {"overview": "A button result."},
+			}
+		],
+		"limit": 50,
+		"offset": 0,
+		"has_more": False,
+	}
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def search(self, term, fields, status, limit, offset):
+			assert term == "button"
+			assert fields is None
+			assert status is None
+			assert limit == 50
+			assert offset == 0
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert (
+		cli.main(
+			[
+				"search",
+				"button",
+				"--json",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+
+	output = capsys.readouterr()
+
+	assert output.err == ""
+	assert "\x1b" not in output.out
+	assert json.loads(output.out) == {"ok": True, "data": data}
 
 
 def test_human_release_list_keeps_trailing_blank_line(

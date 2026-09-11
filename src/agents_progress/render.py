@@ -615,6 +615,8 @@ def _render_list(command: str, data: dict[str, object]) -> str:
 		return _render_task_list(data)
 	if command == "chunk list":
 		return _render_chunk_list(data)
+	if command == "search":
+		return _render_search(data)
 
 	items = data.get("items", [])
 	labels = {
@@ -653,6 +655,95 @@ def _render_list(command: str, data: dict[str, object]) -> str:
 			)
 
 	return "\n\n".join(blocks)
+
+
+def _render_search(data: dict[str, object]) -> str:
+	"""Render search results: an empty-state line, or one block per hit followed by the paging hint and next-action line.
+
+	Expects the search term under ``data["term"]``; the CLI adds it for human output only.
+	"""
+	items = data.get("items", [])
+	if not isinstance(items, list):
+		return render_span("No matches.", "muted", weight="normal")
+
+	term = str(data.get("term", ""))
+	blocks = [
+		_render_search_item(item, term) for item in items if isinstance(item, dict)
+	]
+
+	if not blocks:
+		return render_span("No matches.", "muted", weight="normal")
+
+	if data.get("has_more"):
+		next_offset = int(data.get("offset", 0)) + int(data.get("limit", 0))
+		blocks.append(render_hint(f"More results: use --offset {next_offset}."))
+
+	task_get = render_span("progress task get TASK_ID", weight="bold")
+	chunk_get = render_span("progress chunk get CHUNK_ID", weight="bold")
+	blocks.append(
+		render_labelled_line(
+			"Next action",
+			f"View a task with {task_get} or a chunk with {chunk_get}.",
+		)
+	)
+
+	return "\n\n".join(blocks)
+
+
+def _render_search_item(item: dict[str, object], term: str) -> str:
+	"""Render one search hit: a heading line naming the record, then one indented line per matched prose field with the term in bold.
+
+	Chunk hits also name their parent task so a reader can tell which task the chunk belongs to.
+	"""
+	record_type = str(item.get("type", "result")).capitalize()
+	status_value = str(item.get("status", ""))
+	status_label = status_value.replace("-", " ")
+	title = str(item.get("title") or item.get("id") or "item")
+	identifier = str(item.get("id", ""))
+	heading_parts = [
+		render_span(record_type, "muted", weight="normal"),
+		render_span(
+			status_label,
+			_STATUS_TONES.get(_status_result_type(status_value), "info"),
+			weight="bold",
+		),
+		render_span(title, "text", weight="bold"),
+		render_span(identifier, "muted", weight="normal"),
+	]
+	if item.get("type") == "chunk" and item.get("task_title"):
+		heading_parts.append(
+			render_span(f"parent: {item['task_title']}", "muted", weight="normal")
+		)
+
+	lines = [" · ".join(heading_parts)]
+	snippets = item.get("snippets", {})
+	if isinstance(snippets, dict):
+		for field, value in snippets.items():
+			values = value if isinstance(value, list) else [value]
+			for snippet in values:
+				lines.append(f"  {field}: {_highlight_term(str(snippet), term)}")
+
+	return "\n".join(lines)
+
+
+def _highlight_term(text: str, term: str) -> str:
+	"""Wrap every case-insensitive occurrence of the term in bold, leaving the text unchanged when the term is empty or absent."""
+	if not term:
+		return text
+
+	matches = list(re.finditer(re.escape(term), text, re.IGNORECASE))
+	if not matches:
+		return text
+
+	parts = []
+	last_end = 0
+	for match in matches:
+		parts.append(text[last_end : match.start()])
+		parts.append(render_span(match.group(0), weight="bold"))
+		last_end = match.end()
+	parts.append(text[last_end:])
+
+	return "".join(parts)
 
 
 def _render_chunk_list(data: dict[str, object]) -> str:

@@ -238,6 +238,36 @@ _COMMAND_SPECS = (
 	_CommandSpec("commands", "list every command and flag"),
 	_CommandSpec("doctor", "find blank required-in-practice fields"),
 	_CommandSpec(
+		"search",
+		"search tasks and chunks",
+		arguments=(
+			_argument("term", help="term to find in task and chunk text"),
+			_argument(
+				"--in",
+				dest="fields",
+				action="append",
+				help="search only this field; repeat for more fields (default: every field)",
+				choices=(
+					"title",
+					"overview",
+					"purpose",
+					"acceptance-criteria",
+					"verification",
+					"risks",
+					"contract",
+					"files",
+					"description",
+				),
+			),
+			_argument(
+				"--status",
+				help="filter tasks by status and chunks by their parent task's status",
+				choices=("ready", "in-progress", "blocked", "needs-decision", "done"),
+			),
+		),
+		page_options=True,
+	),
+	_CommandSpec(
 		"project",
 		"manage the current project binding",
 		children=(
@@ -1072,6 +1102,10 @@ def main(argv: list[str] | None = None) -> int:
 	except ProgressError as error:
 		return _write_error(error.code, error.message, error.details, json_mode)
 
+	# The store does not echo the search term, and the renderer needs it to bold matches; JSON output stays the untouched store response.
+	if command == "search" and not json_mode and isinstance(data, dict):
+		data = {**data, "term": args.term}
+
 	if json_mode:
 		_write_json({"ok": True, "data": data})
 	else:
@@ -1224,6 +1258,16 @@ def _run_command(
 				include_release_titles=include_release_titles,
 			),
 			"task list",
+		),
+		("search", None): lambda: (
+			ReadStore(database).search(
+				args.term,
+				args.fields,
+				args.status,
+				args.limit,
+				args.offset,
+			),
+			"search",
 		),
 		("chunk", "list"): lambda: (
 			ReadStore(database).chunk_list(args.task_id, args.limit, args.offset),

@@ -543,6 +543,21 @@ progress chunk list --task <task_id> [--limit <limit>] [--offset <offset>] [--js
 
 See [Listing](#listing) for output from this command.
 
+### `progress search`
+
+Search tasks and chunks by a case-insensitive term:
+
+```text
+progress search <term> [--in <field>]... [--status <status>] [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
+```
+
+- `--in <field>`: restrict the search to a field, and repeat it to search multiple fields
+- `--status <status>`: filter by task status, including chunks whose parent task has that status
+- `--limit <limit>`: maximum number of results to return
+- `--offset <offset>`: number of results to skip before returning matches
+
+The human output says "No matches." when nothing hits; otherwise, it shows one block per task or chunk with the type, status, title, ID, and parent task for chunks, followed by one line per matched field with a short snippet and the term in bold. The `--json` form returns the same rows with plain-text snippets.
+
 ## Notes
 
 Notes are attached to tasks. A note is either a discovery or a decision.
