@@ -11,7 +11,7 @@ from .errors import DatabaseBusyError, MigrationFailedError, StaleSchemaError
 Migration = Callable[[sqlite3.Connection], None]
 
 # the schema version this package writes when creating a database from empty
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 # the newest schema version this package knows how to migrate to
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION
 
@@ -232,8 +232,66 @@ def _migrate_to_version_2(connection: sqlite3.Connection) -> None:
 	connection.execute("ALTER TABLE tasks DROP COLUMN files")
 
 
+def _migrate_to_version_3(connection: sqlite3.Connection) -> None:
+	"""Add release planning fields and allow notes to belong to releases.
+
+	SQLite can't add a table-level check to an existing table, so notes is rebuilt under a
+	new name, filled with every existing row, and renamed back into place.
+	"""
+	# Foreign keys are already on and can't be switched off inside this transaction,
+	# so check them at commit instead, after the rebuilt notes table has its final name.
+	connection.execute("PRAGMA defer_foreign_keys = ON")
+	connection.execute("ALTER TABLE releases ADD COLUMN purpose TEXT")
+	connection.execute("ALTER TABLE releases ADD COLUMN risks TEXT")
+	connection.execute(
+		"""
+		CREATE TABLE release_out_of_scope (
+			release_id TEXT NOT NULL,
+			position INTEGER NOT NULL,
+			text TEXT NOT NULL,
+			PRIMARY KEY (release_id, position),
+			FOREIGN KEY (release_id) REFERENCES releases (id)
+		)
+		"""
+	)
+	connection.execute(
+		"""
+		CREATE TABLE notes_new (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			task_id TEXT,
+			release_id TEXT,
+			type TEXT NOT NULL CHECK (type IN ('discovery', 'decision')),
+			body TEXT NOT NULL,
+			supersedes_id TEXT,
+			created_at TEXT NOT NULL,
+			CHECK ((task_id IS NULL) != (release_id IS NULL)),
+			FOREIGN KEY (project_id) REFERENCES projects (id),
+			FOREIGN KEY (task_id) REFERENCES tasks (id),
+			FOREIGN KEY (release_id) REFERENCES releases (id),
+			FOREIGN KEY (supersedes_id) REFERENCES notes_new (id)
+		)
+		"""
+	)
+	connection.execute(
+		"""
+		INSERT INTO notes_new (
+			id, project_id, task_id, release_id, type, body, supersedes_id, created_at
+		)
+		SELECT id, project_id, task_id, NULL, type, body, supersedes_id, created_at
+		FROM notes
+		"""
+	)
+	connection.execute("DROP TABLE notes")
+	connection.execute("ALTER TABLE notes_new RENAME TO notes")
+
+
 # maps each supported schema version to the migration that produces it
-MIGRATIONS: dict[int, Migration] = {1: _create_schema, 2: _migrate_to_version_2}
+MIGRATIONS: dict[int, Migration] = {
+	1: _create_schema,
+	2: _migrate_to_version_2,
+	3: _migrate_to_version_3,
+}
 
 
 def is_busy_error(error: sqlite3.OperationalError) -> bool:

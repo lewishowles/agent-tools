@@ -13,6 +13,8 @@ class Release:
 	slug: str
 	title: str
 	overview: str
+	purpose: str | None
+	risks: str | None
 	status: str
 	position: int
 
@@ -91,6 +93,7 @@ class Note:
 	id: str
 	project_id: str
 	task_id: str | None
+	release_id: str | None
 	type: str
 	body: str
 	supersedes_id: str | None

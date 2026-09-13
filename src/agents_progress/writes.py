@@ -38,6 +38,10 @@ from .schema import utc_timestamp
 
 # Status values accepted when creating or updating a release.
 _RELEASE_STATUSES = frozenset({"planned", "active", "done"})
+# Release columns returned by release write queries.
+_RELEASE_COLUMNS = (
+	"id, project_id, slug, title, overview, purpose, risks, status, position"
+)
 # Qualified chunk columns used by chunk write queries scoped to a task.
 _QUALIFIED_CHUNK_COLUMNS = (
 	"chunks.id, chunks.task_id, chunks.position, chunks.title, chunks.description, "
@@ -45,7 +49,9 @@ _QUALIFIED_CHUNK_COLUMNS = (
 )
 
 # Note columns returned by discovery and decision writes.
-_NOTE_COLUMNS = "id, project_id, task_id, type, body, supersedes_id, created_at"
+_NOTE_COLUMNS = (
+	"id, project_id, task_id, release_id, type, body, supersedes_id, created_at"
+)
 # Context columns returned by context replacement writes.
 _CONTEXT_COLUMNS = (
 	"project_id, current_goal, previous_step, next_step, standing_context, "
@@ -86,8 +92,10 @@ class WriteStore(_StoreBase):
 			try:
 				connection.execute(
 					"""
-					INSERT INTO releases (id, project_id, slug, title, overview, status, position)
-					VALUES (?, ?, ?, ?, ?, ?, ?)
+					INSERT INTO releases (
+						id, project_id, slug, title, overview, purpose, risks, status, position
+					)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 					""",
 					(
 						release_id,
@@ -95,6 +103,8 @@ class WriteStore(_StoreBase):
 						slug,
 						title,
 						overview,
+						None,
+						None,
 						status,
 						release_position,
 					),
@@ -106,8 +116,7 @@ class WriteStore(_StoreBase):
 				) from error
 
 			row = connection.execute(
-				"SELECT id, project_id, slug, title, overview, status, position "
-				"FROM releases WHERE id = ?",
+				f"SELECT {_RELEASE_COLUMNS} FROM releases WHERE id = ?",
 				(release_id,),
 			).fetchone()
 
@@ -173,8 +182,7 @@ class WriteStore(_StoreBase):
 			)
 			return Release.from_row(
 				connection.execute(
-					"SELECT id, project_id, slug, title, overview, status, position "
-					"FROM releases WHERE id = ?",
+					f"SELECT {_RELEASE_COLUMNS} FROM releases WHERE id = ?",
 					(release_id,),
 				).fetchone()
 			).to_dict()
@@ -188,8 +196,8 @@ class WriteStore(_StoreBase):
 
 		with self.database.transaction() as connection:
 			release = connection.execute(
-				"SELECT id, project_id, slug, title, overview, status, position "
-				"FROM releases WHERE id = ? AND project_id = ?",
+				f"SELECT {_RELEASE_COLUMNS} FROM releases "
+				"WHERE id = ? AND project_id = ?",
 				(release_id, project.id),
 			).fetchone()
 			if release is None:
@@ -207,8 +215,7 @@ class WriteStore(_StoreBase):
 			)
 			return Release.from_row(
 				connection.execute(
-					"SELECT id, project_id, slug, title, overview, status, position "
-					"FROM releases WHERE id = ?",
+					f"SELECT {_RELEASE_COLUMNS} FROM releases WHERE id = ?",
 					(release_id,),
 				).fetchone()
 			).to_dict()
@@ -237,8 +244,8 @@ class WriteStore(_StoreBase):
 
 		with self.database.transaction() as connection:
 			release = connection.execute(
-				"SELECT id, project_id, slug, title, overview, status, position "
-				"FROM releases WHERE id = ? AND project_id = ?",
+				f"SELECT {_RELEASE_COLUMNS} FROM releases "
+				"WHERE id = ? AND project_id = ?",
 				(release_id, project.id),
 			).fetchone()
 			if release is None:
@@ -257,8 +264,7 @@ class WriteStore(_StoreBase):
 			)
 			return Release.from_row(
 				connection.execute(
-					"SELECT id, project_id, slug, title, overview, status, position "
-					"FROM releases WHERE id = ?",
+					f"SELECT {_RELEASE_COLUMNS} FROM releases WHERE id = ?",
 					(release_id,),
 				).fetchone()
 			).to_dict()
@@ -318,8 +324,7 @@ class WriteStore(_StoreBase):
 			)
 			return Release.from_row(
 				connection.execute(
-					"SELECT id, project_id, slug, title, overview, status, position "
-					"FROM releases WHERE id = ?",
+					f"SELECT {_RELEASE_COLUMNS} FROM releases WHERE id = ?",
 					(release_id,),
 				).fetchone()
 			).to_dict()
@@ -1503,13 +1508,16 @@ class WriteStore(_StoreBase):
 			created_at = utc_timestamp()
 			connection.execute(
 				"""
-				INSERT INTO notes (id, project_id, task_id, type, body, supersedes_id, created_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?)
+				INSERT INTO notes (
+					id, project_id, task_id, release_id, type, body, supersedes_id, created_at
+				)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 				""",
 				(
 					note_id,
 					project.id,
 					task_id,
+					None,
 					note_type,
 					body,
 					supersedes_id,

@@ -29,7 +29,9 @@ MAX_LIMIT = 200
 TASK_STATUSES = frozenset({"ready", "in-progress", "blocked", "needs-decision", "done"})
 
 # Columns selected from releases in list and single-row queries.
-_RELEASE_COLUMNS = "id, project_id, slug, title, overview, status, position"
+_RELEASE_COLUMNS = (
+	"id, project_id, slug, title, overview, purpose, risks, status, position"
+)
 
 # Columns selected from tasks in list and single-row queries.
 _TASK_COLUMNS = (
@@ -70,7 +72,9 @@ _CHUNK_COLUMNS = (
 )
 
 # Columns selected from notes in list queries.
-_NOTE_COLUMNS = "id, project_id, task_id, type, body, supersedes_id, created_at"
+_NOTE_COLUMNS = (
+	"id, project_id, task_id, release_id, type, body, supersedes_id, created_at"
+)
 
 # Columns selected from handoff context in read queries.
 _CONTEXT_COLUMNS = (
