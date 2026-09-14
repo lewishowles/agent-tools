@@ -11,3 +11,7 @@ A collection of independently installed command-line tools that make common agen
 - Default output is bounded; deeper evidence remains available on demand.
 - Tools support stable JSON output.
 - Broader developer tools and browser experiments belong in `dev-tools`.
+
+## Gotchas
+
+- Bare `pytest` and `ruff` are not on `PATH`. Run `uv run pytest packages/<package>` and `uv run ruff …` from the workspace root.
