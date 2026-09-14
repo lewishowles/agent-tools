@@ -26,5 +26,6 @@ packages/
 
 1. Create `packages/<package-name>/`.
 2. Add a package-owned `pyproject.toml` with the package name, version, dependencies, and command-line entry points.
-3. Add the package's source code and tests inside its directory.
-4. Run `uv lock --dry-run` from the repository root to confirm the workspace finds the package.
+3. Follow the [agent-facing CLI contract](docs/cli-contract.md) for output, errors, exit codes, truncation, and evidence IDs.
+4. Add the package's source code and tests inside its directory.
+5. Run `uv lock --dry-run` from the repository root to confirm the workspace finds the package.
