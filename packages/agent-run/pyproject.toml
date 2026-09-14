@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-run"
+version = "0.1.0"
+description = "Run project commands with bounded evidence"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+agent-run = "agent_run.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
