@@ -47,11 +47,6 @@ _STATUS_TONES = {
 	"warning": "warning",
 }
 
-# Plain-text width the chunk-list status cell is padded to so chunk titles line up.
-# "pending" is the widest chunk status; the leading "- " stands in for cli-style's
-# one-column marker (rendered as an en dash), which does not change the width.
-_CHUNK_STATUS_COLUMN_WIDTH = len("- pending")
-
 # Plain-text width the task-list status cell is padded to so task titles line up.
 # "needs-decision" is the widest task status; the leading "! " stands in for
 # cli-style's one-column marker (rendered as a warning sign).
@@ -108,7 +103,16 @@ def render(command: str, data: object) -> str:
 		# A task with no release gets no line.
 		parent_key = "task_id" if command == "chunk complete" else "release_id"
 		parent_id = data.get(parent_key)
-		parent_line = f"\n{_format_label(parent_key)}: {parent_id}" if parent_id else ""
+		parent_line = (
+			"\n"
+			+ render_span(
+				f"{_format_label(parent_key)}: {parent_id}",
+				"muted",
+				weight="normal",
+			)
+			if parent_id
+			else ""
+		)
 
 		return (
 			render_status(
@@ -747,8 +751,26 @@ def _highlight_term(text: str, term: str) -> str:
 
 
 def _render_chunk_list(data: dict[str, object]) -> str:
-	"""Render chunk rows with status and description-aware spacing."""
-	blocks = [render_span("Chunks")]
+	"""Render chunk rows under a heading, opening with the task's title and ID.
+
+	The CLI adds the task for text output. Without it, the list starts at the heading.
+	"""
+	# The task these chunks belong to, added by the CLI for text output.
+	task = data.get("task")
+	# Sections of the output, separated by blank lines.
+	blocks = []
+	if isinstance(task, dict):
+		blocks.append(
+			" ".join(
+				[
+					render_span(str(task.get("title", "")), weight="normal"),
+					render_span("·", "muted", weight="normal"),
+					render_span(str(task.get("id", "")), "muted", weight="normal"),
+				]
+			)
+		)
+
+	blocks.append(render_span("Chunks"))
 	chunk_items = _render_chunk_items(data.get("items", []))
 	if chunk_items:
 		blocks.append(chunk_items)
@@ -769,11 +791,11 @@ def _render_chunk_list(data: dict[str, object]) -> str:
 
 
 def _render_chunk_items(items: object) -> str:
-	"""Render valid chunk items without splitting IDs or adding excess blank lines."""
+	"""Render valid chunk items with a blank line between each row."""
 	if not isinstance(items, list):
 		return ""
 
-	blocks: list[tuple[str, str, bool]] = []
+	blocks: list[str] = []
 	for item in items:
 		if not isinstance(item, dict):
 			continue
@@ -783,18 +805,11 @@ def _render_chunk_items(items: object) -> str:
 	if not blocks:
 		return ""
 
-	output = blocks[0][0]
-	for previous, current in zip(blocks, blocks[1:]):
-		separator = (
-			"\n\n" if previous[1] != current[1] or previous[2] or current[2] else "\n"
-		)
-		output += f"{separator}{current[0]}"
-
-	return output
+	return "\n\n".join(blocks)
 
 
-def _render_chunk_item(item: dict[str, object]) -> tuple[str, str, bool]:
-	"""Render one chunk row and return its status group and description state.
+def _render_chunk_item(item: dict[str, object]) -> str:
+	"""Render one chunk row: title, then status and ID, then the first description line for unfinished chunks.
 
 	Only the first line of the description is kept, so a long chunk record does not
 	swamp the list. Use chunk get to read the whole description.
@@ -806,8 +821,9 @@ def _render_chunk_item(item: dict[str, object]) -> tuple[str, str, bool]:
 	}.get(result_type, "active")
 	identifier = str(item.get("id", ""))
 	title = str(item.get("title") or item.get("id") or "item")
-	title_and_id = render_span(
-		f"{title} · {identifier}",
+	# The title on the first line, wrapped like the description below it.
+	title_block = render_span(
+		textwrap.fill(title, _ROW_WRAP_WIDTH),
 		"text",
 		weight="normal",
 	)
@@ -819,22 +835,26 @@ def _render_chunk_item(item: dict[str, object]) -> tuple[str, str, bool]:
 	else:
 		status = render_status("skipped", "pending")
 
-	# Pad against the plain-text width because the status string carries ANSI
-	# colour codes that a fixed-width format spec would count.
-	status_width = len(_ANSI_ESCAPE_PATTERN.sub("", status))
-	padding = " " * max(0, _CHUNK_STATUS_COLUMN_WIDTH - status_width)
-	row = f"{status}{padding}  {title_and_id}"
+	# The second line: status, then the muted chunk ID.
+	status_line = " ".join(
+		[
+			status,
+			render_span("·", "muted", weight="normal"),
+			render_span(identifier, "muted", weight="normal"),
+		]
+	)
+	row = f"{title_block}\n{status_line}"
 
 	description = item.get("description")
 	if status_group == "done" or not description:
-		return row, status_group, False
+		return row
 
 	description_block = render_span(
 		textwrap.fill(str(description).splitlines()[0], _ROW_WRAP_WIDTH),
 		"muted",
 		weight="normal",
 	)
-	return f"{row}\n\n{description_block}", status_group, True
+	return f"{row}\n\n{description_block}"
 
 
 def _render_task_list(data: dict[str, object]) -> str:

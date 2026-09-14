@@ -1117,7 +1117,9 @@ def main(argv: list[str] | None = None) -> int:
 		sys.stdout.write(f"\n{framed_output}\n\n")
 		hint = _human_hint(command, data)
 		if hint:
-			sys.stdout.write(f"Next: {hint}\n")
+			sys.stdout.write(
+				render_span(f"Next: {hint}", "muted", weight="normal") + "\n"
+			)
 
 	return 0
 
@@ -1270,7 +1272,7 @@ def _run_command(
 			"search",
 		),
 		("chunk", "list"): lambda: (
-			ReadStore(database).chunk_list(args.task_id, args.limit, args.offset),
+			_run_chunk_list(args, database, human_output),
 			"chunk list",
 		),
 		("chunk", "get"): lambda: (
@@ -1350,7 +1352,25 @@ def _run_command(
 	if handler is None:
 		raise CliUsageError("unknown progress command")
 
-	return handler()
+	data, command = handler()
+
+	return data, command
+
+
+def _run_chunk_list(
+	args: argparse.Namespace, database: Database, human_output: bool
+) -> object:
+	"""Load a task's chunks, adding the task title and ID for the text header."""
+	store = ReadStore(database)
+	data = store.chunk_list(args.task_id, args.limit, args.offset)
+	if not human_output or not isinstance(data, dict):
+		return data
+
+	task = store.task_get(args.task_id)
+	return {
+		**data,
+		"task": {"id": task.get("id", ""), "title": task.get("title", "")},
+	}
 
 
 def _run_release_move(

@@ -141,7 +141,7 @@ progress release list [--limit <limit>] [--offset <offset>] [--json] [--database
 - `--limit <limit>`: maximum number of releases to return
 - `--offset <offset>`: number of releases to skip before returning results
 
-See [Listing](#listing) for output from this command.
+See [Listing](#listing) for pagination details.
 
 ### `progress release remove`
 
@@ -436,7 +436,7 @@ progress task list [--status <status>] [--limit <limit>] [--offset <offset>] [--
 - `--limit <limit>`: maximum number of tasks to return
 - `--offset <offset>`: number of tasks to skip before returning results
 
-See [Listing](#listing) for output from this command.
+See [Listing](#listing) for pagination details.
 
 ## Chunks
 
@@ -541,7 +541,7 @@ progress chunk list --task <task_id> [--limit <limit>] [--offset <offset>] [--js
 - `--limit <limit>`: maximum number of chunks to return
 - `--offset <offset>`: number of chunks to skip before returning results
 
-See [Listing](#listing) for output from this command.
+See [Listing](#listing) for pagination details.
 
 ### `progress search`
 
@@ -632,31 +632,6 @@ project.
 The list commands support pagination with `--limit` and `--offset`. Task lists
 also support `--status`, and `ready` lists the tasks that can start.
 `--limit` defaults to `50` and accepts values from `1` to `200`.
-
-### Releases
-
-```text
-$ progress release list --limit 20 --offset 0
-Releases:
-- First release [planned] (rel_WMA5n_KV1i0Ddtp4Iq3hJQ)
-```
-
-### Tasks
-
-```text
-$ progress task list --status ready --limit 20 --offset 0
-Tasks:
-- First task [ready] (tsk_nIHyevhUxTyEDLbyfXPhRQ)
-```
-
-### Chunks
-
-```text
-$ progress chunk list --task tsk_nIHyevhUxTyEDLbyfXPhRQ --limit 20 --offset 0
-Chunks
-
-– First chunk · chk_KkjpMXgs5qkPeUsEuNDIDg
-```
 
 ## Statuses and note types
 
