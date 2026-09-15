@@ -31,6 +31,18 @@ _LEGACY_COMMAND_ALIASES = {
 	"ready": "next",
 }
 
+# Write commands whose store response can contain one result per requested ID.
+_MULTI_ID_WRITE_COMMANDS = frozenset(
+	{
+		"release remove",
+		"release complete",
+		"task remove",
+		"task complete",
+		"chunk remove",
+		"chunk complete",
+	}
+)
+
 # Matches argparse's raw "invalid choice" usage error to pull out the offending token.
 _INVALID_CHOICE_PATTERN = re.compile(
 	r"argument (?P<argument>[^:]+): invalid choice: "
@@ -333,8 +345,8 @@ _COMMAND_SPECS = (
 			),
 			_CommandSpec(
 				"remove",
-				"remove a release",
-				arguments=(_argument("release_id"),),
+				"remove one or more releases",
+				arguments=(_argument("release_id", nargs="+", metavar="RELEASE_ID"),),
 			),
 			_CommandSpec(
 				"rename",
@@ -358,8 +370,8 @@ _COMMAND_SPECS = (
 			),
 			_CommandSpec(
 				"complete",
-				"complete a planned or active release",
-				arguments=(_argument("release_id"),),
+				"complete one or more planned or active releases",
+				arguments=(_argument("release_id", nargs="+", metavar="RELEASE_ID"),),
 			),
 		),
 		destination="release_command",
@@ -458,8 +470,8 @@ _COMMAND_SPECS = (
 			),
 			_CommandSpec(
 				"remove",
-				"remove a task",
-				arguments=(_argument("task_id"),),
+				"remove one or more tasks",
+				arguments=(_argument("task_id", nargs="+", metavar="TASK_ID"),),
 			),
 			_CommandSpec(
 				"clean",
@@ -542,8 +554,8 @@ _COMMAND_SPECS = (
 			),
 			_CommandSpec(
 				"complete",
-				"complete a task",
-				arguments=(_argument("task_id"),),
+				"complete one or more tasks",
+				arguments=(_argument("task_id", nargs="+", metavar="TASK_ID"),),
 			),
 			_CommandSpec(
 				"block",
@@ -607,13 +619,13 @@ _COMMAND_SPECS = (
 			),
 			_CommandSpec(
 				"complete",
-				"complete an active chunk",
-				arguments=(_argument("chunk_id"),),
+				"complete one or more active chunks",
+				arguments=(_argument("chunk_id", nargs="+", metavar="CHUNK_ID"),),
 			),
 			_CommandSpec(
 				"remove",
-				"remove a chunk",
-				arguments=(_argument("chunk_id"),),
+				"remove one or more chunks",
+				arguments=(_argument("chunk_id", nargs="+", metavar="CHUNK_ID"),),
 			),
 			_CommandSpec(
 				"rename",
@@ -1109,7 +1121,7 @@ def main(argv: list[str] | None = None) -> int:
 	if json_mode:
 		_write_json({"ok": True, "data": data})
 	else:
-		human_output = render(command, data)
+		human_output = _render_human_output(command, data)
 
 		# Every human command output gets one blank line above it and a trailing
 		# gap before any Next hint, so nothing butts against the previous prompt.
@@ -1122,6 +1134,30 @@ def main(argv: list[str] | None = None) -> int:
 			)
 
 	return 0
+
+
+def _single_or_many(values: list[str]) -> str | list[str]:
+	"""Keep one-ID calls scalar while passing multiple IDs as a list."""
+	return values[0] if len(values) == 1 else values
+
+
+def _render_human_output(command: str, data: object) -> str:
+	"""Render a multi-ID write response as one line per record.
+
+	Single-record responses and every other command render as before. For a
+	list response, only the first rendered line of each record is kept, so
+	the output stays one line per requested ID.
+	"""
+	if command not in _MULTI_ID_WRITE_COMMANDS or not isinstance(data, list):
+		return render(command, data)
+
+	lines = []
+	for item in data:
+		rendered = render(command, item).strip("\n")
+		if rendered:
+			lines.append(rendered.splitlines()[0])
+
+	return "\n".join(lines) + ("\n" if lines else "")
 
 
 def _run_command(
@@ -1179,7 +1215,7 @@ def _run_command(
 			"release get",
 		),
 		("release", "remove"): lambda: (
-			WriteStore(database).release_remove(args.release_id),
+			WriteStore(database).release_remove(_single_or_many(args.release_id)),
 			"release remove",
 		),
 		("release", "rename"): lambda: (
@@ -1194,7 +1230,7 @@ def _run_command(
 			"release edit",
 		),
 		("release", "complete"): lambda: (
-			WriteStore(database).release_complete(args.release_id),
+			WriteStore(database).release_complete(_single_or_many(args.release_id)),
 			"release complete",
 		),
 		("task", "add"): lambda: (
@@ -1218,7 +1254,7 @@ def _run_command(
 		("task", "move"): lambda: _run_task_move(args, database),
 		("task", "dependency"): lambda: _run_task_dependency(args, database),
 		("task", "remove"): lambda: (
-			WriteStore(database).task_remove(args.task_id),
+			WriteStore(database).task_remove(_single_or_many(args.task_id)),
 			"task remove",
 		),
 		("task", "clean"): lambda: (
@@ -1235,7 +1271,7 @@ def _run_command(
 			"task start",
 		),
 		("task", "complete"): lambda: (
-			WriteStore(database).task_complete(args.task_id),
+			WriteStore(database).task_complete(_single_or_many(args.task_id)),
 			"task complete",
 		),
 		("task", "block"): lambda: (
@@ -1294,11 +1330,11 @@ def _run_command(
 			"chunk start",
 		),
 		("chunk", "complete"): lambda: (
-			WriteStore(database).chunk_complete(args.chunk_id),
+			WriteStore(database).chunk_complete(_single_or_many(args.chunk_id)),
 			"chunk complete",
 		),
 		("chunk", "remove"): lambda: (
-			WriteStore(database).chunk_remove(args.chunk_id),
+			WriteStore(database).chunk_remove(_single_or_many(args.chunk_id)),
 			"chunk remove",
 		),
 		("chunk", "rename"): lambda: (

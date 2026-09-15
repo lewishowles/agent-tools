@@ -123,38 +123,21 @@ class WriteStore(_StoreBase):
 		return Release.from_row(row).to_dict()
 
 	def release_remove(
-		self, release_id: str, path: str | Path | None = None
-	) -> dict[str, object]:
-		"""Remove a current-project release when no task still uses it."""
-		validate_object_id(release_id, RELEASE_PREFIX)
+		self,
+		release_id: str | Sequence[str],
+		path: str | Path | None = None,
+	) -> dict[str, object] | list[dict[str, object]]:
+		"""Remove one or more current-project releases in input order."""
+		release_ids, multiple = _normalise_write_ids(release_id, "release")
 		project = self.current_project(path)
 
 		with self.database.transaction() as connection:
-			release = connection.execute(
-				"SELECT 1 FROM releases WHERE id = ? AND project_id = ?",
-				(release_id, project.id),
-			).fetchone()
-
-			if release is None:
-				raise NotFoundError(
-					f"release {release_id} was not found", {"id": release_id}
-				)
-
-			task_ids = [
-				row["id"]
-				for row in connection.execute(
-					"SELECT id FROM tasks WHERE release_id = ? ORDER BY id",
-					(release_id,),
-				).fetchall()
+			results = [
+				_remove_release(connection, identifier, project.id)
+				for identifier in release_ids
 			]
 
-			_raise_if_referenced(
-				"release", release_id, {"tasks": task_ids} if task_ids else {}
-			)
-
-			connection.execute("DELETE FROM releases WHERE id = ?", (release_id,))
-
-		return {"id": release_id}
+		return results if multiple else results[0]
 
 	def release_rename(
 		self,
@@ -188,37 +171,21 @@ class WriteStore(_StoreBase):
 			).to_dict()
 
 	def release_complete(
-		self, release_id: str, path: str | Path | None = None
-	) -> dict[str, object]:
-		"""Complete a planned or active current-project release."""
-		validate_object_id(release_id, RELEASE_PREFIX)
+		self,
+		release_id: str | Sequence[str],
+		path: str | Path | None = None,
+	) -> dict[str, object] | list[dict[str, object]]:
+		"""Complete one or more planned or active releases in input order."""
+		release_ids, multiple = _normalise_write_ids(release_id, "release")
 		project = self.current_project(path)
 
 		with self.database.transaction() as connection:
-			release = connection.execute(
-				f"SELECT {_RELEASE_COLUMNS} FROM releases "
-				"WHERE id = ? AND project_id = ?",
-				(release_id, project.id),
-			).fetchone()
-			if release is None:
-				raise NotFoundError(
-					f"release {release_id} was not found", {"id": release_id}
-				)
-			if release["status"] not in {"planned", "active"}:
-				raise InvalidTransitionError(
-					f"release {release_id} cannot be completed from status {release['status']}",
-					{"id": release_id, "status": release["status"]},
-				)
+			results = [
+				_complete_release(connection, identifier, project.id)
+				for identifier in release_ids
+			]
 
-			connection.execute(
-				"UPDATE releases SET status = 'done' WHERE id = ?", (release_id,)
-			)
-			return Release.from_row(
-				connection.execute(
-					f"SELECT {_RELEASE_COLUMNS} FROM releases WHERE id = ?",
-					(release_id,),
-				).fetchone()
-			).to_dict()
+		return results if multiple else results[0]
 
 	def release_edit(
 		self,
@@ -452,61 +419,21 @@ class WriteStore(_StoreBase):
 			return _task_dict(connection, task_id, project.id)
 
 	def task_remove(
-		self, task_id: str, path: str | Path | None = None
-	) -> dict[str, object]:
-		"""Remove a current-project task when no child row still uses it."""
-		validate_object_id(task_id, TASK_PREFIX)
+		self,
+		task_id: str | Sequence[str],
+		path: str | Path | None = None,
+	) -> dict[str, object] | list[dict[str, object]]:
+		"""Remove one or more current-project tasks in input order."""
+		task_ids, multiple = _normalise_write_ids(task_id, "task")
 		project = self.current_project(path)
 
 		with self.database.transaction() as connection:
-			task = _task_row(connection, task_id, project.id)
-
-			if task is None:
-				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
-
-			references: dict[str, list[str]] = {}
-			chunk_ids = [
-				row["id"]
-				for row in connection.execute(
-					"SELECT id FROM chunks WHERE task_id = ? ORDER BY id", (task_id,)
-				).fetchall()
+			results = [
+				_remove_task(connection, identifier, project.id)
+				for identifier in task_ids
 			]
 
-			if chunk_ids:
-				references["chunks"] = chunk_ids
-
-			dependency_edges = [
-				f"{row['task_id']} -> {row['depends_on_task_id']}"
-				for row in connection.execute(
-					"""
-					SELECT task_id, depends_on_task_id
-					FROM task_dependencies
-					WHERE task_id = ? OR depends_on_task_id = ?
-					ORDER BY task_id, depends_on_task_id
-					""",
-					(task_id, task_id),
-				).fetchall()
-			]
-
-			if dependency_edges:
-				references["dependencies"] = dependency_edges
-
-			note_ids = [
-				row["id"]
-				for row in connection.execute(
-					"SELECT id FROM notes WHERE task_id = ? ORDER BY id", (task_id,)
-				).fetchall()
-			]
-
-			if note_ids:
-				references["notes"] = note_ids
-
-			_raise_if_referenced("task", task_id, references)
-
-			_delete_task_values(connection, task_id)
-			connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-
-		return {"id": task_id}
+		return results if multiple else results[0]
 
 	def task_clean(
 		self,
@@ -1107,19 +1034,21 @@ class WriteStore(_StoreBase):
 			return _chunk_dict(connection, chunk_id, project.id)
 
 	def chunk_remove(
-		self, chunk_id: str, path: str | Path | None = None
-	) -> dict[str, object]:
-		"""Remove a current-project chunk."""
-		validate_object_id(chunk_id, CHUNK_PREFIX)
+		self,
+		chunk_id: str | Sequence[str],
+		path: str | Path | None = None,
+	) -> dict[str, object] | list[dict[str, object]]:
+		"""Remove one or more current-project chunks in input order."""
+		chunk_ids, multiple = _normalise_write_ids(chunk_id, "chunk")
 		project = self.current_project(path)
 
 		with self.database.transaction() as connection:
-			if _chunk_row(connection, chunk_id, project.id) is None:
-				raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
+			results = [
+				_remove_chunk(connection, identifier, project.id)
+				for identifier in chunk_ids
+			]
 
-			connection.execute("DELETE FROM chunks WHERE id = ?", (chunk_id,))
-
-		return {"id": chunk_id}
+		return results if multiple else results[0]
 
 	def chunk_rename(
 		self,
@@ -1251,70 +1180,27 @@ class WriteStore(_StoreBase):
 			return result
 
 	def task_complete(
-		self, task_id: str, path: str | Path | None = None
-	) -> dict[str, object]:
-		"""Complete a ready or in-progress task by ID or project slug after its chunks finish, and unblock eligible dependents."""
-		task_id = validate_identifier(task_id, TASK_PREFIX)
+		self,
+		task_id: str | Sequence[str],
+		path: str | Path | None = None,
+	) -> dict[str, object] | list[dict[str, object]]:
+		"""Complete one or more ready or in-progress tasks in input order.
+
+		Each task is named by ID or by project slug and must have no pending or
+		active chunks. Dependants blocked only by the completed tasks become
+		ready. All completions run in one transaction, so a failure on any ID
+		rolls back the earlier ones.
+		"""
+		task_ids, multiple = _normalise_write_ids(task_id, "task")
 		project = self.current_project(path)
 
 		with self.database.transaction() as connection:
-			task_id = resolve_identifier(connection, task_id, TASK_PREFIX, project.id)
-			task = _task_row(connection, task_id, project.id)
-			if task is None:
-				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
-			if task["status"] not in {"ready", "in-progress"}:
-				raise InvalidTransitionError(
-					f"task {task_id} must be ready or in progress before it can complete",
-					{"id": task_id, "status": task["status"]},
-				)
+			results = [
+				_complete_task(connection, identifier, project.id)
+				for identifier in task_ids
+			]
 
-			pending = connection.execute(
-				"SELECT id FROM chunks WHERE task_id = ? AND status IN ('pending', 'active') "
-				"ORDER BY position, id",
-				(task_id,),
-			).fetchall()
-			if pending:
-				raise PendingChunksError(
-					f"task {task_id} still has unfinished chunks: {', '.join(row['id'] for row in pending)}",
-					{"task_id": task_id, "chunks": [row["id"] for row in pending]},
-				)
-
-			now = utc_timestamp()
-			connection.execute(
-				"UPDATE tasks SET status = 'done', completed_at = ?, updated_at = ? WHERE id = ?",
-				(now, now, task_id),
-			)
-
-			unblocked_tasks = []
-			dependent_rows = connection.execute(
-				"""
-				SELECT tasks.id, tasks.slug, tasks.title
-				FROM tasks
-				JOIN task_dependencies
-					ON task_dependencies.task_id = tasks.id
-				WHERE tasks.project_id = ?
-					AND task_dependencies.depends_on_task_id = ?
-					AND tasks.status = 'blocked'
-				ORDER BY tasks.position, tasks.id
-				""",
-				(project.id, task_id),
-			).fetchall()
-			for dependent in dependent_rows:
-				if _unresolved_dependencies(connection, dependent["id"]):
-					continue
-
-				_unblock_task(connection, dependent["id"], project.id)
-				unblocked_tasks.append(
-					{
-						"id": dependent["id"],
-						"slug": dependent["slug"],
-						"title": dependent["title"],
-					}
-				)
-
-			completed_task = _task_dict(connection, task_id, project.id)
-			completed_task["unblocked_tasks"] = unblocked_tasks
-			return completed_task
+		return results if multiple else results[0]
 
 	def task_block(
 		self,
@@ -1369,41 +1255,26 @@ class WriteStore(_StoreBase):
 			return _task_dict(connection, task_id, project.id)
 
 	def chunk_complete(
-		self, chunk_id: str, path: str | Path | None = None
-	) -> dict[str, object]:
-		"""Complete a pending or active chunk and advance only from active."""
-		validate_object_id(chunk_id, CHUNK_PREFIX)
+		self,
+		chunk_id: str | Sequence[str],
+		path: str | Path | None = None,
+	) -> dict[str, object] | list[dict[str, object]]:
+		"""Complete one or more pending or active chunks in input order.
+
+		Completing an active chunk activates the next pending chunk of its
+		task. All completions run in one transaction, so a failure on any ID
+		rolls back the earlier ones.
+		"""
+		chunk_ids, multiple = _normalise_write_ids(chunk_id, "chunk")
 		project = self.current_project(path)
 
 		with self.database.transaction() as connection:
-			chunk = _chunk_row(connection, chunk_id, project.id)
-			if chunk is None:
-				raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
-			if chunk["status"] not in {"pending", "active"}:
-				raise InvalidTransitionError(
-					f"chunk {chunk_id} must be pending or active before it can complete",
-					{"id": chunk_id, "status": chunk["status"]},
-				)
+			results = [
+				_complete_chunk(connection, identifier, project.id)
+				for identifier in chunk_ids
+			]
 
-			previous_status = chunk["status"]
-			now = utc_timestamp()
-			connection.execute(
-				"UPDATE chunks SET status = 'done', completed_at = ? WHERE id = ?",
-				(now, chunk_id),
-			)
-			if previous_status == "active":
-				next_chunk = connection.execute(
-					f"SELECT {_QUALIFIED_CHUNK_COLUMNS} FROM chunks "
-					"WHERE task_id = ? AND status = 'pending' ORDER BY position, id LIMIT 1",
-					(chunk["task_id"],),
-				).fetchone()
-				if next_chunk is not None:
-					connection.execute(
-						"UPDATE chunks SET status = 'active', started_at = ? WHERE id = ?",
-						(now, next_chunk["id"]),
-					)
-
-			return _chunk_dict(connection, chunk_id, project.id)
+		return results if multiple else results[0]
 
 	def discovery_add(
 		self,
@@ -1578,6 +1449,244 @@ class WriteStore(_StoreBase):
 			).fetchone()
 
 		return Context.from_row(row).to_dict()
+
+
+def _normalise_write_ids(
+	value: str | Sequence[str], record_type: str
+) -> tuple[tuple[str, ...], bool]:
+	"""Return write identifiers and whether the caller requested multiple results."""
+	if isinstance(value, str):
+		return (value,), False
+
+	identifiers = tuple(value)
+	if not identifiers:
+		raise ProgressError(f"at least one {record_type} ID is required")
+
+	return identifiers, True
+
+
+def _remove_release(
+	connection: sqlite3.Connection, release_id: str, project_id: str
+) -> dict[str, object]:
+	"""Remove one release when no task still uses it."""
+	validate_object_id(release_id, RELEASE_PREFIX)
+	release = connection.execute(
+		"SELECT 1 FROM releases WHERE id = ? AND project_id = ?",
+		(release_id, project_id),
+	).fetchone()
+
+	if release is None:
+		raise NotFoundError(f"release {release_id} was not found", {"id": release_id})
+
+	task_ids = [
+		row["id"]
+		for row in connection.execute(
+			"SELECT id FROM tasks WHERE release_id = ? ORDER BY id",
+			(release_id,),
+		).fetchall()
+	]
+
+	_raise_if_referenced("release", release_id, {"tasks": task_ids} if task_ids else {})
+	connection.execute("DELETE FROM releases WHERE id = ?", (release_id,))
+
+	return {"id": release_id}
+
+
+def _complete_release(
+	connection: sqlite3.Connection, release_id: str, project_id: str
+) -> dict[str, object]:
+	"""Complete one planned or active release."""
+	validate_object_id(release_id, RELEASE_PREFIX)
+	release = connection.execute(
+		f"SELECT {_RELEASE_COLUMNS} FROM releases WHERE id = ? AND project_id = ?",
+		(release_id, project_id),
+	).fetchone()
+	if release is None:
+		raise NotFoundError(f"release {release_id} was not found", {"id": release_id})
+	if release["status"] not in {"planned", "active"}:
+		raise InvalidTransitionError(
+			f"release {release_id} cannot be completed from status {release['status']}",
+			{"id": release_id, "status": release["status"]},
+		)
+
+	connection.execute(
+		"UPDATE releases SET status = 'done' WHERE id = ?", (release_id,)
+	)
+	return Release.from_row(
+		connection.execute(
+			f"SELECT {_RELEASE_COLUMNS} FROM releases WHERE id = ?",
+			(release_id,),
+		).fetchone()
+	).to_dict()
+
+
+def _remove_task(
+	connection: sqlite3.Connection, task_id: str, project_id: str
+) -> dict[str, object]:
+	"""Remove one task when no child row still uses it."""
+	validate_object_id(task_id, TASK_PREFIX)
+	task = _task_row(connection, task_id, project_id)
+
+	if task is None:
+		raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
+
+	references: dict[str, list[str]] = {}
+	chunk_ids = [
+		row["id"]
+		for row in connection.execute(
+			"SELECT id FROM chunks WHERE task_id = ? ORDER BY id", (task_id,)
+		).fetchall()
+	]
+
+	if chunk_ids:
+		references["chunks"] = chunk_ids
+
+	dependency_edges = [
+		f"{row['task_id']} -> {row['depends_on_task_id']}"
+		for row in connection.execute(
+			"""
+			SELECT task_id, depends_on_task_id
+			FROM task_dependencies
+			WHERE task_id = ? OR depends_on_task_id = ?
+			ORDER BY task_id, depends_on_task_id
+			""",
+			(task_id, task_id),
+		).fetchall()
+	]
+
+	if dependency_edges:
+		references["dependencies"] = dependency_edges
+
+	note_ids = [
+		row["id"]
+		for row in connection.execute(
+			"SELECT id FROM notes WHERE task_id = ? ORDER BY id", (task_id,)
+		).fetchall()
+	]
+
+	if note_ids:
+		references["notes"] = note_ids
+
+	_raise_if_referenced("task", task_id, references)
+	_delete_task_values(connection, task_id)
+	connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+	return {"id": task_id}
+
+
+def _complete_task(
+	connection: sqlite3.Connection, task_reference: str, project_id: str
+) -> dict[str, object]:
+	"""Complete one task by ID or project slug and unblock eligible dependents."""
+	task_reference = validate_identifier(task_reference, TASK_PREFIX)
+	task_id = resolve_identifier(connection, task_reference, TASK_PREFIX, project_id)
+	task = _task_row(connection, task_id, project_id)
+	if task is None:
+		raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
+	if task["status"] not in {"ready", "in-progress"}:
+		raise InvalidTransitionError(
+			f"task {task_id} must be ready or in progress before it can complete",
+			{"id": task_id, "status": task["status"]},
+		)
+
+	pending = connection.execute(
+		"SELECT id FROM chunks WHERE task_id = ? AND status IN ('pending', 'active') "
+		"ORDER BY position, id",
+		(task_id,),
+	).fetchall()
+	if pending:
+		raise PendingChunksError(
+			f"task {task_id} still has unfinished chunks: {', '.join(row['id'] for row in pending)}",
+			{"task_id": task_id, "chunks": [row["id"] for row in pending]},
+		)
+
+	now = utc_timestamp()
+	connection.execute(
+		"UPDATE tasks SET status = 'done', completed_at = ?, updated_at = ? WHERE id = ?",
+		(now, now, task_id),
+	)
+
+	unblocked_tasks = []
+	dependent_rows = connection.execute(
+		"""
+		SELECT tasks.id, tasks.slug, tasks.title
+		FROM tasks
+		JOIN task_dependencies
+			ON task_dependencies.task_id = tasks.id
+		WHERE tasks.project_id = ?
+			AND task_dependencies.depends_on_task_id = ?
+			AND tasks.status = 'blocked'
+		ORDER BY tasks.position, tasks.id
+		""",
+		(project_id, task_id),
+	).fetchall()
+	for dependent in dependent_rows:
+		if _unresolved_dependencies(connection, dependent["id"]):
+			continue
+
+		_unblock_task(connection, dependent["id"], project_id)
+		unblocked_tasks.append(
+			{
+				"id": dependent["id"],
+				"slug": dependent["slug"],
+				"title": dependent["title"],
+			}
+		)
+
+	completed_task = _task_dict(connection, task_id, project_id)
+	completed_task["unblocked_tasks"] = unblocked_tasks
+	return completed_task
+
+
+def _remove_chunk(
+	connection: sqlite3.Connection, chunk_id: str, project_id: str
+) -> dict[str, object]:
+	"""Remove one chunk belonging to a current-project task."""
+	validate_object_id(chunk_id, CHUNK_PREFIX)
+	if _chunk_row(connection, chunk_id, project_id) is None:
+		raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
+
+	connection.execute("DELETE FROM chunks WHERE id = ?", (chunk_id,))
+	return {"id": chunk_id}
+
+
+def _complete_chunk(
+	connection: sqlite3.Connection, chunk_id: str, project_id: str
+) -> dict[str, object]:
+	"""Complete one pending or active chunk.
+
+	When the completed chunk was active, the task's next pending chunk becomes
+	active so the task keeps a current chunk.
+	"""
+	validate_object_id(chunk_id, CHUNK_PREFIX)
+	chunk = _chunk_row(connection, chunk_id, project_id)
+	if chunk is None:
+		raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
+	if chunk["status"] not in {"pending", "active"}:
+		raise InvalidTransitionError(
+			f"chunk {chunk_id} must be pending or active before it can complete",
+			{"id": chunk_id, "status": chunk["status"]},
+		)
+
+	previous_status = chunk["status"]
+	now = utc_timestamp()
+	connection.execute(
+		"UPDATE chunks SET status = 'done', completed_at = ? WHERE id = ?",
+		(now, chunk_id),
+	)
+	if previous_status == "active":
+		next_chunk = connection.execute(
+			f"SELECT {_QUALIFIED_CHUNK_COLUMNS} FROM chunks "
+			"WHERE task_id = ? AND status = 'pending' ORDER BY position, id LIMIT 1",
+			(chunk["task_id"],),
+		).fetchone()
+		if next_chunk is not None:
+			connection.execute(
+				"UPDATE chunks SET status = 'active', started_at = ? WHERE id = ?",
+				(now, next_chunk["id"]),
+			)
+
+	return _chunk_dict(connection, chunk_id, project_id)
 
 
 def _task_notes(

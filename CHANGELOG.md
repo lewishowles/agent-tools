@@ -7,6 +7,8 @@ All notable changes to `progress` are documented here. The format is based on [K
 ### Changed
 
 - Breaking: abbreviated flags no longer work anywhere in the CLI.
+- Release, task and chunk remove and complete commands now accept multiple IDs,
+  apply them in order in one transaction, and return one result per ID.
 - `task add` and `task edit` now accept repeatable `--contract-step` and `--file` flags, plus an optional `--split-rationale`.
 - `task edit --clear-split-rationale` removes a task's split rationale, and `--clear-files` now clears the whole file list rather than a single value.
 

@@ -775,6 +775,25 @@ def test_chunk_complete_leaves_an_active_sibling_unchanged(
 	assert chunks_by_id[later_chunk["id"]]["status"] == "done"
 
 
+def test_chunk_complete_applies_earlier_completion_to_a_later_id(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "ordered-chunks-task", "Ordered chunks task")
+	active_chunk = _add_chunk(store, task["id"], "Active chunk")
+	next_pending_chunk = _add_chunk(store, task["id"], "Next pending chunk")
+	store.task_start(task["id"])
+
+	completed = store.chunk_complete([active_chunk["id"], next_pending_chunk["id"]])
+
+	assert [result["id"] for result in completed] == [
+		active_chunk["id"],
+		next_pending_chunk["id"],
+	]
+	assert [result["status"] for result in completed] == ["done", "done"]
+	assert completed[1]["started_at"] is not None
+
+
 @pytest.mark.parametrize("status", ["done", "skipped"])
 def test_chunk_complete_rejects_finished_chunks(tmp_path: Path, status: str) -> None:
 	store = _seed_store(tmp_path)
@@ -842,6 +861,27 @@ def test_task_complete_unblocks_dependents_and_reports_them(tmp_path: Path) -> N
 	]
 	assert ready_dependent["status"] == "ready"
 	assert ready_dependent["status_reason"] is None
+
+
+def test_task_complete_applies_earlier_completion_to_a_later_id(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	dependency = _add_task(store, "ordered-dependency", "Ordered dependency")
+	dependent = _add_task(
+		store,
+		"ordered-dependent",
+		"Ordered dependent",
+		depends_on=[dependency["id"]],
+	)
+
+	completed = store.task_complete([dependency["id"], dependent["id"]])
+
+	assert [result["id"] for result in completed] == [
+		dependency["id"],
+		dependent["id"],
+	]
+	assert [result["status"] for result in completed] == ["done", "done"]
 
 
 def test_task_complete_keeps_dependents_blocked_with_incomplete_dependencies(
@@ -1080,6 +1120,108 @@ def test_remove_childless_rows_and_dependency_edges(tmp_path: Path) -> None:
 				).fetchone()
 				is None
 			)
+
+
+@pytest.mark.parametrize(
+	("method_name", "record_type"),
+	[
+		("release_remove", "release"),
+		("release_complete", "release"),
+		("task_remove", "task"),
+		("task_complete", "task"),
+		("chunk_remove", "chunk"),
+		("chunk_complete", "chunk"),
+	],
+)
+def test_write_methods_return_multiple_results_in_input_order(
+	tmp_path: Path, method_name: str, record_type: str
+) -> None:
+	store = _seed_store(tmp_path)
+
+	if record_type == "release":
+		records = [
+			store.release_add("first-release", "First release", overview="Overview"),
+			store.release_add("second-release", "Second release", overview="Overview"),
+		]
+	elif record_type == "task":
+		records = [
+			_add_task(store, "first-task", "First task"),
+			_add_task(store, "second-task", "Second task"),
+		]
+	else:
+		task = _add_task(store, "chunk-task", "Chunk task")
+		records = [
+			_add_chunk(store, task["id"], "First chunk"),
+			_add_chunk(store, task["id"], "Second chunk"),
+		]
+
+	identifiers = [record["id"] for record in reversed(records)]
+	results = getattr(store, method_name)(identifiers)
+
+	assert [result["id"] for result in results] == identifiers
+
+
+@pytest.mark.parametrize(
+	("method_name", "record_type"),
+	[
+		("release_remove", "release"),
+		("release_complete", "release"),
+		("task_remove", "task"),
+		("task_complete", "task"),
+		("chunk_remove", "chunk"),
+		("chunk_complete", "chunk"),
+	],
+)
+def test_write_methods_roll_back_earlier_ids_when_a_later_id_fails(
+	tmp_path: Path, method_name: str, record_type: str
+) -> None:
+	store = _seed_store(tmp_path)
+
+	if record_type == "release":
+		record = store.release_add("release", "Release", overview="Overview")
+		if method_name == "release_complete":
+			failing_record = store.release_add(
+				"done-release", "Done release", overview="Overview", status="done"
+			)
+		else:
+			failing_id = "rel_" + "m" * 22
+			failing_record = {"id": failing_id}
+	elif record_type == "task":
+		record = _add_task(store, "task", "Task")
+		if method_name == "task_complete":
+			failing_record = _add_task(store, "done-task", "Done task")
+			store.task_complete(failing_record["id"])
+		else:
+			failing_id = "tsk_" + "m" * 22
+			failing_record = {"id": failing_id}
+	else:
+		task = _add_task(store, "chunk-task", "Chunk task")
+		record = _add_chunk(store, task["id"], "Chunk")
+		if method_name == "chunk_complete":
+			failing_record = _add_chunk(store, task["id"], "Done chunk")
+			store.chunk_complete(failing_record["id"])
+		else:
+			failing_id = "chk_" + "m" * 22
+			failing_record = {"id": failing_id}
+
+	with pytest.raises(ProgressError, match=failing_record["id"]):
+		getattr(store, method_name)([record["id"], failing_record["id"]])
+
+	if record_type == "release":
+		remaining = ReadStore(
+			store.database, _ProjectStore(store.database)
+		).release_get(record["id"])
+		assert remaining["status"] == "planned"
+	elif record_type == "task":
+		remaining = ReadStore(store.database, _ProjectStore(store.database)).task_get(
+			record["id"]
+		)
+		assert remaining["status"] == "ready"
+	else:
+		remaining = ReadStore(store.database, _ProjectStore(store.database)).chunk_get(
+			record["id"]
+		)
+		assert remaining["status"] == "pending"
 
 
 def test_task_clean_removes_safe_done_tasks_and_reports_blockers(

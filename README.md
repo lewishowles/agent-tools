@@ -148,12 +148,13 @@ See [Listing](#listing) for pagination details.
 Remove a release:
 
 ```text
-progress release remove <release_id> [--json] [--database <path>]
+progress release remove <release_id>... [--json] [--database <path>]
 ```
 
+Pass one or more release IDs. They are removed in the order given in one
+transaction, so a failure names the failing ID and rolls back every removal.
 Removal is a hard delete. It raises `StillReferencedError` when any task still
-refers to the release, and the error names the blocking task IDs. The operation
-is atomic, so a rejected removal does not delete anything. Deletion never
+refers to a release, and the error names the blocking task IDs. Deletion never
 cascades to tasks. Remove or move every referencing task before retrying.
 
 ### `progress release rename`
@@ -199,11 +200,13 @@ reflects the new order.
 Move a planned or active release to `done`:
 
 ```text
-progress release complete <release_id> [--json] [--database <path>]
+progress release complete <release_id>... [--json] [--database <path>]
 ```
 
-Completing a release that is already `done` is rejected and the error names its
-current status. A release is started by starting a task within it.
+Pass one or more release IDs. They are completed in the order given in one
+transaction. Completing a release that is already `done` is rejected, names
+the failing ID and current status, and rolls back earlier completions. A release
+is started by starting a task within it.
 
 ## Tasks
 
@@ -298,9 +301,11 @@ progress task dependency remove <task_id> <depends_on_task_id> [--json] [--datab
 Remove a task:
 
 ```text
-progress task remove <task_id> [--json] [--database <path>]
+progress task remove <task_id>... [--json] [--database <path>]
 ```
 
+Pass one or more task IDs. They are removed in the order given in one
+transaction, so a failure names the failing ID and rolls back every removal.
 Removal is a hard delete and raises `StillReferencedError` when any of these
 still refer to the task:
 
@@ -387,12 +392,14 @@ demoted, or is `null` when nothing was.
 Complete a task:
 
 ```text
-progress task complete <task_id> [--json] [--database <path>]
+progress task complete <task_id>... [--json] [--database <path>]
 ```
 
-This moves the task to `done` only when it is `in-progress` and has no `pending`
-or `active` chunks. If chunks remain, `PendingChunksError` names the blocking
-chunk IDs.
+Pass one or more task IDs or project slugs. They are completed in the order
+given in one transaction. Each task moves to `done` only when it is `ready` or
+`in-progress` and has no `pending` or `active` chunks. If a task cannot
+complete, `PendingChunksError` names the failing task and its blocking chunk
+IDs, and all earlier completions are rolled back.
 
 ### `progress task unblock`
 
@@ -489,20 +496,24 @@ requested chunk.
 Complete a chunk:
 
 ```text
-progress chunk complete <chunk_id> [--json] [--database <path>]
+progress chunk complete <chunk_id>... [--json] [--database <path>]
 ```
 
-Completing an active chunk moves it to `done` and activates the next pending
-chunk when one exists.
+Pass one or more chunk IDs. They are completed in the order given in one
+transaction. Completing an active chunk moves it to `done` and activates the
+next pending chunk when one exists. A failure names the failing ID and rolls
+back earlier completions.
 
 ### `progress chunk remove`
 
 Remove a chunk:
 
 ```text
-progress chunk remove <chunk_id> [--json] [--database <path>]
+progress chunk remove <chunk_id>... [--json] [--database <path>]
 ```
 
+Pass one or more chunk IDs. They are removed in the order given in one
+transaction, so a failure names the failing ID and rolls back every removal.
 Chunks have no referencing child rows, so a chunk can be removed directly.
 Removal is a hard delete and never cascades.
 
@@ -657,16 +668,20 @@ command that sets or changes it.
 
 The available transitions are:
 
-- `release complete`: `planned` or `active` → `done`; `done` → rejected, with the current status named in the error
+- `release complete`: one or more `planned` or `active` releases → `done`; `done` → rejected, with the failing ID and current status named in the error
 - `task start`: `ready` → `in-progress`; unfinished dependencies raise `UnresolvedDependenciesError`. The database enforces one in-progress task per project, so another `in-progress` task in the same project is demoted to `ready` (its active chunk, if any, returned to `pending`) in the same transaction, and named in the response's `demoted_task` field
 - `task block`: `ready` or `in-progress` → `blocked`, or → `needs-decision` with `--needs-decision`; an active chunk is returned to `pending`
 - `task unblock`: `blocked` or `needs-decision` → `ready`; dependencies are re-checked, and unresolved dependencies reject the transition with `UnresolvedDependenciesError` naming the unfinished task IDs
-- `task complete`: an `in-progress` task with no `pending` or `active` chunks becomes `done`; pending or active chunks raise `PendingChunksError` naming their blocking chunk IDs
+- `task complete`: one or more `ready` or `in-progress` tasks with no `pending` or `active` chunks become `done`; pending or active chunks raise `PendingChunksError` naming the failing task and blocking chunk IDs
 - `task start`: the first pending chunk becomes `active`
 - `chunk start`: a pending chunk on an `in-progress` task becomes `active`, and another active chunk on that task returns to `pending`
-- `chunk complete`: the active chunk becomes `done`, and the next pending chunk becomes `active` when one exists
+- `chunk complete`: one or more pending or active chunks become `done`, and the next pending chunk becomes `active` when one exists
 
 ## Removal and errors
+
+The release, task and chunk remove and complete commands accept one or more
+space-separated IDs. Each command applies IDs in input order in one transaction,
+and a failure names the failing ID before rolling back the whole command.
 
 All remove commands use hard deletion and preserve referential integrity. No
 remove command cascades to related rows. A removal that would orphan a child is
@@ -674,9 +689,9 @@ rejected before deletion, and the whole operation is rolled back.
 
 | Command                                                 | Rejected when                                        | Blocking IDs named in the error                  |
 | ------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------ |
-| `release remove <release_id>`                           | A task refers to the release                         | Referencing task IDs                             |
-| `task remove <task_id>`                                 | A chunk, dependency edge, or note refers to the task | Referencing chunk, task, dependency, or note IDs |
-| `chunk remove <chunk_id>`                               | Never; chunks have no referencing rows               | None                                             |
+| `release remove <release_id>...`                        | A task refers to the release                         | Referencing task IDs                             |
+| `task remove <task_id>...`                              | A chunk, dependency edge, or note refers to the task | Referencing chunk, task, dependency, or note IDs |
+| `chunk remove <chunk_id>...`                            | Never; chunks have no referencing rows               | None                                             |
 | `discovery remove <note_id>`                            | Another note supersedes the note                     | Superseding note IDs                             |
 | `decision remove <note_id>`                             | Another note supersedes the note                     | Superseding note IDs                             |
 | `task dependency remove <task_id> <depends_on_task_id>` | Never; removing an edge has no children              | None                                             |

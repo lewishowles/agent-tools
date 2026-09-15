@@ -681,6 +681,115 @@ def test_write_commands_dispatch_to_the_matching_store_method(
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 
+@pytest.mark.parametrize(
+	("arguments", "method_name"),
+	[
+		(
+			["release", "remove", "rel_first", "rel_second"],
+			"release_remove",
+		),
+		(
+			["release", "complete", "rel_first", "rel_second"],
+			"release_complete",
+		),
+		(
+			["task", "remove", "tsk_first", "tsk_second"],
+			"task_remove",
+		),
+		(
+			["task", "complete", "tsk_first", "tsk_second"],
+			"task_complete",
+		),
+		(
+			["chunk", "remove", "chk_first", "chk_second"],
+			"chunk_remove",
+		),
+		(
+			["chunk", "complete", "chk_first", "chk_second"],
+			"chunk_complete",
+		),
+	],
+)
+def test_multi_id_write_commands_dispatch_a_list_and_return_a_json_list(
+	tmp_path: Path, monkeypatch, capsys, arguments: list[str], method_name: str
+) -> None:
+	ids = arguments[-2:]
+	data = [{"id": identifier} for identifier in ids]
+	calls: list[tuple[str, tuple[object, ...]]] = []
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def __getattr__(self, name):
+			def handler(*positional_arguments, **keyword_arguments):
+				calls.append((name, positional_arguments))
+				return data
+
+			return handler
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				*arguments,
+				"--database",
+				str(tmp_path / "db"),
+				"--json",
+			]
+		)
+		== 0
+	)
+
+	assert calls == [(method_name, (ids,))]
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+@pytest.mark.parametrize(
+	"json_mode",
+	[
+		pytest.param(False, id="human"),
+		pytest.param(True, id="json"),
+	],
+)
+def test_multi_id_write_failure_names_the_failing_id(
+	tmp_path: Path, monkeypatch, capsys, json_mode: bool
+) -> None:
+	failing_id = "tsk_" + "f" * 22
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_complete(self, task_ids: list[str]) -> None:
+			raise ProgressError(f"task {task_ids[-1]} failed")
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+	arguments = [
+		"task",
+		"complete",
+		"tsk_" + "a" * 22,
+		failing_id,
+		"--database",
+		str(tmp_path / "db"),
+	]
+	if json_mode:
+		arguments.append("--json")
+
+	assert cli.main(arguments) == 1
+
+	output = capsys.readouterr()
+	if json_mode:
+		assert output.err == ""
+		response = json.loads(output.out)
+		assert response["ok"] is False
+		assert failing_id in response["error"]["message"]
+	else:
+		assert output.out == ""
+		assert failing_id in _stderr_error_message(output.err)
+
+
 def test_task_add_prompts_for_required_and_optional_arguments(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -3701,6 +3810,88 @@ def test_human_chunk_complete_output_is_concise(
 	assert ("Task ID: tsk_parent", "muted", "normal") in render_spans
 	assert ("Next: progress next", "muted", "normal") in next_spans
 	assert "chk_test" not in output
+
+
+@pytest.mark.parametrize(
+	("arguments", "method_name", "expected_lines"),
+	[
+		(
+			["release", "remove", "rel_first", "rel_second"],
+			"release_remove",
+			["ID: rel_first", "ID: rel_second"],
+		),
+		(
+			["release", "complete", "rel_first", "rel_second"],
+			"release_complete",
+			["ID: rel_first", "ID: rel_second"],
+		),
+		(
+			["task", "remove", "tsk_first", "tsk_second"],
+			"task_remove",
+			["ID: tsk_first", "ID: tsk_second"],
+		),
+		(
+			["task", "complete", "tsk_first", "tsk_second"],
+			"task_complete",
+			["Completed task First", "Completed task Second"],
+		),
+		(
+			["chunk", "remove", "chk_first", "chk_second"],
+			"chunk_remove",
+			["ID: chk_first", "ID: chk_second"],
+		),
+		(
+			["chunk", "complete", "chk_first", "chk_second"],
+			"chunk_complete",
+			["Completed chunk First", "Completed chunk Second"],
+		),
+	],
+)
+def test_human_multi_id_writes_print_one_line_per_result(
+	tmp_path: Path,
+	monkeypatch,
+	capsys,
+	arguments: list[str],
+	method_name: str,
+	expected_lines: list[str],
+) -> None:
+	data = [
+		{"id": arguments[-2], "title": "First"},
+		{"id": arguments[-1], "title": "Second"},
+	]
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def __getattr__(self, name):
+			def handler(*positional_arguments, **keyword_arguments):
+				assert name == method_name
+				return data
+
+			return handler
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				*arguments,
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+
+	plain_lines = [
+		render_module._ANSI_ESCAPE_PATTERN.sub("", line)
+		for line in capsys.readouterr().out.splitlines()
+	]
+
+	assert len(plain_lines[1:-1]) == len(expected_lines)
+	for line, expected in zip(plain_lines[1:-1], expected_lines):
+		assert line.endswith(expected)
 
 
 def test_human_task_complete_output_omits_null_release_id(
