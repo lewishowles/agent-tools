@@ -15,3 +15,4 @@ A collection of independently installed command-line tools that make common agen
 ## Gotchas
 
 - Bare `pytest` and `ruff` are not on `PATH`. Run `uv run pytest packages/<package>` and `uv run ruff …` from the workspace root.
+- In examples, docs, and tests, `--json` is the last option: `agent-run list --json`. For commands that take a `--` separator it goes immediately before `--`, because everything after `--` belongs to the stored command: `agent-run add build --cwd tools --json -- ruff check`.

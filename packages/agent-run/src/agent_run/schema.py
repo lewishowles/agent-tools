@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 Migration = Callable[[sqlite3.Connection], None]
 
 
+class NewerSchemaError(RuntimeError):
+    """Report a database schema version newer than this release supports."""
+
+
 def _create_schema_migrations(connection: sqlite3.Connection) -> None:
     """Create the table that records which migrations have been applied."""
     connection.execute(
@@ -20,9 +24,25 @@ def _create_schema_migrations(connection: sqlite3.Connection) -> None:
     )
 
 
+def _create_commands(connection: sqlite3.Connection) -> None:
+    """Create the table that stores named commands for each repository."""
+    connection.execute(
+        """
+        CREATE TABLE commands (
+            repository_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            argv TEXT NOT NULL,
+            working_directory TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (repository_id, name)
+        )
+        """
+    )
+
+
 # Migrations in the order they run. A migration's version is its position,
 # starting at 1, so add new migrations to the end and never reorder them.
-MIGRATIONS: tuple[Migration, ...] = (_create_schema_migrations,)
+MIGRATIONS: tuple[Migration, ...] = (_create_schema_migrations, _create_commands)
 # Newest schema version this release understands.
 LATEST_SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -44,13 +64,13 @@ def current_version(connection: sqlite3.Connection) -> int:
 def migrate(connection: sqlite3.Connection) -> None:
     """Bring the database up to the latest schema, one transaction per migration.
 
-    Raises RuntimeError when the database is newer than this release, so an older
-    agent-run never writes to a schema it does not understand. A failed migration
-    is rolled back and not recorded.
+    Raises NewerSchemaError when the database is newer than this release, so an
+    older agent-run never writes to a schema it does not understand. A failed
+    migration is rolled back and not recorded.
     """
     version = current_version(connection)
     if version > LATEST_SCHEMA_VERSION:
-        raise RuntimeError(
+        raise NewerSchemaError(
             f"database schema version {version} is newer than supported version "
             f"{LATEST_SCHEMA_VERSION}"
         )

@@ -55,7 +55,26 @@ def test_database_migrations_are_idempotent(tmp_path: Path) -> None:
     finally:
         connection.close()
 
-    assert [row[0] for row in rows] == [schema.LATEST_SCHEMA_VERSION]
+    assert [row[0] for row in rows] == list(range(1, schema.LATEST_SCHEMA_VERSION + 1))
+
+
+def test_commands_table_is_created_by_second_migration(tmp_path: Path) -> None:
+    """The command migration creates the repository-scoped command table."""
+    database_path = tmp_path / "agent-run.db"
+
+    connection = connect_database(database_path)
+    try:
+        columns = connection.execute("PRAGMA table_info(commands)").fetchall()
+    finally:
+        connection.close()
+
+    assert [column[1] for column in columns] == [
+        "repository_id",
+        "name",
+        "argv",
+        "working_directory",
+        "created_at",
+    ]
 
 
 def test_newer_schema_version_raises_and_closes_connection(
@@ -85,7 +104,7 @@ def test_newer_schema_version_raises_and_closes_connection(
 
     monkeypatch.setattr(database.sqlite3, "connect", track_connection)
 
-    with pytest.raises(RuntimeError, match="newer than supported"):
+    with pytest.raises(schema.NewerSchemaError, match="newer than supported"):
         connect_database(database_path)
 
     assert len(opened_connections) == 1
