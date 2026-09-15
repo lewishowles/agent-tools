@@ -42,6 +42,8 @@ _RELEASE_STATUSES = frozenset({"planned", "active", "done"})
 _RELEASE_COLUMNS = (
 	"id, project_id, slug, title, overview, purpose, risks, status, position"
 )
+# Table holding the ordered items excluded from a release.
+_RELEASE_OUT_OF_SCOPE_TABLE = "release_out_of_scope"
 # Qualified chunk columns used by chunk write queries scoped to a task.
 _QUALIFIED_CHUNK_COLUMNS = (
 	"chunks.id, chunks.task_id, chunks.position, chunks.title, chunks.description, "
@@ -67,6 +69,9 @@ class WriteStore(_StoreBase):
 		slug: str,
 		title: str,
 		overview: str = "",
+		purpose: str | None = None,
+		risks: str | None = None,
+		out_of_scope: Sequence[str] | None = None,
 		status: str = "planned",
 		position: int | None = None,
 		path: str | Path | None = None,
@@ -75,6 +80,17 @@ class WriteStore(_StoreBase):
 		_require_text(slug, "release slug")
 		_require_text(title, "release title")
 		_require_text(overview, "release overview")
+		if purpose is not None:
+			if not isinstance(purpose, str):
+				raise ProgressError("release purpose must be text")
+			_require_text(purpose, "release purpose")
+		if risks is not None:
+			if not isinstance(risks, str):
+				raise ProgressError("release risks must be text")
+			_require_text(risks, "release risks")
+		out_of_scope_values = _normalise_ordered_values(
+			out_of_scope, "release out-of-scope"
+		)
 		if status not in _RELEASE_STATUSES:
 			raise InvalidStatusError(
 				f"unknown release status {status!r}",
@@ -103,8 +119,8 @@ class WriteStore(_StoreBase):
 						slug,
 						title,
 						overview,
-						None,
-						None,
+						purpose,
+						risks,
 						status,
 						release_position,
 					),
@@ -115,6 +131,7 @@ class WriteStore(_StoreBase):
 					{"slug": slug, "project_id": project.id},
 				) from error
 
+			_write_release_values(connection, release_id, out_of_scope_values)
 			row = connection.execute(
 				f"SELECT {_RELEASE_COLUMNS} FROM releases WHERE id = ?",
 				(release_id,),
@@ -192,23 +209,89 @@ class WriteStore(_StoreBase):
 		self,
 		release_id: str,
 		overview: str | None = None,
+		purpose: str | None = None,
+		risks: str | None = None,
+		out_of_scope: Sequence[str] | None = None,
+		clear_purpose: bool = False,
+		clear_risks: bool = False,
+		clear_out_of_scope: bool = False,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Update only the overview of a current-project release."""
+		"""Change a current-project release's overview, purpose, risks or out-of-scope list.
+
+		Fields left as None keep their stored value. A clear flag empties purpose, risks or
+		the out-of-scope list, and a new out-of-scope list replaces the stored one.
+		"""
 		validate_object_id(release_id, RELEASE_PREFIX)
-		if overview is None:
+
+		if clear_out_of_scope and out_of_scope is not None:
 			raise ProgressError(
-				"release edit requires --overview",
+				"release edit accepts either --out-of-scope or "
+				"--clear-out-of-scope, not both",
+				{"id": release_id, "field": "out_of_scope"},
+			)
+
+		out_of_scope_values: tuple[str, ...] | None = None
+		if out_of_scope is not None:
+			out_of_scope_values = _normalise_ordered_values(
+				out_of_scope, "release out-of-scope"
+			)
+		if clear_out_of_scope:
+			out_of_scope_values = ()
+
+		values = {
+			"overview": overview,
+			"purpose": purpose,
+			"risks": risks,
+		}
+		clear_fields = {
+			"purpose": clear_purpose,
+			"risks": clear_risks,
+		}
+		if (
+			not any(
+				value is not None or clear_fields.get(field, False)
+				for field, value in values.items()
+			)
+			and out_of_scope_values is None
+		):
+			raise ProgressError(
+				"release edit requires at least one field",
 				{"id": release_id},
 			)
-		if not isinstance(overview, str):
-			raise ProgressError(
-				"release overview must be text",
-				{"id": release_id, "field": "overview"},
-			)
-		_require_text(overview, "release overview")
+
+		for field, value in values.items():
+			if clear_fields.get(field, False) and value is not None:
+				raise ProgressError(
+					f"release edit accepts either --{field.replace('_', '-')} or "
+					f"--clear-{field.replace('_', '-')}, not both",
+					{"id": release_id, "field": field},
+				)
+
+			if value is not None and not isinstance(value, str):
+				raise ProgressError(
+					f"release {field} must be text",
+					{"id": release_id, "field": field},
+				)
+			if value is not None:
+				_require_text(value, f"release {field}")
 
 		project = self.current_project(path)
+		updates = []
+		parameters: list[object] = []
+		for field, value in values.items():
+			if value is None and not clear_fields.get(field, False):
+				continue
+
+			if clear_fields.get(field, False):
+				value = None
+
+			updates.append(f"{field} = ?")
+			parameters.append(value)
+
+		only_overview_changes = (
+			updates == ["overview = ?"] and out_of_scope_values is None
+		)
 
 		with self.database.transaction() as connection:
 			release = connection.execute(
@@ -220,16 +303,19 @@ class WriteStore(_StoreBase):
 				raise NotFoundError(
 					f"release {release_id} was not found", {"id": release_id}
 				)
-			if release["overview"] == overview:
+			if only_overview_changes and release["overview"] == overview:
 				raise ProgressError(
 					f"release {release_id} overview is already unchanged",
 					{"id": release_id},
 				)
 
-			connection.execute(
-				"UPDATE releases SET overview = ? WHERE id = ?",
-				(overview, release_id),
-			)
+			if updates:
+				connection.execute(
+					f"UPDATE releases SET {', '.join(updates)} WHERE id = ?",
+					(*parameters, release_id),
+				)
+			if out_of_scope_values is not None:
+				_write_release_values(connection, release_id, out_of_scope_values)
 			return Release.from_row(
 				connection.execute(
 					f"SELECT {_RELEASE_COLUMNS} FROM releases WHERE id = ?",
@@ -319,10 +405,10 @@ class WriteStore(_StoreBase):
 		_require_text(title, "task title")
 		_require_text(overview, "task overview")
 		_require_text(purpose, "task purpose")
-		contract_steps = _normalise_task_values(
+		contract_steps = _normalise_ordered_values(
 			contract, "task contract", required=True
 		)
-		file_paths = _normalise_task_values(files, "task file")
+		file_paths = _normalise_ordered_values(files, "task file")
 		if split_rationale is not None:
 			_require_text(split_rationale, "task split rationale")
 		dependency_ids = _normalise_dependencies(depends_on)
@@ -582,11 +668,11 @@ class WriteStore(_StoreBase):
 
 		list_values: dict[str, tuple[str, ...]] = {}
 		if contract is not None:
-			list_values["contract"] = _normalise_task_values(
+			list_values["contract"] = _normalise_ordered_values(
 				contract, "task contract", required=True
 			)
 		if files is not None:
-			list_values["files"] = _normalise_task_values(files, "task file")
+			list_values["files"] = _normalise_ordered_values(files, "task file")
 
 		values = {
 			"overview": overview,
@@ -631,7 +717,7 @@ class WriteStore(_StoreBase):
 					{"id": task_id, "field": field},
 				)
 
-			# _normalise_task_values has already checked contract and files, and they hold
+			# _normalise_ordered_values has already checked contract and files, and they hold
 			# lists rather than text, so the text checks below would reject them.
 			if field in list_values:
 				continue
@@ -1959,13 +2045,13 @@ def _unblock_task(
 	)
 
 
-def _normalise_task_values(
+def _normalise_ordered_values(
 	value: Sequence[str] | None,
 	label: str,
 	*,
 	required: bool = False,
 ) -> tuple[str, ...]:
-	"""Turn a task's contract or files input into an ordered tuple of non-empty text.
+	"""Turn an ordered list input into a tuple of non-empty text.
 
 	Set required to reject an empty result the way a missing required field is rejected.
 	"""
@@ -1993,13 +2079,40 @@ def _write_task_values(
 	task_id: str,
 	values: Sequence[str],
 ) -> None:
-	"""Replace one task's stored contract steps or files, numbering them from one."""
-	table = _TASK_LIST_TABLES[field]
-	connection.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
+	"""Replace one task's stored contract steps or files."""
+	_write_ordered_values(
+		connection, _TASK_LIST_TABLES[field], "task_id", task_id, values
+	)
+
+
+def _write_release_values(
+	connection: sqlite3.Connection,
+	release_id: str,
+	values: Sequence[str],
+) -> None:
+	"""Replace one release's stored out-of-scope items."""
+	_write_ordered_values(
+		connection, _RELEASE_OUT_OF_SCOPE_TABLE, "release_id", release_id, values
+	)
+
+
+def _write_ordered_values(
+	connection: sqlite3.Connection,
+	table: str,
+	owner_column: str,
+	owner_id: str,
+	values: Sequence[str],
+) -> None:
+	"""Replace the ordered text rows one task or release owns, numbering them from one.
+
+	The table and owner column go straight into the SQL, so callers pass fixed names
+	from this module and never user input.
+	"""
+	connection.execute(f"DELETE FROM {table} WHERE {owner_column} = ?", (owner_id,))
 	for position, text in enumerate(values, start=1):
 		connection.execute(
-			f"INSERT INTO {table} (task_id, position, text) VALUES (?, ?, ?)",
-			(task_id, position, text),
+			f"INSERT INTO {table} ({owner_column}, position, text) VALUES (?, ?, ?)",
+			(owner_id, position, text),
 		)
 
 

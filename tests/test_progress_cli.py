@@ -694,6 +694,141 @@ def test_write_commands_dispatch_to_the_matching_store_method(
 
 
 @pytest.mark.parametrize(
+	("arguments", "method_name", "expected_arguments", "expected_keywords"),
+	[
+		(
+			[
+				"release",
+				"add",
+				"--slug",
+				"release",
+				"--title",
+				"Release",
+				"--overview",
+				"Overview",
+				"--purpose",
+				"Purpose",
+				"--risks",
+				"Risks",
+				"--out-of-scope",
+				"First",
+				"--out-of-scope",
+				"Second",
+			],
+			"release_add",
+			(),
+			{
+				"slug": "release",
+				"title": "Release",
+				"overview": "Overview",
+				"purpose": "Purpose",
+				"risks": "Risks",
+				"out_of_scope": ["First", "Second"],
+				"status": "planned",
+				"position": None,
+			},
+		),
+		(
+			[
+				"release",
+				"edit",
+				"rel_" + "r" * 22,
+				"--purpose",
+				"Updated purpose",
+				"--risks",
+				"Updated risks",
+				"--out-of-scope",
+				"Replacement",
+				"--out-of-scope",
+				"Second replacement",
+			],
+			"release_edit",
+			("rel_" + "r" * 22,),
+			{
+				"overview": None,
+				"purpose": "Updated purpose",
+				"risks": "Updated risks",
+				"out_of_scope": ["Replacement", "Second replacement"],
+				"clear_purpose": False,
+				"clear_risks": False,
+				"clear_out_of_scope": False,
+			},
+		),
+		(
+			[
+				"release",
+				"edit",
+				"rel_" + "r" * 22,
+				"--purpose",
+				"Updated purpose",
+			],
+			"release_edit",
+			("rel_" + "r" * 22,),
+			{
+				"overview": None,
+				"purpose": "Updated purpose",
+				"risks": None,
+				"out_of_scope": None,
+				"clear_purpose": False,
+				"clear_risks": False,
+				"clear_out_of_scope": False,
+			},
+		),
+		(
+			[
+				"release",
+				"edit",
+				"rel_" + "r" * 22,
+				"--clear-purpose",
+				"--clear-risks",
+				"--clear-out-of-scope",
+			],
+			"release_edit",
+			("rel_" + "r" * 22,),
+			{
+				"overview": None,
+				"purpose": None,
+				"risks": None,
+				"out_of_scope": None,
+				"clear_purpose": True,
+				"clear_risks": True,
+				"clear_out_of_scope": True,
+			},
+		),
+	],
+)
+def test_release_planning_options_dispatch_with_their_values(
+	tmp_path: Path,
+	monkeypatch,
+	capsys,
+	arguments: list[str],
+	method_name: str,
+	expected_arguments: tuple[str, ...],
+	expected_keywords: dict[str, object],
+) -> None:
+	data = {"id": "obj_test"}
+	calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def __getattr__(self, name):
+			def handler(*positional_arguments, **keyword_arguments):
+				calls.append((name, positional_arguments, keyword_arguments))
+				return data
+
+			return handler
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert cli.main([*arguments, "--database", str(tmp_path / "db"), "--json"]) == 0
+
+	assert calls == [(method_name, expected_arguments, expected_keywords)]
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+@pytest.mark.parametrize(
 	("arguments", "method_name"),
 	[
 		(

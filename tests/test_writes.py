@@ -163,6 +163,48 @@ def test_release_add_rejects_a_blank_overview(tmp_path: Path, overview: str) -> 
 	assert releases["items"] == []
 
 
+@pytest.mark.parametrize("risks", ["", " \t"])
+def test_release_add_rejects_blank_risks(tmp_path: Path, risks: str) -> None:
+	store = _seed_store(tmp_path)
+
+	with pytest.raises(ProgressError, match="release risks"):
+		store.release_add("release", "Release", overview="Overview", risks=risks)
+
+	releases = ReadStore(store.database, _ProjectStore(store.database)).release_list()
+
+	assert releases["items"] == []
+
+
+def test_release_add_stores_planning_fields_and_out_of_scope_in_order(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+
+	release = store.release_add(
+		"release",
+		"Release",
+		overview="Release overview",
+		purpose="Release purpose",
+		risks="Release risks",
+		out_of_scope=["First item", "Second item"],
+	)
+
+	assert release["purpose"] == "Release purpose"
+	assert release["risks"] == "Release risks"
+
+	with store.database.connection() as connection:
+		out_of_scope = connection.execute(
+			"SELECT position, text FROM release_out_of_scope "
+			"WHERE release_id = ? ORDER BY position",
+			(release["id"],),
+		).fetchall()
+
+	assert [(row["position"], row["text"]) for row in out_of_scope] == [
+		(1, "First item"),
+		(2, "Second item"),
+	]
+
+
 @pytest.mark.parametrize(
 	"arguments",
 	[
@@ -2046,6 +2088,119 @@ def test_release_edit_updates_only_overview_and_preserves_task_references(
 	assert release_ids == [release["id"]] * 17
 
 
+def test_release_edit_replaces_out_of_scope_and_updates_planning_fields(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add(
+		"release",
+		"Release",
+		overview="Overview",
+		purpose="Original purpose",
+		risks="Original risks",
+		out_of_scope=["Original item", "Removed item"],
+	)
+
+	updated = store.release_edit(
+		release["id"],
+		purpose="Updated purpose",
+		risks="Updated risks",
+		out_of_scope=["Replacement item", "Second replacement"],
+	)
+
+	assert updated["purpose"] == "Updated purpose"
+	assert updated["risks"] == "Updated risks"
+
+	with store.database.connection() as connection:
+		out_of_scope = connection.execute(
+			"SELECT position, text FROM release_out_of_scope "
+			"WHERE release_id = ? ORDER BY position",
+			(release["id"],),
+		).fetchall()
+
+	assert [(row["position"], row["text"]) for row in out_of_scope] == [
+		(1, "Replacement item"),
+		(2, "Second replacement"),
+	]
+
+
+def test_release_edit_omits_out_of_scope_and_preserves_existing_items(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add(
+		"release",
+		"Release",
+		overview="Overview",
+		out_of_scope=["Kept item", "Another kept item"],
+	)
+
+	store.release_edit(release["id"], purpose="New purpose")
+
+	with store.database.connection() as connection:
+		out_of_scope = connection.execute(
+			"SELECT position, text FROM release_out_of_scope "
+			"WHERE release_id = ? ORDER BY position",
+			(release["id"],),
+		).fetchall()
+
+	assert [row["text"] for row in out_of_scope] == [
+		"Kept item",
+		"Another kept item",
+	]
+
+
+def test_release_edit_clears_purpose_risks_and_out_of_scope(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add(
+		"release",
+		"Release",
+		overview="Overview",
+		purpose="Purpose",
+		risks="Risks",
+		out_of_scope=["Item to clear"],
+	)
+
+	cleared = store.release_edit(
+		release["id"],
+		clear_purpose=True,
+		clear_risks=True,
+		clear_out_of_scope=True,
+	)
+
+	assert cleared["purpose"] is None
+	assert cleared["risks"] is None
+
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM release_out_of_scope WHERE release_id = ?",
+				(release["id"],),
+			).fetchone()
+			is None
+		)
+
+
+@pytest.mark.parametrize(
+	("field", "value", "clear_field"),
+	[
+		pytest.param("purpose", "Purpose", "clear_purpose", id="purpose"),
+		pytest.param("risks", "Risks", "clear_risks", id="risks"),
+		pytest.param("out_of_scope", ["Item"], "clear_out_of_scope", id="out-of-scope"),
+	],
+)
+def test_release_edit_rejects_value_and_clear_flag(
+	tmp_path: Path, field: str, value: str | list[str], clear_field: str
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Overview")
+
+	with pytest.raises(ProgressError, match="either"):
+		store.release_edit(release["id"], **{field: value, clear_field: True})
+
+
 @pytest.mark.parametrize("overview", ["", " \t"])
 def test_release_edit_rejects_blank_overview(tmp_path: Path, overview: str) -> None:
 	store = _seed_store(tmp_path)
@@ -2061,6 +2216,15 @@ def test_release_edit_rejects_an_unchanged_overview(tmp_path: Path) -> None:
 
 	with pytest.raises(ProgressError, match="already unchanged"):
 		store.release_edit(release["id"], overview="Overview")
+
+
+@pytest.mark.parametrize("risks", ["", " \t"])
+def test_release_edit_rejects_blank_risks(tmp_path: Path, risks: str) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Overview")
+
+	with pytest.raises(ProgressError, match="release risks"):
+		store.release_edit(release["id"], risks=risks)
 
 
 def test_release_edit_requires_one_overview_input(tmp_path: Path) -> None:
