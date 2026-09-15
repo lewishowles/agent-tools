@@ -4,6 +4,13 @@ All notable changes to `progress` are documented here. The format is based on [K
 
 ## [Unreleased]
 
+### Added
+
+- `release remove --force` removes every task in a release, its owned rows,
+  release-owned notes, and out-of-scope entries in one transaction.
+- `task remove --force` removes a task and its owned rows, and makes dependants
+  ready when they have no remaining unfinished dependencies.
+
 ### Changed
 
 - Breaking: abbreviated flags no longer work anywhere in the CLI.

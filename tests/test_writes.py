@@ -1039,8 +1039,9 @@ def test_remove_rejects_every_referenced_parent_row(tmp_path: Path) -> None:
 	discovery = store.discovery_add(task["id"], "Discovery")
 	decision = store.decision_add(task["id"], "Decision")
 
-	with pytest.raises(StillReferencedError, match=task["id"]):
+	with pytest.raises(StillReferencedError, match=task["id"]) as release_error:
 		store.release_remove(release["id"])
+	assert "pass --force" in str(release_error.value)
 
 	with pytest.raises(StillReferencedError) as error:
 		store.task_remove(task["id"])
@@ -1061,6 +1062,233 @@ def test_remove_rejects_every_referenced_parent_row(tmp_path: Path) -> None:
 		assert (
 			connection.execute(
 				"SELECT 1 FROM tasks WHERE id = ?", (task["id"],)
+			).fetchone()
+			is not None
+		)
+
+	assert "pass --force" in str(error.value)
+
+
+def test_task_remove_force_deletes_owned_rows_and_unblocks_dependants(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	dependency = _add_task(store, "dependency", "Dependency")
+	task = _add_task(
+		store,
+		"task",
+		"Task",
+		contract=["Task contract"],
+		files=["src/task.py"],
+		depends_on=[dependency["id"]],
+	)
+	dependent = _add_task(store, "dependent", "Dependent", depends_on=[task["id"]])
+	chunk = _add_chunk(store, task["id"], "Chunk")
+	discovery = store.discovery_add(task["id"], "Discovery")
+	decision = store.decision_add(task["id"], "Decision")
+
+	result = store.task_remove(task["id"], force=True)
+
+	assert result["id"] == task["id"]
+	assert set(result["deleted"]) == {
+		"chunks",
+		"notes",
+		"dependencies",
+		"tasks",
+		"out_of_scope",
+	}
+	assert result["deleted"]["chunks"] == [chunk["id"]]
+	assert set(result["deleted"]["notes"]) == {discovery["id"], decision["id"]}
+	assert set(result["deleted"]["dependencies"]) == {
+		f"{task['id']} -> {dependency['id']}",
+		f"{dependent['id']} -> {task['id']}",
+	}
+	assert result["deleted"]["tasks"] == [task["id"]]
+	assert result["deleted"]["out_of_scope"] == []
+	assert result["unblocked_tasks"] == [dependent["id"]]
+
+	dependent_after = ReadStore(store.database, _ProjectStore(store.database)).task_get(
+		dependent["id"]
+	)
+	assert dependent_after["status"] == "ready"
+	assert dependent_after["status_reason"] is None
+
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM tasks WHERE id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+		assert (
+			connection.execute(
+				"SELECT 1 FROM chunks WHERE id = ?", (chunk["id"],)
+			).fetchone()
+			is None
+		)
+		assert (
+			connection.execute(
+				"SELECT 1 FROM notes WHERE id IN (?, ?)",
+				(discovery["id"], decision["id"]),
+			).fetchone()
+			is None
+		)
+
+
+def test_release_remove_force_deletes_tasks_release_rows_and_out_of_scope(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Release overview")
+	first_task = _add_task(store, "first-task", "First task", release_id=release["id"])
+	second_task = _add_task(
+		store,
+		"second-task",
+		"Second task",
+		release_id=release["id"],
+		depends_on=[first_task["id"]],
+	)
+	chunk = _add_chunk(store, first_task["id"], "Chunk")
+	task_note = store.discovery_add(first_task["id"], "Task note")
+	release_note_id = "nte_" + "r" * 22
+	with store.database.transaction() as connection:
+		connection.execute(
+			"""
+			INSERT INTO notes (
+				id, project_id, task_id, release_id, type, body, supersedes_id, created_at
+			) VALUES (?, ?, NULL, ?, 'decision', ?, NULL, ?)
+			""",
+			(
+				release_note_id,
+				PROJECT_ID,
+				release["id"],
+				"Release note",
+				"2026-01-01T00:00:00+00:00",
+			),
+		)
+		connection.execute(
+			"INSERT INTO release_out_of_scope (release_id, position, text) VALUES (?, ?, ?)",
+			(release["id"], 1, "Out of scope"),
+		)
+
+	result = store.release_remove(release["id"], force=True)
+
+	assert result["id"] == release["id"]
+	assert set(result["deleted"]["tasks"]) == {
+		first_task["id"],
+		second_task["id"],
+	}
+	assert result["deleted"]["chunks"] == [chunk["id"]]
+	assert set(result["deleted"]["notes"]) == {
+		task_note["id"],
+		release_note_id,
+	}
+	assert result["deleted"]["dependencies"] == [
+		f"{second_task['id']} -> {first_task['id']}"
+	]
+	assert result["deleted"]["out_of_scope"] == ["Out of scope"]
+	assert result["unblocked_tasks"] == []
+
+	with store.database.connection() as connection:
+		for table in ("releases", "tasks", "chunks", "notes"):
+			assert (
+				connection.execute(
+					f"SELECT 1 FROM {table} WHERE id IN (?, ?, ?, ?)",
+					(
+						release["id"],
+						first_task["id"],
+						second_task["id"],
+						chunk["id"],
+					),
+				).fetchone()
+				is None
+			)
+		assert (
+			connection.execute(
+				"SELECT 1 FROM release_out_of_scope WHERE release_id = ?",
+				(release["id"],),
+			).fetchone()
+			is None
+		)
+		for note_id in (task_note["id"], release_note_id):
+			assert (
+				connection.execute(
+					"SELECT 1 FROM notes WHERE id = ?", (note_id,)
+				).fetchone()
+				is None
+			)
+
+
+def test_release_remove_force_does_not_report_deleted_dependants_as_unblocked(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Release overview")
+	first_task = _add_task(store, "first-task", "First task", release_id=release["id"])
+	second_task = _add_task(
+		store, "second-task", "Second task", release_id=release["id"]
+	)
+	ordered_task_ids = sorted((first_task["id"], second_task["id"]))
+	store.task_dependency_add(ordered_task_ids[1], ordered_task_ids[0])
+
+	result = store.release_remove(release["id"], force=True)
+
+	assert ordered_task_ids[1] in result["deleted"]["tasks"]
+	assert ordered_task_ids[1] not in result["unblocked_tasks"]
+
+
+def test_force_remove_rolls_back_when_a_later_id_fails(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "task", "Task")
+	chunk = _add_chunk(store, task["id"], "Chunk")
+	failing_id = "tsk_" + "m" * 22
+
+	with pytest.raises(NotFoundError, match=failing_id):
+		store.task_remove([task["id"], failing_id], force=True)
+
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM chunks WHERE id = ?", (chunk["id"],)
+			).fetchone()
+			is not None
+		)
+		assert (
+			connection.execute(
+				"SELECT 1 FROM tasks WHERE id = ?", (task["id"],)
+			).fetchone()
+			is not None
+		)
+
+
+def test_task_remove_force_refuses_notes_superseded_outside_the_cascade(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "task", "Task")
+	other_task = _add_task(store, "other-task", "Other task")
+	note = store.discovery_add(task["id"], "Task note")
+	outside_note = store.decision_add(
+		other_task["id"],
+		"Outside note",
+		supersedes_id=note["id"],
+	)
+
+	with pytest.raises(StillReferencedError) as error:
+		store.task_remove(task["id"], force=True)
+
+	assert "remove the superseding note first" in str(error.value)
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM tasks WHERE id = ?", (task["id"],)
+			).fetchone()
+			is not None
+		)
+		assert (
+			connection.execute(
+				"SELECT 1 FROM notes WHERE id IN (?, ?)",
+				(note["id"], outside_note["id"]),
 			).fetchone()
 			is not None
 		)

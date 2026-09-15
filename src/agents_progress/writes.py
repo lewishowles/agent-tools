@@ -126,6 +126,7 @@ class WriteStore(_StoreBase):
 		self,
 		release_id: str | Sequence[str],
 		path: str | Path | None = None,
+		force: bool = False,
 	) -> dict[str, object] | list[dict[str, object]]:
 		"""Remove one or more current-project releases in input order."""
 		release_ids, multiple = _normalise_write_ids(release_id, "release")
@@ -133,7 +134,7 @@ class WriteStore(_StoreBase):
 
 		with self.database.transaction() as connection:
 			results = [
-				_remove_release(connection, identifier, project.id)
+				_remove_release(connection, identifier, project.id, force=force)
 				for identifier in release_ids
 			]
 
@@ -422,6 +423,7 @@ class WriteStore(_StoreBase):
 		self,
 		task_id: str | Sequence[str],
 		path: str | Path | None = None,
+		force: bool = False,
 	) -> dict[str, object] | list[dict[str, object]]:
 		"""Remove one or more current-project tasks in input order."""
 		task_ids, multiple = _normalise_write_ids(task_id, "task")
@@ -429,7 +431,7 @@ class WriteStore(_StoreBase):
 
 		with self.database.transaction() as connection:
 			results = [
-				_remove_task(connection, identifier, project.id)
+				_remove_task(connection, identifier, project.id, force=force)
 				for identifier in task_ids
 			]
 
@@ -485,7 +487,7 @@ class WriteStore(_StoreBase):
 						(task_id, task_id),
 					)
 
-				_delete_task_notes(
+				_delete_notes(
 					connection,
 					[note for candidate in targets for note in candidate["notes"]],
 				)
@@ -1466,9 +1468,18 @@ def _normalise_write_ids(
 
 
 def _remove_release(
-	connection: sqlite3.Connection, release_id: str, project_id: str
+	connection: sqlite3.Connection,
+	release_id: str,
+	project_id: str,
+	*,
+	force: bool = False,
 ) -> dict[str, object]:
-	"""Remove one release when no task still uses it."""
+	"""Remove one release.
+
+	Without ``force`` the release must own no tasks. With ``force`` every task
+	in the release is force-removed first, then release-owned notes and
+	out-of-scope entries, and the result lists what was deleted by type.
+	"""
 	validate_object_id(release_id, RELEASE_PREFIX)
 	release = connection.execute(
 		"SELECT 1 FROM releases WHERE id = ? AND project_id = ?",
@@ -1486,10 +1497,72 @@ def _remove_release(
 		).fetchall()
 	]
 
-	_raise_if_referenced("release", release_id, {"tasks": task_ids} if task_ids else {})
+	if not force:
+		_raise_if_referenced(
+			"release",
+			release_id,
+			{"tasks": task_ids} if task_ids else {},
+			hint="pass --force to remove it with everything it owns",
+		)
+		connection.execute("DELETE FROM releases WHERE id = ?", (release_id,))
+
+		return {"id": release_id}
+
+	# Collect every row deleted by the forced removal, including release notes and
+	# out-of-scope entries added after the task loop.
+	deleted = {
+		"chunks": [],
+		"notes": [],
+		"dependencies": [],
+		"tasks": [],
+		"out_of_scope": [],
+	}
+
+	# Tasks made ready by removing the release's tasks, merged across all of them.
+	unblocked_tasks = []
+
+	for task_id in task_ids:
+		task_result = _remove_task(connection, task_id, project_id, force=True)
+		task_deleted = task_result["deleted"]
+		for record_type in deleted:
+			deleted[record_type].extend(task_deleted[record_type])
+
+		unblocked_tasks.extend(
+			unblocked_task_id
+			for unblocked_task_id in task_result["unblocked_tasks"]
+			if unblocked_task_id not in task_ids
+		)
+
+	release_notes = connection.execute(
+		f"""
+		SELECT {_NOTE_COLUMNS}
+		FROM notes
+		WHERE project_id = ? AND release_id = ?
+		ORDER BY created_at, id
+		""",
+		(project_id, release_id),
+	).fetchall()
+	_delete_notes(connection, release_notes)
+	deleted["notes"].extend(note["id"] for note in release_notes)
+
+	out_of_scope = [
+		row["text"]
+		for row in connection.execute(
+			"SELECT text FROM release_out_of_scope WHERE release_id = ? ORDER BY position",
+			(release_id,),
+		).fetchall()
+	]
+	connection.execute(
+		"DELETE FROM release_out_of_scope WHERE release_id = ?", (release_id,)
+	)
+	deleted["out_of_scope"].extend(out_of_scope)
 	connection.execute("DELETE FROM releases WHERE id = ?", (release_id,))
 
-	return {"id": release_id}
+	return {
+		"id": release_id,
+		"deleted": deleted,
+		"unblocked_tasks": unblocked_tasks,
+	}
 
 
 def _complete_release(
@@ -1521,9 +1594,18 @@ def _complete_release(
 
 
 def _remove_task(
-	connection: sqlite3.Connection, task_id: str, project_id: str
+	connection: sqlite3.Connection,
+	task_id: str,
+	project_id: str,
+	*,
+	force: bool = False,
 ) -> dict[str, object]:
-	"""Remove one task when no child row still uses it."""
+	"""Remove one task.
+
+	Without ``force`` the task must own no chunks, notes, or dependency edges.
+	With ``force`` those rows are deleted with the task, and any task that was
+	blocked only by it becomes ready, as it would on completion.
+	"""
 	validate_object_id(task_id, TASK_PREFIX)
 	task = _task_row(connection, task_id, project_id)
 
@@ -1567,11 +1649,69 @@ def _remove_task(
 	if note_ids:
 		references["notes"] = note_ids
 
-	_raise_if_referenced("task", task_id, references)
+	if not force:
+		_raise_if_referenced(
+			"task",
+			task_id,
+			references,
+			hint="pass --force to remove it with everything it owns",
+		)
+		_delete_task_values(connection, task_id)
+		connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+		return {"id": task_id}
+
+	# Deleted records grouped by type; out_of_scope stays empty here so the
+	# release cascade can merge task results into one shape.
+	deleted = {
+		"chunks": chunk_ids,
+		"notes": note_ids,
+		"dependencies": dependency_edges,
+		"tasks": [task_id],
+		"out_of_scope": [],
+	}
+
+	# Read dependants before the edges are deleted; they are unblocked below.
+	dependent_task_ids = [
+		row["task_id"]
+		for row in connection.execute(
+			"""
+			SELECT task_id
+			FROM task_dependencies
+			WHERE depends_on_task_id = ?
+			ORDER BY task_id
+			""",
+			(task_id,),
+		).fetchall()
+	]
+
+	connection.execute("DELETE FROM chunks WHERE task_id = ?", (task_id,))
+
+	task_notes = _task_notes(connection, task_id, project_id)
+	_delete_notes(connection, task_notes)
+	connection.execute(
+		"DELETE FROM task_dependencies WHERE task_id = ? OR depends_on_task_id = ?",
+		(task_id, task_id),
+	)
 	_delete_task_values(connection, task_id)
 	connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
-	return {"id": task_id}
+	# Dependants that became ready, reported so the user can see them.
+	unblocked_tasks = []
+
+	for dependent_task_id in dependent_task_ids:
+		dependent_task = _task_row(connection, dependent_task_id, project_id)
+		if dependent_task is None or dependent_task["status"] != "blocked":
+			continue
+		if not _unresolved_dependencies(connection, dependent_task_id):
+			_unblock_task(connection, dependent_task_id, project_id)
+			unblocked_tasks.append(dependent_task_id)
+
+	return {
+		"id": task_id,
+		"deleted": deleted,
+		"unblocked_tasks": unblocked_tasks,
+	}
 
 
 def _complete_task(
@@ -1761,10 +1901,8 @@ def _clean_blocked_task(candidate: dict[str, object]) -> dict[str, object]:
 	}
 
 
-def _delete_task_notes(
-	connection: sqlite3.Connection, notes: list[sqlite3.Row]
-) -> None:
-	"""Delete selected notes from leaves upward without breaking supersession links."""
+def _delete_notes(connection: sqlite3.Connection, notes: list[sqlite3.Row]) -> None:
+	"""Delete selected task or release notes from leaves upward without breaking supersession links."""
 	pending = {note["id"]: note for note in notes}
 	while pending:
 		pending_ids = tuple(pending)
@@ -1780,6 +1918,7 @@ def _delete_task_notes(
 				"note",
 				next(iter(pending)),
 				{"notes": [row["id"] for row in superseding_rows]},
+				hint="remove the superseding note first",
 			)
 
 		for note_type in ("discovery", "decision"):
@@ -1880,8 +2019,12 @@ def _raise_if_referenced(
 	object_type: str,
 	object_id: str,
 	references: dict[str, list[str]],
+	hint: str | None = None,
 ) -> None:
-	"""Reject a delete while naming every row that still references the object."""
+	"""Reject a delete while naming every row that still references the object.
+
+	``hint`` is appended to the message to tell the user how to proceed.
+	"""
 	if not references:
 		return
 
@@ -1891,8 +2034,12 @@ def _raise_if_referenced(
 
 	children = [child for values in references.values() for child in values]
 
+	message = f"{object_type} {object_id} is still referenced by {reference_text}"
+	if hint:
+		message += f"; {hint}"
+
 	raise StillReferencedError(
-		f"{object_type} {object_id} is still referenced by {reference_text}",
+		message,
 		{"id": object_id, "references": references, "children": children},
 	)
 

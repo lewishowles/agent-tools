@@ -148,14 +148,18 @@ See [Listing](#listing) for pagination details.
 Remove a release:
 
 ```text
-progress release remove <release_id>... [--json] [--database <path>]
+progress release remove <release_id>... [--force] [--json] [--database <path>]
 ```
 
 Pass one or more release IDs. They are removed in the order given in one
 transaction, so a failure names the failing ID and rolls back every removal.
-Removal is a hard delete. It raises `StillReferencedError` when any task still
-refers to a release, and the error names the blocking task IDs. Deletion never
-cascades to tasks. Remove or move every referencing task before retrying.
+Without `--force`, removal is a hard delete that raises
+`StillReferencedError` when any task still refers to a release. The error names
+the blocking task IDs and suggests `--force`. With `--force`, every task in the
+release is removed with its chunks, notes, dependency edges, contract and file
+rows, followed by the release's notes and out-of-scope entries. The human
+output lists the deleted records grouped by type. Forced removal does not ask
+for confirmation.
 
 ### `progress release rename`
 
@@ -301,21 +305,24 @@ progress task dependency remove <task_id> <depends_on_task_id> [--json] [--datab
 Remove a task:
 
 ```text
-progress task remove <task_id>... [--json] [--database <path>]
+progress task remove <task_id>... [--force] [--json] [--database <path>]
 ```
 
 Pass one or more task IDs. They are removed in the order given in one
 transaction, so a failure names the failing ID and rolls back every removal.
-Removal is a hard delete and raises `StillReferencedError` when any of these
-still refer to the task:
+Without `--force`, removal is a hard delete and raises `StillReferencedError`
+when any of these still refer to the task:
 
 - a chunk
 - a dependency edge where the task is either the dependent or the dependency
 - a discovery or decision note
 
-The error names every blocking child ID. The operation is atomic, and deletion
-never cascades to chunks, notes, or dependency edges. Remove every child row,
-note, and dependency edge explicitly before retrying.
+The error names every blocking child ID and suggests `--force`. With
+`--force`, the task is removed with its chunks, notes, dependency edges,
+contract and file rows. Dependants blocked only by the removed task become
+ready. The human output lists the deleted records grouped by type.
+The `--force` option still refuses to remove a task note that is superseded by
+a note outside the cascade, so the superseding note must be removed first.
 
 ### `progress task clean`
 
@@ -683,18 +690,20 @@ The release, task and chunk remove and complete commands accept one or more
 space-separated IDs. Each command applies IDs in input order in one transaction,
 and a failure names the failing ID before rolling back the whole command.
 
-All remove commands use hard deletion and preserve referential integrity. No
-remove command cascades to related rows. A removal that would orphan a child is
-rejected before deletion, and the whole operation is rolled back.
+Without `--force`, all remove commands use hard deletion and preserve
+referential integrity. A removal that would orphan a child is rejected before
+deletion, and the whole operation is rolled back. `release remove --force` and
+`task remove --force` delete the related rows described in their command
+sections, still in one transaction.
 
-| Command                                                 | Rejected when                                        | Blocking IDs named in the error                  |
-| ------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------ |
-| `release remove <release_id>...`                        | A task refers to the release                         | Referencing task IDs                             |
-| `task remove <task_id>...`                              | A chunk, dependency edge, or note refers to the task | Referencing chunk, task, dependency, or note IDs |
-| `chunk remove <chunk_id>...`                            | Never; chunks have no referencing rows               | None                                             |
-| `discovery remove <note_id>`                            | Another note supersedes the note                     | Superseding note IDs                             |
-| `decision remove <note_id>`                             | Another note supersedes the note                     | Superseding note IDs                             |
-| `task dependency remove <task_id> <depends_on_task_id>` | Never; removing an edge has no children              | None                                             |
+| Command                                                 | Rejected when                                                           | Blocking IDs named in the error                  |
+| ------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------ |
+| `release remove <release_id>...`                        | Without `--force`, a task refers to the release                         | Referencing task IDs                             |
+| `task remove <task_id>...`                              | Without `--force`, a chunk, dependency edge, or note refers to the task | Referencing chunk, task, dependency, or note IDs |
+| `chunk remove <chunk_id>...`                            | Never; chunks have no referencing rows                                  | None                                             |
+| `discovery remove <note_id>`                            | Another note supersedes the note                                        | Superseding note IDs                             |
+| `decision remove <note_id>`                             | Another note supersedes the note                                        | Superseding note IDs                             |
+| `task dependency remove <task_id> <depends_on_task_id>` | Never; removing an edge has no children                                 | None                                             |
 
 With `--json`, these failures use the CLI's stable machine-readable error
 envelope. Without it, the same reason and blocking IDs are shown in the

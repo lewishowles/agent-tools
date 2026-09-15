@@ -346,7 +346,10 @@ _COMMAND_SPECS = (
 			_CommandSpec(
 				"remove",
 				"remove one or more releases",
-				arguments=(_argument("release_id", nargs="+", metavar="RELEASE_ID"),),
+				arguments=(
+					_argument("release_id", nargs="+", metavar="RELEASE_ID"),
+					_argument("--force", action="store_true"),
+				),
 			),
 			_CommandSpec(
 				"rename",
@@ -471,7 +474,10 @@ _COMMAND_SPECS = (
 			_CommandSpec(
 				"remove",
 				"remove one or more tasks",
-				arguments=(_argument("task_id", nargs="+", metavar="TASK_ID"),),
+				arguments=(
+					_argument("task_id", nargs="+", metavar="TASK_ID"),
+					_argument("--force", action="store_true"),
+				),
 			),
 			_CommandSpec(
 				"clean",
@@ -1142,20 +1148,48 @@ def _single_or_many(values: list[str]) -> str | list[str]:
 
 
 def _render_human_output(command: str, data: object) -> str:
-	"""Render a multi-ID write response as one line per record.
+	"""Render each record as one line, with deleted records listed under it after a forced removal.
 
 	Single-record responses and every other command render as before. For a
-	list response, only the first rendered line of each record is kept, so
-	the output stays one line per requested ID.
+	list response, only the first rendered line of each record is kept unless
+	forced removal details need to be shown below it.
 	"""
-	if command not in _MULTI_ID_WRITE_COMMANDS or not isinstance(data, list):
+	if command not in _MULTI_ID_WRITE_COMMANDS:
+		return render(command, data)
+	if isinstance(data, list):
+		items = data
+	elif isinstance(data, dict) and isinstance(data.get("deleted"), dict):
+		items = [data]
+	else:
 		return render(command, data)
 
 	lines = []
-	for item in data:
+	for item in items:
 		rendered = render(command, item).strip("\n")
 		if rendered:
 			lines.append(rendered.splitlines()[0])
+
+		if isinstance(item, dict) and isinstance(item.get("deleted"), dict):
+			for record_type, records in item["deleted"].items():
+				if not isinstance(records, list) or not records:
+					continue
+
+				label = record_type.replace("_", " ").capitalize()
+				values = ", ".join(str(record) for record in records)
+				lines.append(
+					f"{render_span(label, 'muted', weight='normal')}: {values}"
+				)
+
+		if (
+			command in {"release remove", "task remove"}
+			and isinstance(item, dict)
+			and isinstance(item.get("unblocked_tasks"), list)
+			and item["unblocked_tasks"]
+		):
+			values = ", ".join(str(task_id) for task_id in item["unblocked_tasks"])
+			lines.append(
+				f"{render_span('Unblocked tasks', 'muted', weight='normal')}: {values}"
+			)
 
 	return "\n".join(lines) + ("\n" if lines else "")
 
@@ -1215,7 +1249,9 @@ def _run_command(
 			"release get",
 		),
 		("release", "remove"): lambda: (
-			WriteStore(database).release_remove(_single_or_many(args.release_id)),
+			WriteStore(database).release_remove(
+				_single_or_many(args.release_id), force=args.force
+			),
 			"release remove",
 		),
 		("release", "rename"): lambda: (
@@ -1254,7 +1290,9 @@ def _run_command(
 		("task", "move"): lambda: _run_task_move(args, database),
 		("task", "dependency"): lambda: _run_task_dependency(args, database),
 		("task", "remove"): lambda: (
-			WriteStore(database).task_remove(_single_or_many(args.task_id)),
+			WriteStore(database).task_remove(
+				_single_or_many(args.task_id), force=args.force
+			),
 			"task remove",
 		),
 		("task", "clean"): lambda: (
