@@ -305,7 +305,12 @@ def test_commands_json_lists_the_registry_with_required_flags(
 		{"names": ["--json"], "required": False},
 		{"names": ["--database"], "required": False},
 	]
-	assert commands["discovery add"]["flags"][1] == {
+	assert commands["discovery add"]["flags"][:2] == [
+		{"names": ["--release"], "required": False},
+		{"names": ["--task"], "required": False},
+	]
+	assert commands["discovery add"]["required_one_of"] == ["--release", "--task"]
+	assert commands["discovery add"]["flags"][2] == {
 		"names": ["body"],
 		"required": True,
 	}
@@ -428,7 +433,15 @@ def test_doctor_dispatches_with_the_json_envelope(
 		(["context", "get"], "context_get"),
 		(["discovery", "list"], "discovery_list"),
 		(
+			["discovery", "list", "--release", "rel_" + "r" * 22],
+			"discovery_list",
+		),
+		(
 			["decision", "list", "--task", "tsk_" + "t" * 22],
+			"decision_list",
+		),
+		(
+			["decision", "list", "--release", "rel_" + "r" * 22],
 			"decision_list",
 		),
 		(["release", "get", "rel_" + "r" * 22], "release_get"),
@@ -630,12 +643,22 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 			"write",
 		),
 		(
+			["discovery", "add", "--release", "rel_" + "r" * 22, "A", "discovery"],
+			"discovery_add",
+			"write",
+		),
+		(
 			["discovery", "remove", "nte_" + "n" * 22],
 			"discovery_remove",
 			"write",
 		),
 		(
 			["decision", "add", "--task", "tsk_" + "t" * 22, "A", "decision"],
+			"decision_add",
+			"write",
+		),
+		(
+			["decision", "add", "--release", "rel_" + "r" * 22, "A", "decision"],
 			"decision_add",
 			"write",
 		),
@@ -1446,6 +1469,42 @@ def test_release_move_requires_exactly_one_relative_target(
 	)
 
 
+@pytest.mark.parametrize(
+	"owner_arguments",
+	[
+		[],
+		[
+			"--task",
+			"tsk_" + "t" * 22,
+			"--release",
+			"rel_" + "r" * 22,
+		],
+	],
+)
+def test_note_add_requires_exactly_one_owner(
+	tmp_path: Path, capsys, owner_arguments: list[str]
+) -> None:
+	assert (
+		cli.main(
+			[
+				"discovery",
+				"add",
+				*owner_arguments,
+				"Discovery",
+				"body",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 2
+	)
+
+	output = capsys.readouterr()
+	assert output.out == ""
+	assert "--release" in output.err
+	assert "--task" in output.err
+
+
 @pytest.mark.parametrize("release_arguments", [["--release", ""], ["--release"]])
 def test_task_move_passes_empty_release_as_unassigned(
 	tmp_path: Path, monkeypatch, capsys, release_arguments: list[str]
@@ -1810,6 +1869,95 @@ def test_human_chunk_list_includes_task_header(
 	assert "Progress task · tsk_test\n\nChunks" in output
 	assert output.index("Progress task · tsk_test") < output.index("Chunks")
 	assert output.index("Chunks") < output.index("First chunk")
+
+
+def test_human_note_list_shows_body_and_owner(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {
+		"items": [
+			{
+				"id": "nte_task",
+				"task_id": "tsk_task",
+				"release_id": None,
+				"type": "discovery",
+				"body": "Task discovery.",
+			},
+			{
+				"id": "nte_release",
+				"task_id": None,
+				"release_id": "rel_release",
+				"type": "discovery",
+				"body": "Release discovery.",
+			},
+		],
+		"limit": 50,
+		"offset": 0,
+		"has_more": False,
+	}
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def discovery_list(self, task_id, limit, offset, *, release_id):
+			assert task_id is None
+			assert release_id is None
+			assert (limit, offset) == (50, 0)
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert (
+		cli.main(
+			[
+				"discovery",
+				"list",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+
+	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert "Task discovery.\ntask tsk_task" in output
+	assert "Release discovery.\nrelease rel_release" in output
+	assert "nte_task" not in output
+
+
+@pytest.mark.parametrize(
+	("command", "empty_label"),
+	[("discovery", "No discovery notes."), ("decision", "No decision notes.")],
+)
+def test_human_empty_note_list_shows_an_empty_state(
+	tmp_path: Path, monkeypatch, capsys, command: str, empty_label: str
+) -> None:
+	data = {"items": [], "limit": 50, "offset": 0, "has_more": False}
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def __getattr__(self, name):
+			return lambda *arguments, **keyword_arguments: data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert (
+		cli.main(
+			[
+				command,
+				"list",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+
+	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert empty_label in output
 
 
 def test_json_chunk_list_does_not_add_task_header(

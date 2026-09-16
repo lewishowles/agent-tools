@@ -621,6 +621,8 @@ def _render_list(command: str, data: dict[str, object]) -> str:
 		return _render_chunk_list(data)
 	if command == "search":
 		return _render_search(data)
+	if command in {"discovery list", "decision list"}:
+		return _render_note_list(command, data)
 
 	items = data.get("items", [])
 	labels = {
@@ -657,6 +659,41 @@ def _render_list(command: str, data: dict[str, object]) -> str:
 					"Use --all to show them."
 				)
 			)
+
+	return "\n\n".join(blocks)
+
+
+def _render_note_list(command: str, data: dict[str, object]) -> str:
+	"""Render note bodies with the task or release that owns each note."""
+	note_label = command.split()[0].capitalize()
+	items = data.get("items", [])
+	note_records = (
+		[item for item in items if isinstance(item, dict)]
+		if isinstance(items, list)
+		else []
+	)
+	if not note_records:
+		return render_span(f"No {note_label.lower()} notes.", "muted", weight="normal")
+
+	blocks = [render_span(f"{note_label} notes")]
+
+	for note in note_records:
+		task_id = note.get("task_id")
+		release_id = note.get("release_id")
+		owner_type = "task" if task_id else "release"
+		owner_id = task_id or release_id or ""
+		blocks.append(
+			"\n".join(
+				[
+					str(note.get("body", "")),
+					render_span(f"{owner_type} {owner_id}", "muted", weight="normal"),
+				]
+			)
+		)
+
+	if data.get("has_more"):
+		next_offset = int(data.get("offset", 0)) + int(data.get("limit", 0))
+		blocks.append(render_hint(f"More results: use --offset {next_offset}."))
 
 	return "\n\n".join(blocks)
 

@@ -1070,9 +1070,13 @@ class ReadStore(_StoreBase):
 		limit: int = DEFAULT_LIMIT,
 		offset: int = 0,
 		path: str | Path | None = None,
+		*,
+		release_id: str | None = None,
 	) -> dict[str, object]:
-		"""List discovery notes for the current project, optionally for one task."""
-		return self.note_list("discovery", task_id, limit, offset, path)
+		"""List discovery notes, optionally for one task or release."""
+		return self.note_list(
+			"discovery", task_id, limit, offset, path, release_id=release_id
+		)
 
 	def decision_list(
 		self,
@@ -1080,9 +1084,13 @@ class ReadStore(_StoreBase):
 		limit: int = DEFAULT_LIMIT,
 		offset: int = 0,
 		path: str | Path | None = None,
+		*,
+		release_id: str | None = None,
 	) -> dict[str, object]:
-		"""List decision notes for the current project, optionally for one task."""
-		return self.note_list("decision", task_id, limit, offset, path)
+		"""List decision notes, optionally for one task or release."""
+		return self.note_list(
+			"decision", task_id, limit, offset, path, release_id=release_id
+		)
 
 	def note_list(
 		self,
@@ -1091,12 +1099,18 @@ class ReadStore(_StoreBase):
 		limit: int = DEFAULT_LIMIT,
 		offset: int = 0,
 		path: str | Path | None = None,
+		*,
+		release_id: str | None = None,
 	) -> dict[str, object]:
-		"""List one type of note for the current project in creation order."""
+		"""List one type of note in creation order, optionally for one task or one release; passing both filters is an error."""
 		if note_type not in NOTE_TYPES:
 			raise ValueError(f"unknown note type {note_type!r}")
+		if task_id is not None and release_id is not None:
+			raise ValueError("note list accepts at most one of task_id or release_id")
 		if task_id is not None:
 			validate_object_id(task_id, TASK_PREFIX)
+		if release_id is not None:
+			validate_object_id(release_id, RELEASE_PREFIX)
 
 		limit, offset = validate_page(limit, offset)
 		project = self.current_project(path)
@@ -1105,6 +1119,9 @@ class ReadStore(_StoreBase):
 		if task_id is not None:
 			where += " AND task_id = ?"
 			parameters += (task_id,)
+		elif release_id is not None:
+			where += " AND release_id = ?"
+			parameters += (release_id,)
 
 		with self.database.connection() as connection:
 			return self._paged_query(

@@ -1050,11 +1050,19 @@ def test_late_unfinished_dependency_blocks_ready_and_rejects_active(
 
 def test_notes_and_context_replace_the_project_context_row(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Release overview")
 	task = _add_task(store, "notes", "Notes")
 	discovery = store.discovery_add(task["id"], "The schema is shared.")
 	decision = store.decision_add(
 		task["id"], "Keep one context row.", supersedes_id=discovery["id"]
 	)
+	release_note = store.discovery_add(
+		None, "The release note is shared.", release_id=release["id"]
+	)
+
+	assert release_note["task_id"] is None
+	assert release_note["release_id"] == release["id"]
+
 	context = store.context_set(
 		current_goal="Finish Commit 3",
 		next_step="Run tests",
@@ -1069,6 +1077,17 @@ def test_notes_and_context_replace_the_project_context_row(tmp_path: Path) -> No
 	assert updated_context["next_step"] is None
 
 
+def test_note_add_requires_exactly_one_owner(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Release overview")
+	task = _add_task(store, "notes", "Notes")
+
+	with pytest.raises(ValueError, match="exactly one"):
+		store.discovery_add(task["id"], "Two owners", release_id=release["id"])
+	with pytest.raises(ValueError, match="exactly one"):
+		store.discovery_add(None, "No owner")
+
+
 def test_remove_rejects_every_referenced_parent_row(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("release", "Release", overview="Release overview")
@@ -1080,10 +1099,14 @@ def test_remove_rejects_every_referenced_parent_row(tmp_path: Path) -> None:
 	store.task_dependency_add(task["id"], dependency["id"])
 	discovery = store.discovery_add(task["id"], "Discovery")
 	decision = store.decision_add(task["id"], "Decision")
+	release_note = store.decision_add(
+		None, "Release decision", release_id=release["id"]
+	)
 
 	with pytest.raises(StillReferencedError, match=task["id"]) as release_error:
 		store.release_remove(release["id"])
 	assert "pass --force" in str(release_error.value)
+	assert release_note["id"] in str(release_error.value)
 
 	with pytest.raises(StillReferencedError) as error:
 		store.task_remove(task["id"])
@@ -1115,6 +1138,7 @@ def test_task_remove_force_deletes_owned_rows_and_unblocks_dependants(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Release overview")
 	dependency = _add_task(store, "dependency", "Dependency")
 	task = _add_task(
 		store,
@@ -1122,12 +1146,16 @@ def test_task_remove_force_deletes_owned_rows_and_unblocks_dependants(
 		"Task",
 		contract=["Task contract"],
 		files=["src/task.py"],
+		release_id=release["id"],
 		depends_on=[dependency["id"]],
 	)
 	dependent = _add_task(store, "dependent", "Dependent", depends_on=[task["id"]])
 	chunk = _add_chunk(store, task["id"], "Chunk")
 	discovery = store.discovery_add(task["id"], "Discovery")
 	decision = store.decision_add(task["id"], "Decision")
+	release_note = store.discovery_add(
+		None, "Release discovery", release_id=release["id"]
+	)
 
 	result = store.task_remove(task["id"], force=True)
 
@@ -1175,6 +1203,12 @@ def test_task_remove_force_deletes_owned_rows_and_unblocks_dependants(
 			).fetchone()
 			is None
 		)
+		assert (
+			connection.execute(
+				"SELECT 1 FROM notes WHERE id = ?", (release_note["id"],)
+			).fetchone()
+			is not None
+		)
 
 
 def test_release_remove_force_deletes_tasks_release_rows_and_out_of_scope(
@@ -1192,22 +1226,8 @@ def test_release_remove_force_deletes_tasks_release_rows_and_out_of_scope(
 	)
 	chunk = _add_chunk(store, first_task["id"], "Chunk")
 	task_note = store.discovery_add(first_task["id"], "Task note")
-	release_note_id = "nte_" + "r" * 22
+	release_note = store.decision_add(None, "Release note", release_id=release["id"])
 	with store.database.transaction() as connection:
-		connection.execute(
-			"""
-			INSERT INTO notes (
-				id, project_id, task_id, release_id, type, body, supersedes_id, created_at
-			) VALUES (?, ?, NULL, ?, 'decision', ?, NULL, ?)
-			""",
-			(
-				release_note_id,
-				PROJECT_ID,
-				release["id"],
-				"Release note",
-				"2026-01-01T00:00:00+00:00",
-			),
-		)
 		connection.execute(
 			"INSERT INTO release_out_of_scope (release_id, position, text) VALUES (?, ?, ?)",
 			(release["id"], 1, "Out of scope"),
@@ -1223,7 +1243,7 @@ def test_release_remove_force_deletes_tasks_release_rows_and_out_of_scope(
 	assert result["deleted"]["chunks"] == [chunk["id"]]
 	assert set(result["deleted"]["notes"]) == {
 		task_note["id"],
-		release_note_id,
+		release_note["id"],
 	}
 	assert result["deleted"]["dependencies"] == [
 		f"{second_task['id']} -> {first_task['id']}"
@@ -1252,7 +1272,7 @@ def test_release_remove_force_deletes_tasks_release_rows_and_out_of_scope(
 			).fetchone()
 			is None
 		)
-		for note_id in (task_note["id"], release_note_id):
+		for note_id in (task_note["id"], release_note["id"]):
 			assert (
 				connection.execute(
 					"SELECT 1 FROM notes WHERE id = ?", (note_id,)
@@ -1640,12 +1660,22 @@ def test_task_clean_force_removes_only_blocked_done_tasks_and_notes(
 	store.decision_add(
 		blocked_task["id"], "Decision body", supersedes_id=discovery["id"]
 	)
+	release_note = store.discovery_add(
+		None, "Release discovery", release_id=release["id"]
+	)
 	store.task_start(dependency["id"])
 	store.task_complete(dependency["id"])
 	store.task_start(blocked_task["id"])
 	store.task_complete(blocked_task["id"])
 
 	store.task_clean()
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM notes WHERE id = ?", (release_note["id"],)
+			).fetchone()
+			is not None
+		)
 	new_clean_task = _add_task(store, "new-clean", "New clean task")
 	store.task_start(new_clean_task["id"])
 	store.task_complete(new_clean_task["id"])

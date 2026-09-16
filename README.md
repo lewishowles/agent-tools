@@ -154,12 +154,12 @@ progress release remove <release_id>... [--force] [--json] [--database <path>]
 Pass one or more release IDs. They are removed in the order given in one
 transaction, so a failure names the failing ID and rolls back every removal.
 Without `--force`, removal is a hard delete that raises
-`StillReferencedError` when any task still refers to a release. The error names
-the blocking task IDs and suggests `--force`. With `--force`, every task in the
-release is removed with its chunks, notes, dependency edges, contract and file
-rows, followed by the release's notes and out-of-scope entries. The human
-output lists the deleted records grouped by type. Forced removal does not ask
-for confirmation.
+`StillReferencedError` when any task refers to a release or the release owns
+notes. The error names the blocking task or note IDs and suggests `--force`.
+With `--force`, every task in the release is removed with its chunks, notes,
+dependency edges, contract and file rows, followed by the release's notes and
+out-of-scope entries. The human output lists the deleted records grouped by
+type. Forced removal does not ask for confirmation.
 
 ### `progress release rename`
 
@@ -347,7 +347,8 @@ progress task clean --force [--json] [--database <path>]
 
 The forced pass removes the currently blocked completed tasks, their notes,
 dependency edges, and chunks before removing any releases left with no tasks.
-An empty release that was not affected by this command is not removed.
+Release-owned notes are removed with those releases. An empty release that was
+not affected by this command is not removed.
 
 If a note on a task outside the blocked set supersedes a note being force
 deleted, the whole `--force` pass aborts with a "still referenced" error and
@@ -578,18 +579,40 @@ The human output says "No matches." when nothing hits; otherwise, it shows one b
 
 ## Notes
 
-Notes are attached to tasks. A note is either a discovery or a decision.
+Each note belongs to exactly one task or release. A note is either a discovery
+or a decision.
 
 ### `progress discovery add`
 
 Add a discovery note:
 
 ```text
-progress discovery add --task <task_id> [--json] [--database <path>] <body>...
+progress discovery add (--release <release_id> | --task <task_id>) [--json] [--database <path>] <body>...
 ```
 
+- Exactly one of `--release <release_id>` or `--task <task_id>` is required.
+- `--release <release_id>`: release that owns the note
 - `--task <task_id>`: task that owns the note
 - `<body>...`: note text made from the remaining arguments
+
+### `progress discovery list`
+
+List discovery notes:
+
+```text
+progress discovery list [--release <release_id> | --task <task_id>] [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
+```
+
+- `--release <release_id>`: filter notes to a release
+- `--task <task_id>`: filter notes to a task
+- `--limit <limit>`: maximum number of notes to return
+- `--offset <offset>`: number of notes to skip before returning results
+
+Pass at most one of `--release` or `--task`. Without either filter, every
+discovery note in the current project is listed. See [Listing](#listing) for
+pagination details. The human output shows each note's body followed by its
+owning task or release, and says "No discovery notes." when no notes match.
+The `--json` form returns the paginated note rows.
 
 ### `progress discovery remove`
 
@@ -607,12 +630,33 @@ note, and the error names those blocking note IDs. The operation is atomic.
 Add a decision note:
 
 ```text
-progress decision add --task <task_id> [--supersedes <note_id>] [--json] [--database <path>] <body>...
+progress decision add (--release <release_id> | --task <task_id>) [--supersedes <note_id>] [--json] [--database <path>] <body>...
 ```
 
+- Exactly one of `--release <release_id>` or `--task <task_id>` is required.
+- `--release <release_id>`: release that owns the note
 - `--task <task_id>`: task that owns the note
 - `--supersedes <note_id>`: note superseded by this decision
 - `<body>...`: note text made from the remaining arguments
+
+### `progress decision list`
+
+List decision notes:
+
+```text
+progress decision list [--release <release_id> | --task <task_id>] [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
+```
+
+- `--release <release_id>`: filter notes to a release
+- `--task <task_id>`: filter notes to a task
+- `--limit <limit>`: maximum number of notes to return
+- `--offset <offset>`: number of notes to skip before returning results
+
+Pass at most one of `--release` or `--task`. Without either filter, every
+decision note in the current project is listed. See [Listing](#listing) for
+pagination details. The human output shows each note's body followed by its
+owning task or release, and says "No decision notes." when no notes match.
+The `--json` form returns the paginated note rows.
 
 ### `progress decision remove`
 
@@ -670,8 +714,8 @@ command that sets or changes it.
 | `chunk.status`   | `active`         | `task start`, `chunk start`, or `chunk complete` activating the next pending chunk                                                                                |
 | `chunk.status`   | `done`           | `chunk complete`                                                                                                                                                  |
 | `chunk.status`   | `skipped`        | Schema-legal, but currently unreachable through any CLI command                                                                                                   |
-| `note.type`      | `discovery`      | `discovery add`; immutable after creation                                                                                                                         |
-| `note.type`      | `decision`       | `decision add`; immutable after creation                                                                                                                          |
+| `note.type`      | `discovery`      | `discovery add --release <release_id>` or `discovery add --task <task_id>`; immutable after creation                                                              |
+| `note.type`      | `decision`       | `decision add --release <release_id>` or `decision add --task <task_id>`; immutable after creation                                                                |
 
 The available transitions are:
 
@@ -698,7 +742,7 @@ sections, still in one transaction.
 
 | Command                                                 | Rejected when                                                           | Blocking IDs named in the error                  |
 | ------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------ |
-| `release remove <release_id>...`                        | Without `--force`, a task refers to the release                         | Referencing task IDs                             |
+| `release remove <release_id>...`                        | Without `--force`, a task refers to the release or a note belongs to it | Referencing task or note IDs                     |
 | `task remove <task_id>...`                              | Without `--force`, a chunk, dependency edge, or note refers to the task | Referencing chunk, task, dependency, or note IDs |
 | `chunk remove <chunk_id>...`                            | Never; chunks have no referencing rows                                  | None                                             |
 | `discovery remove <note_id>`                            | Another note supersedes the note                                        | Superseding note IDs                             |

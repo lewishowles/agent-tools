@@ -827,23 +827,43 @@ def test_get_raises_not_found_for_an_unknown_record(
 		getattr(store, method_name)(object_id)
 
 
-def test_note_lists_filter_type_and_optional_task_in_creation_order(
+def test_note_lists_filter_type_and_optional_task_or_release_in_creation_order(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
+	writer = WriteStore(store.database, _ProjectStore(store.database))
+	release_discovery = writer.discovery_add(
+		None, "Release discovery.", release_id=RELEASE_A
+	)
+	release_decision = writer.decision_add(
+		None, "Release decision.", release_id=RELEASE_A
+	)
 
 	discoveries = store.discovery_list()
 	task_discoveries = store.discovery_list(TASK_A)
+	release_discoveries = store.discovery_list(release_id=RELEASE_A)
 	decisions = store.decision_list(TASK_A)
+	release_decisions = store.decision_list(release_id=RELEASE_A)
 	empty = store.decision_list(TASK_B)
 
-	assert [item["id"] for item in discoveries["items"]] == [DISCOVERY_A, DISCOVERY_B]
+	assert [item["id"] for item in discoveries["items"]] == [
+		DISCOVERY_A,
+		DISCOVERY_B,
+		release_discovery["id"],
+	]
 	assert [item["type"] for item in discoveries["items"]] == [
+		"discovery",
 		"discovery",
 		"discovery",
 	]
 	assert [item["id"] for item in task_discoveries["items"]] == [DISCOVERY_A]
+	assert [item["id"] for item in release_discoveries["items"]] == [
+		release_discovery["id"]
+	]
 	assert [item["id"] for item in decisions["items"]] == [DECISION_A]
+	assert [item["id"] for item in release_decisions["items"]] == [
+		release_decision["id"]
+	]
 	assert empty["items"] == []
 	assert empty["has_more"] is False
 

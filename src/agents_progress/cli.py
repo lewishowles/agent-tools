@@ -133,6 +133,10 @@ class _CommandSpec:
 	children: tuple["_CommandSpec", ...] = ()
 	destination: str | None = None
 	page_options: bool = False
+	# Flag names that argparse rejects together; empty when the command has no such pair.
+	exclusive_arguments: tuple[str, ...] = ()
+	# Whether one of the exclusive flags must be given.
+	exclusive_required: bool = False
 
 
 def _argument(*names: str, **kwargs: object) -> _ArgumentSpec:
@@ -231,12 +235,24 @@ def _add_command_specs(
 			_add_command_specs(nested_commands, spec.children)
 			continue
 
+		exclusive_group = (
+			parser.add_mutually_exclusive_group(required=spec.exclusive_required)
+			if spec.exclusive_arguments
+			else None
+		)
+
 		for argument in spec.arguments:
 			argument_kwargs = dict(argument.kwargs)
 			if isinstance(argument_kwargs.get("default"), list):
 				argument_kwargs["default"] = list(argument_kwargs["default"])
 
-			parser.add_argument(*argument.names, **argument_kwargs)
+			argument_parser = (
+				exclusive_group
+				if exclusive_group is not None
+				and any(name in spec.exclusive_arguments for name in argument.names)
+				else parser
+			)
+			argument_parser.add_argument(*argument.names, **argument_kwargs)
 
 		if spec.page_options:
 			_add_page_options(parser)
@@ -719,15 +735,22 @@ _COMMAND_SPECS = (
 				"add",
 				"add a discovery note",
 				arguments=(
-					_argument("--task", required=True, dest="task_id"),
+					_argument("--release", dest="release_id"),
+					_argument("--task", dest="task_id"),
 					_argument("body", nargs="+"),
 				),
+				exclusive_arguments=("--release", "--task"),
+				exclusive_required=True,
 			),
 			_CommandSpec(
 				"list",
 				"list discovery notes",
-				arguments=(_argument("--task", dest="task_id"),),
+				arguments=(
+					_argument("--release", dest="release_id"),
+					_argument("--task", dest="task_id"),
+				),
 				page_options=True,
+				exclusive_arguments=("--release", "--task"),
 			),
 			_CommandSpec(
 				"remove",
@@ -745,16 +768,23 @@ _COMMAND_SPECS = (
 				"add",
 				"add a decision note",
 				arguments=(
-					_argument("--task", required=True, dest="task_id"),
+					_argument("--release", dest="release_id"),
+					_argument("--task", dest="task_id"),
 					_argument("--supersedes", dest="supersedes_id"),
 					_argument("body", nargs="+"),
 				),
+				exclusive_arguments=("--release", "--task"),
+				exclusive_required=True,
 			),
 			_CommandSpec(
 				"list",
 				"list decision notes",
-				arguments=(_argument("--task", dest="task_id"),),
+				arguments=(
+					_argument("--release", dest="release_id"),
+					_argument("--task", dest="task_id"),
+				),
 				page_options=True,
+				exclusive_arguments=("--release", "--task"),
 			),
 			_CommandSpec(
 				"remove",
@@ -1078,13 +1108,14 @@ def _command_manifest(
 	manifest = []
 	for spec in specs:
 		path = f"{parent_path} {spec.name}".strip()
-		manifest.append(
-			{
-				"path": path,
-				"help": spec.help_text,
-				"flags": _manifest_flags(spec),
-			}
-		)
+		command = {
+			"path": path,
+			"help": spec.help_text,
+			"flags": _manifest_flags(spec),
+		}
+		if spec.exclusive_required:
+			command["required_one_of"] = list(spec.exclusive_arguments)
+		manifest.append(command)
 		manifest.extend(_command_manifest(spec.children, path))
 
 	return manifest
@@ -1437,11 +1468,20 @@ def _run_command(
 		),
 		("chunk", "edit"): lambda: _run_chunk_edit(args, database),
 		("discovery", "add"): lambda: (
-			WriteStore(database).discovery_add(args.task_id, " ".join(args.body)),
+			WriteStore(database).discovery_add(
+				args.task_id,
+				" ".join(args.body),
+				release_id=args.release_id,
+			),
 			"discovery add",
 		),
 		("discovery", "list"): lambda: (
-			ReadStore(database).discovery_list(args.task_id, args.limit, args.offset),
+			ReadStore(database).discovery_list(
+				args.task_id,
+				args.limit,
+				args.offset,
+				release_id=args.release_id,
+			),
 			"discovery list",
 		),
 		("discovery", "remove"): lambda: (
@@ -1450,12 +1490,20 @@ def _run_command(
 		),
 		("decision", "add"): lambda: (
 			WriteStore(database).decision_add(
-				args.task_id, " ".join(args.body), args.supersedes_id
+				args.task_id,
+				" ".join(args.body),
+				args.supersedes_id,
+				release_id=args.release_id,
 			),
 			"decision add",
 		),
 		("decision", "list"): lambda: (
-			ReadStore(database).decision_list(args.task_id, args.limit, args.offset),
+			ReadStore(database).decision_list(
+				args.task_id,
+				args.limit,
+				args.offset,
+				release_id=args.release_id,
+			),
 			"decision list",
 		),
 		("decision", "remove"): lambda: (

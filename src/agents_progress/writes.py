@@ -613,7 +613,7 @@ class WriteStore(_StoreBase):
 				if release is None or remaining_task is not None:
 					continue
 
-				connection.execute("DELETE FROM releases WHERE id = ?", (release_id,))
+				_remove_release(connection, release_id, project.id, force=True)
 				releases_removed.append(
 					{"id": release["id"], "title": release["title"]}
 				)
@@ -1366,22 +1366,35 @@ class WriteStore(_StoreBase):
 
 	def discovery_add(
 		self,
-		task_id: str,
+		task_id: str | None,
 		body: str,
 		path: str | Path | None = None,
+		*,
+		release_id: str | None = None,
 	) -> dict[str, object]:
-		"""Store a discovery note for a current-project task."""
-		return self._note_add("discovery", task_id, body, None, path)
+		"""Store a discovery note for one current-project task or release."""
+		return self._note_add(
+			"discovery", task_id, body, None, path, release_id=release_id
+		)
 
 	def decision_add(
 		self,
-		task_id: str,
+		task_id: str | None,
 		body: str,
 		supersedes_id: str | None = None,
 		path: str | Path | None = None,
+		*,
+		release_id: str | None = None,
 	) -> dict[str, object]:
-		"""Store a decision note, optionally superseding an earlier note."""
-		return self._note_add("decision", task_id, body, supersedes_id, path)
+		"""Store a decision note for one current-project task or release, optionally superseding an earlier note."""
+		return self._note_add(
+			"decision",
+			task_id,
+			body,
+			supersedes_id,
+			path,
+			release_id=release_id,
+		)
 
 	def discovery_remove(
 		self, note_id: str, path: str | Path | None = None
@@ -1437,21 +1450,41 @@ class WriteStore(_StoreBase):
 	def _note_add(
 		self,
 		note_type: str,
-		task_id: str,
+		task_id: str | None,
 		body: str,
 		supersedes_id: str | None,
 		path: str | Path | None,
+		*,
+		release_id: str | None,
 	) -> dict[str, object]:
-		"""Insert one validated note in the current project."""
-		validate_object_id(task_id, TASK_PREFIX)
+		"""Insert one validated note for either a task or a release in the current project."""
+		if (task_id is None) == (release_id is None):
+			raise ValueError("exactly one of task_id or release_id must be provided")
+
+		if task_id is not None:
+			validate_object_id(task_id, TASK_PREFIX)
+		if release_id is not None:
+			validate_object_id(release_id, RELEASE_PREFIX)
 		_require_text(body, "note body")
 		if supersedes_id is not None:
 			validate_object_id(supersedes_id, NOTE_PREFIX)
 
 		project = self.current_project(path)
 		with self.database.transaction() as connection:
-			if _task_row(connection, task_id, project.id) is None:
-				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
+			if task_id is not None:
+				if _task_row(connection, task_id, project.id) is None:
+					raise NotFoundError(
+						f"task {task_id} was not found", {"id": task_id}
+					)
+			else:
+				release = connection.execute(
+					"SELECT 1 FROM releases WHERE id = ? AND project_id = ?",
+					(release_id, project.id),
+				).fetchone()
+				if release is None:
+					raise NotFoundError(
+						f"release {release_id} was not found", {"id": release_id}
+					)
 			if supersedes_id is not None:
 				superseded = connection.execute(
 					"SELECT 1 FROM notes WHERE id = ? AND project_id = ?",
@@ -1476,7 +1509,7 @@ class WriteStore(_StoreBase):
 					note_id,
 					project.id,
 					task_id,
-					None,
+					release_id,
 					note_type,
 					body,
 					supersedes_id,
@@ -1562,8 +1595,8 @@ def _remove_release(
 ) -> dict[str, object]:
 	"""Remove one release.
 
-	Without ``force`` the release must own no tasks. With ``force`` every task
-	in the release is force-removed first, then release-owned notes and
+	Without ``force`` the release must own no tasks or notes. With ``force`` every
+	task in the release is force-removed first, then release-owned notes and
 	out-of-scope entries, and the result lists what was deleted by type.
 	"""
 	validate_object_id(release_id, RELEASE_PREFIX)
@@ -1582,12 +1615,22 @@ def _remove_release(
 			(release_id,),
 		).fetchall()
 	]
+	release_note_ids = [
+		row["id"]
+		for row in connection.execute(
+			"SELECT id FROM notes WHERE release_id = ? ORDER BY id",
+			(release_id,),
+		).fetchall()
+	]
 
 	if not force:
+		references = {"tasks": task_ids} if task_ids else {}
+		if release_note_ids:
+			references["notes"] = release_note_ids
 		_raise_if_referenced(
 			"release",
 			release_id,
-			{"tasks": task_ids} if task_ids else {},
+			references,
 			hint="pass --force to remove it with everything it owns",
 		)
 		connection.execute("DELETE FROM releases WHERE id = ?", (release_id,))
