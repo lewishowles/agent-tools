@@ -9,7 +9,16 @@ from typing import NoReturn
 import pytest
 from agent_run import schema
 from agent_run.cli import main
-from agent_run.commands import CommandError, add_command, list_commands
+from agent_run.commands import (
+    Command,
+    CommandError,
+    CommandNotFoundError,
+    add_command,
+    edit_command,
+    list_commands,
+    remove_command,
+    rename_command,
+)
 from agent_run.database import connect_database
 from agent_run.repository import Repository
 
@@ -85,6 +94,120 @@ def test_list_commands_orders_by_name_and_repository_scope(tmp_path: Path) -> No
 
     assert [command.name for command in commands] == ["a-test", "z-test"]
     assert [list(command.argv) for command in commands] == [["a"], ["z"]]
+
+
+def test_edit_command_changes_arguments_and_directory(tmp_path: Path) -> None:
+    """Editing changes selected fields while keeping the creation timestamp."""
+    root = _initialise_repository(tmp_path / "repository")
+    (root / "tools").mkdir()
+    repository = _repository(root)
+    connection = connect_database(tmp_path / "agent-run.db")
+    try:
+        original = add_command(connection, repository, "test", ["pytest"])
+        edited = edit_command(
+            connection,
+            repository,
+            "test",
+            ["pytest", "tests"],
+            "tools",
+        )
+        row = connection.execute(
+            "SELECT argv, working_directory, created_at FROM commands"
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert edited == Command(
+        name="test",
+        argv=("pytest", "tests"),
+        working_directory="tools",
+        created_at=original.created_at,
+    )
+    assert row == (
+        '["pytest", "tests"]',
+        "tools",
+        original.created_at,
+    )
+
+
+def test_edit_command_can_change_one_field_and_rejects_no_change(
+    tmp_path: Path,
+) -> None:
+    """Editing can preserve one field but rejects a request with no changes."""
+    root = _initialise_repository(tmp_path / "repository")
+    repository = _repository(root)
+    connection = connect_database(tmp_path / "agent-run.db")
+    try:
+        original = add_command(connection, repository, "test", ["pytest"], ".")
+        edited = edit_command(connection, repository, "test", cwd=".")
+
+        with pytest.raises(CommandError, match="must change"):
+            edit_command(connection, repository, "test")
+
+        with pytest.raises(CommandError, match="at least one argument"):
+            edit_command(connection, repository, "test", [])
+    finally:
+        connection.close()
+
+    assert edited.argv == original.argv
+    assert edited.working_directory == "."
+    assert edited.created_at == original.created_at
+
+
+def test_edit_command_rejects_unknown_name(tmp_path: Path) -> None:
+    """Editing an unknown name raises the command-specific not-found error."""
+    root = _initialise_repository(tmp_path / "repository")
+    connection = connect_database(tmp_path / "agent-run.db")
+    try:
+        with pytest.raises(CommandNotFoundError, match="missing"):
+            edit_command(connection, _repository(root), "missing", ["echo"])
+    finally:
+        connection.close()
+
+
+def test_rename_command_changes_name_and_rejects_collisions(
+    tmp_path: Path,
+) -> None:
+    """Renaming preserves the command record and refuses an existing name."""
+    root = _initialise_repository(tmp_path / "repository")
+    repository = _repository(root)
+    connection = connect_database(tmp_path / "agent-run.db")
+    try:
+        original = add_command(connection, repository, "test", ["pytest"])
+        add_command(connection, repository, "lint", ["ruff"])
+        renamed = rename_command(connection, repository, "test", "check")
+
+        with pytest.raises(CommandError, match="already exists"):
+            rename_command(connection, repository, "check", "lint")
+    finally:
+        connection.close()
+
+    assert renamed.name == "check"
+    assert renamed.argv == original.argv
+    assert renamed.working_directory == original.working_directory
+    assert renamed.created_at == original.created_at
+
+
+def test_remove_command_deletes_only_the_repository_command(
+    tmp_path: Path,
+) -> None:
+    """Removing deletes a command and leaves another repository's command alone."""
+    root = _initialise_repository(tmp_path / "repository")
+    repository = _repository(root)
+    other_repository = Repository(root=root, id="other-repository")
+    connection = connect_database(tmp_path / "agent-run.db")
+    try:
+        add_command(connection, repository, "test", ["pytest"])
+        add_command(connection, other_repository, "test", ["other"])
+        remove_command(connection, repository, "test")
+        commands = list_commands(connection, other_repository)
+
+        with pytest.raises(CommandNotFoundError, match="test"):
+            remove_command(connection, repository, "test")
+    finally:
+        connection.close()
+
+    assert [command.argv for command in commands] == [("other",)]
 
 
 def test_add_command_rejects_unsafe_or_missing_directories(tmp_path: Path) -> None:
@@ -175,9 +298,193 @@ def test_cli_list_rejects_separator(
     assert result["ok"] is False
     assert result["error"]["code"] == "usage"
     assert result["error"]["message"] == (
-        "the -- separator is only valid for the add command"
+        "the -- separator is only valid for the add or edit commands"
     )
     assert "agent-run: error:" in captured.err
+
+
+def test_cli_edit_rename_and_remove_support_text_and_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The edit, rename, and remove subcommands update the registered command."""
+    root = _initialise_repository(tmp_path / "repository")
+    (root / "scripts").mkdir()
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    main(["add", "build", "--", "make"])
+    capsys.readouterr()
+
+    edit_exit_code = main(
+        [
+            "edit",
+            "build",
+            "--cwd",
+            "scripts",
+            "--json",
+            "--",
+            "make",
+            "all",
+        ]
+    )
+    edit_output = capsys.readouterr()
+    edit_result = json.loads(edit_output.out)
+
+    assert edit_exit_code == 0
+    assert edit_result == {
+        "ok": True,
+        "data": {
+            "name": "build",
+            "working_directory": "scripts",
+            "argv": ["make", "all"],
+        },
+    }
+    assert edit_output.err == ""
+
+    rename_exit_code = main(["rename", "build", "check"])
+    rename_output = capsys.readouterr()
+
+    assert rename_exit_code == 0
+    assert "name: check" in rename_output.out
+    assert "working directory: scripts" in rename_output.out
+    assert 'argv: ["make", "all"]' in rename_output.out
+    assert rename_output.err == ""
+
+    remove_exit_code = main(["remove", "check", "--json"])
+    remove_output = capsys.readouterr()
+    remove_result = json.loads(remove_output.out)
+
+    assert remove_exit_code == 0
+    assert remove_result == {"ok": True, "data": {"name": "check"}}
+    assert remove_output.err == ""
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["edit", "missing", "--json", "--", "echo"],
+        ["rename", "missing", "renamed", "--json"],
+        ["remove", "missing", "--json"],
+    ],
+)
+def test_cli_mutations_report_unknown_names_as_not_found(
+    arguments: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The mutation subcommands map unknown names to the not-found error."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    exit_code = main(arguments)
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 1
+    assert result["ok"] is False
+    assert result["error"]["code"] == "not-found"
+    assert "missing" in result["error"]["message"]
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    ("arguments", "command_names", "message", "raises_system_exit"),
+    [
+        (
+            ["edit", "build", "--json"],
+            ["build"],
+            "Edit must change arguments or working directory.",
+            False,
+        ),
+        (
+            ["edit", "build", "stray", "--json"],
+            ["build"],
+            "all command arguments must follow --",
+            True,
+        ),
+        (
+            ["rename", "a", "b", "--json"],
+            ["a", "b"],
+            'Command "b" already exists. Use agent-run edit b to change it.',
+            False,
+        ),
+        (
+            ["rename", "a", " ", "--json"],
+            ["a"],
+            "Command name must not be empty.",
+            False,
+        ),
+    ],
+)
+def test_cli_mutations_report_usage_errors(
+    arguments: list[str],
+    command_names: list[str],
+    message: str,
+    raises_system_exit: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The mutation subcommands report invalid requests as usage errors."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    for name in command_names:
+        main(["add", name, "--", "echo"])
+    capsys.readouterr()
+
+    if raises_system_exit:
+        with pytest.raises(SystemExit) as error:
+            main(arguments)
+
+        exit_code = error.value.code
+    else:
+        exit_code = main(arguments)
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 2
+    assert result == {
+        "ok": False,
+        "error": {"code": "usage", "message": message},
+    }
+
+    if raises_system_exit:
+        assert "agent-run edit: error:" in captured.err
+    else:
+        assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    ("command", "description"),
+    [
+        ("edit", "Change a named project command."),
+        ("rename", "Rename a named project command."),
+        ("remove", "Remove a named project command."),
+    ],
+)
+def test_cli_mutation_help_uses_json_envelope(
+    command: str,
+    description: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Mutation help is returned inside the JSON success envelope."""
+    exit_code = main([command, "--help", "--json"])
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert result["ok"] is True
+    assert description in result["data"]["help"]
+    assert captured.err == ""
 
 
 def test_cli_add_help_uses_json_envelope(

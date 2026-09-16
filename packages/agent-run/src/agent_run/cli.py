@@ -7,7 +7,16 @@ import sys
 from collections.abc import Sequence
 from typing import NoReturn
 
-from agent_run.commands import Command, CommandError, add_command, list_commands
+from agent_run.commands import (
+    Command,
+    CommandError,
+    CommandNotFoundError,
+    add_command,
+    edit_command,
+    list_commands,
+    remove_command,
+    rename_command,
+)
 from agent_run.database import connect_database
 from agent_run.output import render_error, render_success
 from agent_run.repository import RepositoryError, identify_repository
@@ -135,6 +144,87 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     add_parser.add_argument("name", nargs="?", help="Name used to run the command.")
 
+    edit_parser = subparsers.add_parser(
+        "edit",
+        help="Change a named project command.",
+        description="Change a named project command.",
+        usage="agent-run edit NAME [--cwd DIR] [--json] [-- ARGV...]",
+        add_help=False,
+        json_mode=json_mode,
+    )
+    edit_parser.add_argument(
+        "--help",
+        "-h",
+        action="store_true",
+        dest="edit_help",
+        help="Show this help message and exit.",
+    )
+    edit_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Write one structured JSON result to standard output.",
+    )
+    edit_parser.add_argument(
+        "--cwd",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Change the working directory to DIR relative to the repository root; "
+            "symlinked directories are stored as their resolved target."
+        ),
+    )
+    edit_parser.add_argument("name", nargs="?", help="Name of the command to change.")
+
+    rename_parser = subparsers.add_parser(
+        "rename",
+        help="Rename a named project command.",
+        description="Rename a named project command.",
+        usage="agent-run rename NAME NEW_NAME [--json]",
+        add_help=False,
+        json_mode=json_mode,
+    )
+    rename_parser.add_argument(
+        "--help",
+        "-h",
+        action="store_true",
+        dest="rename_help",
+        help="Show this help message and exit.",
+    )
+    rename_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Write one structured JSON result to standard output.",
+    )
+    rename_parser.add_argument("name", nargs="?", help="Current name of the command.")
+    rename_parser.add_argument(
+        "new_name", nargs="?", help="Replacement name for the command."
+    )
+
+    remove_parser = subparsers.add_parser(
+        "remove",
+        help="Remove a named project command.",
+        description="Remove a named project command.",
+        usage="agent-run remove NAME [--json]",
+        add_help=False,
+        json_mode=json_mode,
+    )
+    remove_parser.add_argument(
+        "--help",
+        "-h",
+        action="store_true",
+        dest="remove_help",
+        help="Show this help message and exit.",
+    )
+    remove_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Write one structured JSON result to standard output.",
+    )
+    remove_parser.add_argument("name", nargs="?", help="Name of the command to remove.")
+
     list_parser = subparsers.add_parser(
         "list",
         help="List named project commands.",
@@ -162,13 +252,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parsed, unknown = parser.parse_known_args(values[:separator_index])
 
     if unknown:
-        if parsed.command == "add":
-            add_parser.error("all command arguments must follow --")
+        if parsed.command in {"add", "edit"}:
+            command_parser = add_parser if parsed.command == "add" else edit_parser
+            command_parser.error("all command arguments must follow --")
 
         parser.error(f"unrecognized arguments: {' '.join(unknown)}")
 
-    if parsed.command != "add" and separator_index < len(values):
-        parser.error("the -- separator is only valid for the add command")
+    if parsed.command not in {"add", "edit"} and separator_index < len(values):
+        parser.error("the -- separator is only valid for the add or edit commands")
 
     if parsed.command == "repository" and parsed.repository_help:
         repository_help_text = repository_parser.format_help()
@@ -185,6 +276,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             return render_success(json_mode=True, data={"help": add_help_text})
 
         return render_success(json_mode=False, text=add_help_text)
+
+    if parsed.command == "edit" and parsed.edit_help:
+        edit_help_text = edit_parser.format_help()
+
+        if parsed.json:
+            return render_success(json_mode=True, data={"help": edit_help_text})
+
+        return render_success(json_mode=False, text=edit_help_text)
+
+    if parsed.command == "rename" and parsed.rename_help:
+        rename_help_text = rename_parser.format_help()
+
+        if parsed.json:
+            return render_success(json_mode=True, data={"help": rename_help_text})
+
+        return render_success(json_mode=False, text=rename_help_text)
+
+    if parsed.command == "remove" and parsed.remove_help:
+        remove_help_text = remove_parser.format_help()
+
+        if parsed.json:
+            return render_success(json_mode=True, data={"help": remove_help_text})
+
+        return render_success(json_mode=False, text=remove_help_text)
 
     if parsed.command == "list" and parsed.list_help:
         list_help_text = list_parser.format_help()
@@ -259,6 +374,138 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         data = _command_record(command)
         text = _format_command(command)
+
+        if parsed.json:
+            return render_success(json_mode=True, data=data)
+
+        return render_success(json_mode=False, text=text)
+
+    if parsed.command == "edit":
+        # The name is optional to argparse only so `edit --help` reaches the help
+        # branch above; it is still required to change a command.
+        if parsed.name is None:
+            edit_parser.error("the following arguments are required: name")
+
+        command_arguments = (
+            values[separator_index + 1 :] if separator_index < len(values) else None
+        )
+
+        try:
+            repository = identify_repository()
+            connection = connect_database()
+            try:
+                command = edit_command(
+                    connection,
+                    repository,
+                    parsed.name,
+                    command_arguments,
+                    parsed.cwd,
+                )
+            finally:
+                connection.close()
+        except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="environment",
+                message=str(error),
+            )
+        except CommandNotFoundError as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="not-found",
+                message=str(error),
+            )
+        except CommandError as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="usage",
+                message=str(error),
+            )
+
+        data = _command_record(command)
+        text = _format_command(command)
+
+        if parsed.json:
+            return render_success(json_mode=True, data=data)
+
+        return render_success(json_mode=False, text=text)
+
+    if parsed.command == "rename":
+        # The names are optional to argparse only so `rename --help` reaches the
+        # help branch above; both are required to rename a command.
+        if parsed.name is None:
+            rename_parser.error("the following arguments are required: name")
+
+        if parsed.new_name is None:
+            rename_parser.error("the following arguments are required: new_name")
+
+        try:
+            repository = identify_repository()
+            connection = connect_database()
+            try:
+                command = rename_command(
+                    connection,
+                    repository,
+                    parsed.name,
+                    parsed.new_name,
+                )
+            finally:
+                connection.close()
+        except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="environment",
+                message=str(error),
+            )
+        except CommandNotFoundError as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="not-found",
+                message=str(error),
+            )
+        except CommandError as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="usage",
+                message=str(error),
+            )
+
+        data = _command_record(command)
+        text = _format_command(command)
+
+        if parsed.json:
+            return render_success(json_mode=True, data=data)
+
+        return render_success(json_mode=False, text=text)
+
+    if parsed.command == "remove":
+        # The name is optional to argparse only so `remove --help` reaches the
+        # help branch above; it is still required to remove a command.
+        if parsed.name is None:
+            remove_parser.error("the following arguments are required: name")
+
+        try:
+            repository = identify_repository()
+            connection = connect_database()
+            try:
+                remove_command(connection, repository, parsed.name)
+            finally:
+                connection.close()
+        except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="environment",
+                message=str(error),
+            )
+        except CommandNotFoundError as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="not-found",
+                message=str(error),
+            )
+
+        data = {"name": parsed.name}
+        text = f"name: {parsed.name}"
 
         if parsed.json:
             return render_success(json_mode=True, data=data)

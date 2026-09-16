@@ -38,6 +38,21 @@ agent-run add test -- pytest
 agent-run add lint --cwd tools --json -- ruff check
 ```
 
+Change a command's working directory, its arguments, or both. Anything you
+leave out stays as it is:
+
+```sh
+agent-run edit lint --cwd scripts
+agent-run edit lint -- ruff check --fix
+```
+
+Rename or remove a command:
+
+```sh
+agent-run rename old-name new-name
+agent-run remove old-name
+```
+
 List the commands registered for the current repository in name order:
 
 ```sh

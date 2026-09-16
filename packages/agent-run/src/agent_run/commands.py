@@ -11,7 +11,11 @@ from agent_run.repository import Repository
 
 
 class CommandError(RuntimeError):
-    """Report a command that cannot be added to the local repository."""
+    """Report a command that cannot be stored or changed."""
+
+
+class CommandNotFoundError(CommandError):
+    """Report a named command that does not exist for the repository."""
 
 
 @dataclass(frozen=True)
@@ -87,6 +91,34 @@ def _command_from_row(row: sqlite3.Row | tuple[object, ...]) -> Command:
     )
 
 
+def _find_command(
+    connection: sqlite3.Connection, repository: Repository, name: str
+) -> Command:
+    """Return a repository command by name or raise a not-found error.
+
+    Args:
+        connection: Open agent-run database connection.
+        repository: Local repository whose command should be returned.
+        name: Name of the command to find.
+
+    Raises:
+        CommandNotFoundError: If the command is not registered for the repository.
+    """
+    row = connection.execute(
+        """
+        SELECT name, argv, working_directory, created_at
+        FROM commands
+        WHERE repository_id = ? AND name = ?
+        """,
+        (repository.id, name),
+    ).fetchone()
+
+    if row is None:
+        raise CommandNotFoundError(f'Command "{name}" was not found.')
+
+    return _command_from_row(row)
+
+
 def add_command(
     connection: sqlite3.Connection,
     repository: Repository,
@@ -159,3 +191,129 @@ def list_commands(
     ).fetchall()
 
     return [_command_from_row(row) for row in rows]
+
+
+def edit_command(
+    connection: sqlite3.Connection,
+    repository: Repository,
+    name: str,
+    argv: Sequence[str] | None = None,
+    cwd: str | Path | None = None,
+) -> Command:
+    """Change a named command's arguments or working directory.
+
+    Args:
+        connection: Open agent-run database connection.
+        repository: Local repository that owns the command.
+        name: Name of the command to change.
+        argv: Optional non-empty replacement argument array.
+        cwd: Optional replacement directory relative to the repository root.
+
+    Raises:
+        CommandNotFoundError: If the command is not registered for the repository.
+        CommandError: If neither argv nor cwd is supplied, or a replacement is invalid.
+    """
+    command = _find_command(connection, repository, name)
+
+    if argv is None and cwd is None:
+        raise CommandError("Edit must change arguments or working directory.")
+
+    command_arguments = (
+        command.argv if argv is None else _validate_name_and_arguments(name, argv)
+    )
+    relative_working_directory = (
+        command.working_directory
+        if cwd is None
+        else _normalise_working_directory(repository, cwd)
+    )
+
+    connection.execute(
+        """
+        UPDATE commands
+        SET argv = ?, working_directory = ?
+        WHERE repository_id = ? AND name = ?
+        """,
+        (
+            json.dumps(command_arguments),
+            relative_working_directory,
+            repository.id,
+            name,
+        ),
+    )
+
+    return Command(
+        name=command.name,
+        argv=command_arguments,
+        working_directory=relative_working_directory,
+        created_at=command.created_at,
+    )
+
+
+def rename_command(
+    connection: sqlite3.Connection,
+    repository: Repository,
+    name: str,
+    new_name: str,
+) -> Command:
+    """Rename a named command and return its updated record.
+
+    Args:
+        connection: Open agent-run database connection.
+        repository: Local repository that owns the command.
+        name: Current name of the command.
+        new_name: Replacement name for the command.
+
+    Raises:
+        CommandNotFoundError: If the current name is not registered for the repository.
+        CommandError: If the replacement name is empty or already registered.
+    """
+    if not new_name.strip():
+        raise CommandError("Command name must not be empty.")
+
+    command = _find_command(connection, repository, name)
+
+    try:
+        connection.execute(
+            """
+            UPDATE commands
+            SET name = ?
+            WHERE repository_id = ? AND name = ?
+            """,
+            (new_name, repository.id, name),
+        )
+    except sqlite3.IntegrityError as error:
+        raise CommandError(
+            f'Command "{new_name}" already exists. Use agent-run edit {new_name} to change it.'
+        ) from error
+
+    return Command(
+        name=new_name,
+        argv=command.argv,
+        working_directory=command.working_directory,
+        created_at=command.created_at,
+    )
+
+
+def remove_command(
+    connection: sqlite3.Connection, repository: Repository, name: str
+) -> None:
+    """Remove a named command from a repository.
+
+    Args:
+        connection: Open agent-run database connection.
+        repository: Local repository that owns the command.
+        name: Name of the command to remove.
+
+    Raises:
+        CommandNotFoundError: If the command is not registered for the repository.
+    """
+    cursor = connection.execute(
+        """
+        DELETE FROM commands
+        WHERE repository_id = ? AND name = ?
+        """,
+        (repository.id, name),
+    )
+
+    if cursor.rowcount == 0:
+        raise CommandNotFoundError(f'Command "{name}" was not found.')
