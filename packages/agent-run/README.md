@@ -4,8 +4,8 @@
 bounded results and complete evidence for failures.
 
 The command shell exposes help, repository identification, named command
-registration, and the shared text and JSON output contract. Targeting,
-execution, and evidence arrive in later chunks.
+registration, direct command execution, and the shared text and JSON output
+contract. Targeting and evidence arrive in later chunks.
 
 Install it once as an editable global tool so the `agent-run` on your PATH
 tracks this checkout without reinstalling after each change:
@@ -62,3 +62,19 @@ agent-run list --json
 
 Working directories must stay inside the repository. A symlinked directory is
 stored as its resolved target.
+
+## Run commands
+
+Run a direct argument-array command in the foreground. A positive `--timeout`
+in seconds is required, and `--cwd` selects a directory inside the current
+repository.
+
+```sh
+agent-run run --timeout 30 -- pytest
+agent-run run --cwd tools --timeout 10 --json -- ruff check
+```
+
+Text output includes the command's combined standard output and standard error,
+followed by its exit status. JSON output returns the captured output and run
+details in `data`. Until complete private log files and run IDs arrive, output
+capture is provisional and a JSON failure returns only the error message.

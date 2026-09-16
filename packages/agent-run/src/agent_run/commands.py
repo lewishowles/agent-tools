@@ -35,7 +35,7 @@ class Command:
     created_at: str
 
 
-def _normalise_working_directory(
+def normalise_working_directory(
     repository: Repository, working_directory: str | Path | None
 ) -> str:
     """Validate a working directory and return its repository-relative path."""
@@ -139,7 +139,7 @@ def add_command(
         CommandError: If the arguments, directory, or name are invalid.
     """
     command_arguments = _validate_name_and_arguments(name, argv)
-    relative_working_directory = _normalise_working_directory(repository, cwd)
+    relative_working_directory = normalise_working_directory(repository, cwd)
 
     created_at = datetime.now(timezone.utc).isoformat()
 
@@ -224,7 +224,7 @@ def edit_command(
     relative_working_directory = (
         command.working_directory
         if cwd is None
-        else _normalise_working_directory(repository, cwd)
+        else normalise_working_directory(repository, cwd)
     )
 
     connection.execute(

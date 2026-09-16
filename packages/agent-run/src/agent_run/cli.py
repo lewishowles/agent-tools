@@ -14,10 +14,12 @@ from agent_run.commands import (
     add_command,
     edit_command,
     list_commands,
+    normalise_working_directory,
     remove_command,
     rename_command,
 )
 from agent_run.database import connect_database
+from agent_run.execution import RunResult, run_command
 from agent_run.output import render_error, render_success
 from agent_run.repository import RepositoryError, identify_repository
 from agent_run.schema import NewerSchemaError
@@ -176,6 +178,44 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     edit_parser.add_argument("name", nargs="?", help="Name of the command to change.")
 
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Run a direct project command.",
+        description="Run a direct project command in the foreground.",
+        usage="agent-run run [--cwd DIR] --timeout SECONDS [--json] -- ARGV...",
+        add_help=False,
+        json_mode=json_mode,
+    )
+    run_parser.add_argument(
+        "--help",
+        "-h",
+        action="store_true",
+        dest="run_help",
+        help="Show this help message and exit.",
+    )
+    run_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Write one structured JSON result to standard output.",
+    )
+    run_parser.add_argument(
+        "--cwd",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Run from DIR relative to the repository root (default: root); "
+            "symlinked directories are resolved before execution."
+        ),
+    )
+    run_parser.add_argument(
+        "--timeout",
+        metavar="SECONDS",
+        type=float,
+        default=None,
+        help="Stop the command after this positive number of seconds.",
+    )
+
     rename_parser = subparsers.add_parser(
         "rename",
         help="Rename a named project command.",
@@ -252,14 +292,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parsed, unknown = parser.parse_known_args(values[:separator_index])
 
     if unknown:
-        if parsed.command in {"add", "edit"}:
-            command_parser = add_parser if parsed.command == "add" else edit_parser
+        if parsed.command in {"add", "edit", "run"}:
+            command_parser = {
+                "add": add_parser,
+                "edit": edit_parser,
+                "run": run_parser,
+            }[parsed.command]
             command_parser.error("all command arguments must follow --")
 
         parser.error(f"unrecognized arguments: {' '.join(unknown)}")
 
-    if parsed.command not in {"add", "edit"} and separator_index < len(values):
-        parser.error("the -- separator is only valid for the add or edit commands")
+    if parsed.command not in {"add", "edit", "run"} and separator_index < len(values):
+        parser.error(
+            "the -- separator is only valid for the add, edit, or run commands"
+        )
 
     if parsed.command == "repository" and parsed.repository_help:
         repository_help_text = repository_parser.format_help()
@@ -284,6 +330,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return render_success(json_mode=True, data={"help": edit_help_text})
 
         return render_success(json_mode=False, text=edit_help_text)
+
+    if parsed.command == "run" and parsed.run_help:
+        run_help_text = run_parser.format_help()
+
+        if parsed.json:
+            return render_success(json_mode=True, data={"help": run_help_text})
+
+        return render_success(json_mode=False, text=run_help_text)
 
     if parsed.command == "rename" and parsed.rename_help:
         rename_help_text = rename_parser.format_help()
@@ -334,6 +388,73 @@ def main(argv: Sequence[str] | None = None) -> int:
             return render_success(json_mode=True, data=data)
 
         return render_success(json_mode=False, text=text)
+
+    if parsed.command == "run":
+        # The timeout is optional to argparse so `run --help` reaches the help
+        # branch above; it is still required to execute a command.
+        if parsed.timeout is None:
+            run_parser.error("the following arguments are required: --timeout")
+
+        command_arguments = values[separator_index + 1 :]
+
+        if not command_arguments:
+            run_parser.error("the following arguments are required: ARGV")
+
+        try:
+            repository = identify_repository()
+            relative_working_directory = normalise_working_directory(
+                repository, parsed.cwd
+            )
+            result = run_command(
+                command_arguments,
+                repository.root / relative_working_directory,
+                parsed.timeout,
+            )
+        except (RepositoryError, OSError) as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="environment",
+                message=str(error),
+            )
+        except (CommandError, ValueError) as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="usage",
+                message=str(error),
+            )
+        except KeyboardInterrupt:
+            render_error(
+                json_mode=parsed.json,
+                code="check-failed",
+                message="Command interrupted.",
+            )
+            return 130
+
+        failure_message = None
+
+        if result.timed_out:
+            unit = "second" if parsed.timeout == 1 else "seconds"
+            failure_message = f"Command killed after {parsed.timeout:g} {unit}."
+        elif result.exit_status != 0:
+            failure_message = f"Command exited with status {result.exit_status}."
+
+        if failure_message is None:
+            data = _run_record(result)
+            text = _format_run(result)
+
+            if parsed.json:
+                return render_success(json_mode=True, data=data)
+
+            return render_success(json_mode=False, text=text)
+
+        if not parsed.json and result.output:
+            print(result.output, end="" if result.output.endswith("\n") else "\n")
+
+        return render_error(
+            json_mode=parsed.json,
+            code="check-failed",
+            message=failure_message,
+        )
 
     if parsed.command == "add":
         # The name is optional to argparse only so `add --help` reaches the help
@@ -562,6 +683,28 @@ def _command_record(command: Command) -> dict[str, object]:
         "working_directory": command.working_directory,
         "argv": list(command.argv),
     }
+
+
+def _run_record(result: RunResult) -> dict[str, object]:
+    """Return the public fields for one direct command result."""
+    return {
+        "argv": list(result.argv),
+        "working_directory": str(result.working_directory),
+        "exit_status": result.exit_status,
+        "timed_out": result.timed_out,
+        "duration_seconds": result.duration_seconds,
+        "output": result.output,
+    }
+
+
+def _format_run(result: RunResult) -> str:
+    """Format direct command output followed by one exit status line."""
+    output = result.output
+
+    if output and not output.endswith("\n"):
+        output += "\n"
+
+    return f"{output}exit status: {result.exit_status}"
 
 
 if __name__ == "__main__":

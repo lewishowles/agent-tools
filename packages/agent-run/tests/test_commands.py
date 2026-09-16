@@ -298,7 +298,7 @@ def test_cli_list_rejects_separator(
     assert result["ok"] is False
     assert result["error"]["code"] == "usage"
     assert result["error"]["message"] == (
-        "the -- separator is only valid for the add or edit commands"
+        "the -- separator is only valid for the add, edit, or run commands"
     )
     assert "agent-run: error:" in captured.err
 
