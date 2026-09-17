@@ -1,0 +1,13 @@
+F401 [*] `os` imported but unused
+ --> src/example.py:3:8
+  |
+3 | import os
+  |        ^^
+help: Remove unused import: `os`
+  |
+2 |
+  - import os
+  |
+
+Found 1 error.
+[*] 1 fixable with the `--fix` option.

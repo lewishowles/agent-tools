@@ -12,9 +12,10 @@ from agent_run.failures import (
     FailureReport,
 )
 from agent_run.readers.pytest import PytestReader
+from agent_run.readers.ruff import RuffReader
 
 # Readers are tried in this order, and the first that matches a command reads its log.
-FAILURE_READERS: tuple[FailureReader, ...] = (PytestReader(),)
+FAILURE_READERS: tuple[FailureReader, ...] = (PytestReader(), RuffReader())
 
 
 def read_failure_report(argv: Sequence[str], log_text: str) -> FailureReport:

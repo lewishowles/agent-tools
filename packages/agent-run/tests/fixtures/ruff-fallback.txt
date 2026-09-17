@@ -1,0 +1,9 @@
+ruff failed
+  Cause: Failed to load configuration `invalid.toml`
+  Cause: Failed to parse invalid.toml
+  Cause: TOML parse error at line 1, column 2
+  |
+1 | [
+  |  ^
+unquoted keys cannot be empty, expected letters, numbers, `-`, `_`
+
