@@ -9,10 +9,16 @@ from agent_run.readers import read_failure_report
 class _StubReader:
     """Return a known report so reader selection can be tested in isolation."""
 
-    def __init__(self, should_match: bool, report: FailureReport | None) -> None:
-        """Store the matching result and report returned by this stub."""
+    def __init__(
+        self,
+        should_match: bool,
+        report: FailureReport | None,
+        anchors: tuple[int | None, int | None] = (None, None),
+    ) -> None:
+        """Store the match result, report, and detail anchors returned by this stub."""
         self.should_match = should_match
         self.report = report
+        self.anchors = anchors
         self.read_calls = 0
 
     def matches(self, argv: Sequence[str]) -> bool:
@@ -23,6 +29,10 @@ class _StubReader:
         """Return the configured report and record that parsing was attempted."""
         self.read_calls += 1
         return self.report
+
+    def detail_anchors(self, detail: Sequence[str]) -> tuple[int | None, int | None]:
+        """Return the configured anchors so the trimming window can be tested without a real reader."""
+        return self.anchors
 
 
 def _failure(detail: tuple[str, ...] = ()) -> Failure:
@@ -88,7 +98,7 @@ def test_read_failure_report_falls_back_when_a_reader_finds_no_failure(
 def test_read_failure_report_trims_detail_around_the_code_frame_and_message(
     monkeypatch,
 ) -> None:
-    """Long detail keeps pytest's code frame and error message."""
+    """Long detail keeps the lines the reader anchors."""
     detail = tuple(f"  outer frame {index}" for index in range(25)) + (
         ">       assert actual == expected",
         "E       AssertionError: values differ",
@@ -96,6 +106,7 @@ def test_read_failure_report_trims_detail_around_the_code_frame_and_message(
     reader = _StubReader(
         True,
         FailureReport(True, _failure(detail), (), 0, False, ()),
+        anchors=(25, 26),
     )
     monkeypatch.setattr("agent_run.readers.FAILURE_READERS", (reader,))
 

@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from agent_run.readers import read_failure_report
 from agent_run.readers.pytest import PytestReader
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -94,3 +95,46 @@ def test_pytest_reader_ignores_captured_output_locations() -> None:
     assert report.first.path == "tests/test_server.py"
     assert report.first.line == 12
     assert report.first.title == "AssertionError"
+
+
+def test_pytest_error_class_without_e_line_keeps_the_fallback_detail_window() -> None:
+    """A pytest error class does not use Vitest's line-zero anchor."""
+    detail = (
+        "AssertionError: values differ",
+        *(f"traceback line {index}" for index in range(20)),
+    )
+    log_text = "\n".join(
+        (
+            "=================================== FAILURES ===================================",
+            "_______________________________ test_failure ________________________________",
+            *detail,
+        )
+    )
+
+    report = read_failure_report(["pytest"], log_text)
+
+    assert report.first is not None
+    assert len(report.first.detail) == 20
+    assert report.first.detail[0] == "traceback line 0"
+
+
+def test_pytest_long_diff_keeps_the_code_frame_and_last_error_line() -> None:
+    """A long pytest diff keeps both reader anchors in the bounded detail."""
+    detail = (">       assert a == b",) + tuple(
+        f"E       diff line {index}" for index in range(30)
+    )
+    log_text = "\n".join(
+        (
+            "=================================== FAILURES ===================================",
+            "_______________________________ test_failure ________________________________",
+            *detail,
+        )
+    )
+
+    report = read_failure_report(["pytest"], log_text)
+
+    assert report.first is not None
+    assert len(report.first.detail) == 20
+    assert ">       assert a == b" in report.first.detail
+    assert "E       diff line 29" in report.first.detail
+    assert report.truncated is True

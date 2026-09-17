@@ -28,6 +28,9 @@ _TRACEBACK_LOCATION = re.compile(
     r'^\s*File "(?P<path>.+)", line (?P<line>\d+)(?:, in .*)?$'
 )
 
+# A pytest traceback error line, which starts with the diagnostic marker `E`.
+_PYTEST_ERROR_MESSAGE = re.compile(r"^\s*E(?:\s|$)")
+
 # Captured output can contain text that looks like a source location.
 _CAPTURED_OUTPUT_HEADER = re.compile(r"^-{4,}\s+Captured\b.*-{4,}$")
 
@@ -57,6 +60,32 @@ class PytestReader:
                 "pytest",
             )
         )
+
+    def detail_anchors(self, detail: Sequence[str]) -> tuple[int | None, int | None]:
+        """Anchor on the `>` line that raised the failure and the last `E` line, which
+        carries pytest's assertion message. The `>` anchor is limited to lines at or
+        before the message so later output that starts with `>` is not taken for the
+        code frame."""
+        error_message = max(
+            (
+                index
+                for index, line in enumerate(detail)
+                if _PYTEST_ERROR_MESSAGE.match(line)
+            ),
+            default=None,
+        )
+
+        code_frame = max(
+            (
+                index
+                for index, line in enumerate(detail)
+                if line.lstrip().startswith(">")
+                and (error_message is None or index <= error_message)
+            ),
+            default=None,
+        )
+
+        return code_frame, error_message
 
     def read(self, log_text: str) -> FailureReport | None:
         """Return pytest's first failure block and its short summary entries."""

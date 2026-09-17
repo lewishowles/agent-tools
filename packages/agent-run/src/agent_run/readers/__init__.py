@@ -1,6 +1,5 @@
 """Choose a failure reader for a command and apply the output limits."""
 
-import re
 from collections.abc import Sequence
 
 from agent_run.failures import (
@@ -13,9 +12,14 @@ from agent_run.failures import (
 )
 from agent_run.readers.pytest import PytestReader
 from agent_run.readers.ruff import RuffReader
+from agent_run.readers.vitest import VitestReader
 
 # Readers are tried in this order, and the first that matches a command reads its log.
-FAILURE_READERS: tuple[FailureReader, ...] = (PytestReader(), RuffReader())
+FAILURE_READERS: tuple[FailureReader, ...] = (
+    PytestReader(),
+    RuffReader(),
+    VitestReader(),
+)
 
 
 def read_failure_report(argv: Sequence[str], log_text: str) -> FailureReport:
@@ -38,7 +42,7 @@ def read_failure_report(argv: Sequence[str], log_text: str) -> FailureReport:
     if report is None or report.first is None:
         return _fallback_report(log_text)
 
-    return _bound_report(report)
+    return _bound_report(report, reader)
 
 
 def _fallback_report(log_text: str) -> FailureReport:
@@ -53,13 +57,13 @@ def _fallback_report(log_text: str) -> FailureReport:
     )
 
 
-def _bound_report(report: FailureReport) -> FailureReport:
+def _bound_report(report: FailureReport, reader: FailureReader) -> FailureReport:
     """Apply the shared detail and additional-failure limits."""
     first = report.first
     truncated = report.truncated
 
     if first is not None:
-        detail, detail_truncated = _bound_detail(first.detail)
+        detail, detail_truncated = _bound_detail(first.detail, reader)
         first = Failure(
             path=first.path,
             line=first.line,
@@ -85,14 +89,30 @@ def _bound_report(report: FailureReport) -> FailureReport:
     )
 
 
-def _bound_detail(detail: Sequence[str]) -> tuple[tuple[str, ...], bool]:
+def _bound_detail(
+    detail: Sequence[str], reader: FailureReader
+) -> tuple[tuple[str, ...], bool]:
     """Trim long failure detail, keeping the error message and the line that raised it."""
     detail_lines = tuple(detail)
 
     if len(detail_lines) <= MAX_FAILURE_DETAIL_LINES:
         return detail_lines, False
 
-    code_frame, error_message = _detail_anchors(detail_lines)
+    code_frame, error_message = reader.detail_anchors(detail_lines)
+
+    # A long diff can push the code frame far below the error message, so keep the message
+    # and as much of the frame as the limit allows rather than the tail.
+    if (
+        error_message is not None
+        and code_frame is not None
+        and code_frame > error_message
+    ):
+        code_frame_start = max(
+            error_message + 1,
+            code_frame - MAX_FAILURE_DETAIL_LINES + 2,
+        )
+        code_frame_detail = detail_lines[code_frame_start : code_frame + 1]
+        return (detail_lines[error_message], *code_frame_detail), True
 
     last_anchor = error_message if error_message is not None else code_frame
 
@@ -112,28 +132,3 @@ def _bound_detail(detail: Sequence[str]) -> tuple[tuple[str, ...], bool]:
         )
 
     return detail_window, True
-
-
-def _detail_anchors(
-    detail: Sequence[str],
-) -> tuple[int | None, int | None]:
-    """Return the nearest code-frame and final error-message indexes."""
-    error_message = next(
-        (
-            index
-            for index in range(len(detail) - 1, -1, -1)
-            if re.match(r"^\s*E(?:\s|$)", detail[index])
-        ),
-        None,
-    )
-    code_frame = max(
-        (
-            index
-            for index, line in enumerate(detail)
-            if line.lstrip().startswith(">")
-            and (error_message is None or index <= error_message)
-        ),
-        default=None,
-    )
-
-    return code_frame, error_message

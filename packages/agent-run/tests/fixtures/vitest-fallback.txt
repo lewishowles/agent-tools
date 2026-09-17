@@ -1,0 +1,6 @@
+
+ RUN  v4.1.10 /Users/lewis/Dev/Repositories/Packages/helpers
+
+Error: Failed to load the Vitest configuration
+The test command could not start.
+ ELIFECYCLE  Command failed with exit code 1.

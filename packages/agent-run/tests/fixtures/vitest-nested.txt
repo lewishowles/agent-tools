@@ -1,0 +1,123 @@
+
+ RUN  v4.1.11 /Users/lewis/Dev/Repositories/Packages/components
+
+ ✓ src/components/content/data-table/composables/use-table-sort/use-table-sort.test.js (13 tests) 20ms
+ ✓ src/components/content/data-table/fragments/data-table-header/data-table-header.test.js (9 tests) 78ms
+ ✓ src/components/content/data-table/data-table.metadata.test.js (2 tests) 6ms
+ ❯ src/components/content/data-table/data-table.test.js (98 tests | 4 failed) 767ms
+       ✓ should exist as a Vue component 40ms
+       × Shows a custom empty message and hides the toolbar when it has nothing to show 24ms
+       × renders the actions slot in the injected column 13ms
+       × should label an overflowing wrapper with overflowLabel 22ms
+       × renders the supplied page without applying local search, sort, or pagination 13ms
+         ✓ should handle there being no data present 2ms
+           ✓ boolean (true) 7ms
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/components/content/data-table/data-table.test.js > data-table > Render > Shows a custom empty message and hides the toolbar when it has nothing to show
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/components/content/data-table/data-table.test.js:121:70
+    119|    });
+    120|
+    121|    expect(wrapper.find('[data-test="data-table-toolbar"]').exists()).toBe(true);
+       |                                                                      ^
+    122|    expect(wrapper.get('[data-test="data-table-no-data"]').text()).toContain(
+    123|     "No matching records.",
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  src/components/content/data-table/data-table.test.js > data-table > Render > renders the actions slot in the injected column
+AssertionError: expected '123' to be 12 // Object.is equality
+
+- Expected:
+12
+
++ Received:
+"123"
+
+ ❯ src/components/content/data-table/data-table.test.js:179:46
+    177|    const cells = wrapper.findAll('[data-test="data-table-cell"]');
+    178|
+    179|    expect(cells.at(cells.length - 1).text()).toBe(12);
+       |                                              ^
+    180|   });
+    181|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  src/components/content/data-table/data-table.test.js > data-table > Render > should label an overflowing wrapper with overflowLabel
+AssertionError: expected 'Scrollable table' to be 'asdScrollable table' // Object.is equality
+
+Expected: "asdScrollable table"
+Received: "Scrollable table"
+
+ ❯ src/components/content/data-table/data-table.test.js:291:51
+    289|
+    290|    expect(scrollWrapper.attributes("role")).toBe("region");
+    291|    expect(scrollWrapper.attributes("aria-label")).toBe("asdScrollable table");
+       |                                                   ^
+    292|   });
+    293|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  src/components/content/data-table/data-table.test.js > data-table > Server mode > renders the supplied page without applying local search, sort, or pagination
+AssertionError: expected [ Array(2) ] to deeply equal ArrayContaining{…}
+
+- Expected
++ Received
+
+- ArrayContaining [
+-   ObjectContaining {
++ [
++   {
+      "filters": {
+-       "search": "Alpha",
++       "search": "",
+      },
++     "itemsPerPage": 10,
+      "page": 1,
++     "sort": {
++       "column": "title",
++       "direction": "ascending",
++     },
+    },
+-   ObjectContaining {
++   {
++     "filters": {
++       "search": "Alpha",
++     },
++     "itemsPerPage": 10,
++     "page": 1,
+      "sort": {
+        "column": "title",
+-       "direction": "asdascending",
++       "direction": "ascending",
+      },
+    },
+  ]
+
+ ❯ src/components/content/data-table/data-table.test.js:357:25
+    355|    const stateUpdates = wrapper.emitted("update:state").map(([nextState]) => nextState);
+    356|
+    357|    expect(stateUpdates).toEqual(
+       |                         ^
+    358|     expect.arrayContaining([
+    359|      expect.objectContaining({ filters: { search: "Alpha" }, page: 1 }),
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  1 failed | 14 passed (15)
+      Tests  4 failed | 262 passed (266)
+   Start at  18:33:46
+   Duration  3.81s (transform 6.56s, setup 3.20s, import 8.44s, tests 1.33s, environment 8.13s)
+

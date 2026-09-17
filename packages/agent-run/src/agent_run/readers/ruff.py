@@ -49,6 +49,10 @@ class RuffReader:
             )
         )
 
+    def detail_anchors(self, detail: Sequence[str]) -> tuple[int | None, int | None]:
+        """Ruff details are already short, so nothing is anchored."""
+        return None, None
+
     def read(self, log_text: str) -> FailureReport | None:
         """Return Ruff's first diagnostic and one-line entries for later diagnostics."""
         lines = log_text.splitlines()

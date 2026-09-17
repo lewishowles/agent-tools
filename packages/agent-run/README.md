@@ -85,10 +85,12 @@ private log file. Text output reports the exit status, duration, run ID, and log
 path. JSON output returns the same run details in `data`, including for failed,
 timed-out, and interrupted runs.
 
-Failures from pytest include the first failure's source location, title, and
-bounded detail. Up to 20 further failures are shown as one-line entries, with a
-count for anything hidden by the limit. The first failure detail is limited to
-20 lines, keeping the code frame and error message when a traceback is longer.
+Failures from pytest, ruff, and Vitest include the first failure's
+source location, title, and bounded detail. Up to 20 further failures are shown
+as one-line entries, with a count for anything hidden by the limit. The first
+failure detail is limited to 20 lines, keeping the code frame and error message
+when a traceback is longer. The Vitest reader supports `vitest [run|--run]`,
+`npx vitest`, `npm exec vitest`, `pnpm exec vitest`, and `vp test`.
 
 When the command is not recognised, or its output cannot be parsed, the final
 15 log lines are shown instead. The complete combined output remains in the

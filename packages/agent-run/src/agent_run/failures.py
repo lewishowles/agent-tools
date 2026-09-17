@@ -62,3 +62,7 @@ class FailureReader(Protocol):
 
     def read(self, log_text: str) -> FailureReport | None:
         """Return a report or `None` when the log has no known failures."""
+
+    def detail_anchors(self, detail: Sequence[str]) -> tuple[int | None, int | None]:
+        """Return the code-frame and error-message line indexes to keep when the detail
+        is trimmed. Either is `None` when the reader cannot find it."""

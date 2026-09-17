@@ -1,0 +1,9 @@
+
+ RUN  v4.1.10 /Users/lewis/Dev/Repositories/Packages/helpers
+
+ ✓ lib/number/round.test.js (4 tests) 5ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  18:35:00
+   Duration  300ms (transform 20ms, setup 0ms, import 30ms, tests 5ms, environment 200ms)
