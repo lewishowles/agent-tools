@@ -86,6 +86,8 @@ def render(command: str, data: object) -> str:
 		return _render_commands(data)
 	if command in {"next", "current"}:
 		return _render_next(data)
+	if command == "release get" and isinstance(data, dict):
+		return _render_release(data)
 	if command == "task get" and isinstance(data, dict):
 		return _render_task(data)
 	if command == "chunk get" and isinstance(data, dict):
@@ -337,6 +339,67 @@ def _render_task_clean_dependency(dependency: dict[str, object]) -> str:
 	)
 
 
+def _render_release(release: dict[str, object]) -> str:
+	"""Render one release for release get and next, leaving out any empty section."""
+	blocks = [render_span(str(release.get("title", "")), "text", weight="bold")]
+	status = release.get("status", "")
+	blocks.append(
+		render_row_group(
+			[
+				{
+					"label": "Status",
+					"value": render_span(
+						str(status).replace("-", " "),
+						_STATUS_TONES.get(_status_result_type(status), "info"),
+						weight="bold",
+					),
+				},
+				{
+					"label": "ID",
+					"value": render_span(
+						str(release.get("id", "")), "muted", weight="normal"
+					),
+				},
+			]
+		)
+	)
+
+	for label, key in (
+		("Overview", "overview"),
+		("Purpose", "purpose"),
+		("Risks", "risks"),
+	):
+		value = release.get(key)
+		if not value:
+			continue
+		blocks.extend(
+			[
+				render_span(label),
+				render_span(
+					textwrap.fill(str(value), _ROW_WRAP_WIDTH),
+					"muted",
+					weight="normal",
+				),
+			]
+		)
+
+	out_of_scope = release.get("out_of_scope")
+	if isinstance(out_of_scope, list) and out_of_scope:
+		blocks.append(render_span("Out of scope"))
+		blocks.extend(
+			render_span(f"- {item}", "muted", weight="normal") for item in out_of_scope
+		)
+
+	notes = release.get("notes")
+	if isinstance(notes, list) and notes:
+		blocks.append(render_span("Notes"))
+		blocks.extend(
+			render_span(str(note["body"]), "muted", weight="normal") for note in notes
+		)
+
+	return "\n\n".join(blocks)
+
+
 def _render_task(task: dict[str, object]) -> str:
 	"""Render one task record in full, shared by task get and next.
 
@@ -525,6 +588,10 @@ def _render_next(data: object) -> str:
 	if not isinstance(task, dict):
 		blocks.append(render_row("Task", "No task is selected."))
 	else:
+		release = data.get("release")
+		if isinstance(release, dict):
+			blocks.append(_render_release(release))
+
 		blocks.append(
 			render_row_group(
 				[

@@ -278,6 +278,32 @@ def _task_public_row(
 	return data
 
 
+def _release_public_data(
+	connection: sqlite3.Connection, release_row: object
+) -> dict[str, object]:
+	"""Return a release as release get and next show it, with its out-of-scope items in order and the notes that belong to it."""
+	release = Release.from_row(release_row).to_dict()
+	release_id = str(release["id"])
+	project_id = str(release["project_id"])
+	release["out_of_scope"] = [
+		row["text"]
+		for row in connection.execute(
+			"SELECT text FROM release_out_of_scope WHERE release_id = ? ORDER BY position",
+			(release_id,),
+		).fetchall()
+	]
+	release["notes"] = [
+		Note.from_row(row).to_dict()
+		for row in connection.execute(
+			f"SELECT {_NOTE_COLUMNS} FROM notes "
+			"WHERE project_id = ? AND release_id = ? ORDER BY created_at, id",
+			(project_id, release_id),
+		).fetchall()
+	]
+
+	return release
+
+
 def _task_response(
 	connection: sqlite3.Connection,
 	project: Project,
@@ -296,9 +322,18 @@ def _task_response(
 	task_data = task.to_dict() if task is not None else None
 	if task_data is not None:
 		task_data["chunks"] = _task_chunks(connection, task.id)
+	release_data = None
+	if task is not None and task.release_id is not None:
+		release_row = connection.execute(
+			f"SELECT {_RELEASE_COLUMNS} FROM releases WHERE id = ? AND project_id = ?",
+			(task.release_id, task.project_id),
+		).fetchone()
+		if release_row is not None:
+			release_data = _release_public_data(connection, release_row)
 
 	return {
 		"project": project.to_dict(),
+		"release": release_data,
 		"task": task_data,
 		"chunk": chunk.to_dict() if chunk is not None else None,
 		"dependency_ids": list(dependency_ids),
@@ -721,13 +756,12 @@ class ReadStore(_StoreBase):
 				"WHERE id = ? AND project_id = ?",
 				(release_id, project.id),
 			).fetchone()
+			if row is None:
+				raise NotFoundError(
+					f"release {release_id} was not found", {"id": release_id}
+				)
 
-		if row is None:
-			raise NotFoundError(
-				f"release {release_id} was not found", {"id": release_id}
-			)
-
-		return Release.from_row(row).to_dict()
+			return _release_public_data(connection, row)
 
 	def task_get(
 		self,

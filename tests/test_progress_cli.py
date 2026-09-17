@@ -2671,6 +2671,129 @@ def test_task_get_uses_one_readable_task_view() -> None:
 	assert plain_output.index("Risks") < plain_output.index("Project ID")
 
 
+def test_release_get_uses_one_readable_release_view() -> None:
+	data = {
+		"id": "rel_release_view",
+		"project_id": "prj_release_view",
+		"slug": "hidden-release-slug",
+		"title": "Readable release",
+		"overview": "The release overview.",
+		"purpose": "The release purpose.",
+		"risks": "The release risks.",
+		"status": "in-progress",
+		"out_of_scope": ["First excluded item.", "Second excluded item."],
+		"notes": [
+			{
+				"type": "discovery",
+				"body": "The full release note.\nThe second note line.",
+				"release_id": "rel_release_view",
+				"task_id": None,
+			},
+		],
+		"position": 99,
+	}
+
+	output = render_module.render("release get", data)
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", output)
+
+	assert plain_output.startswith("Readable release")
+	assert "Status" in plain_output and "in progress" in plain_output
+	assert "ID" in plain_output and "rel_release_view" in plain_output
+	assert "Overview" in plain_output and "The release overview." in plain_output
+	assert "Purpose" in plain_output and "The release purpose." in plain_output
+	assert "Risks" in plain_output and "The release risks." in plain_output
+	assert "Out of scope" in plain_output
+	assert "First excluded item." in plain_output
+	assert "Second excluded item." in plain_output
+	assert plain_output.count("Notes") == 1
+	assert "Release notes" not in plain_output
+	assert "release rel_release_view" not in plain_output
+	assert "The full release note.\nThe second note line." in plain_output
+	assert "hidden-release-slug" not in plain_output
+	assert "position" not in plain_output.lower()
+	assert plain_output.index("Readable release") < plain_output.index("Status")
+	assert plain_output.index("Status") < plain_output.index("Overview")
+	assert plain_output.index("Overview") < plain_output.index("Purpose")
+	assert plain_output.index("Purpose") < plain_output.index("Risks")
+	assert plain_output.index("Risks") < plain_output.index("Out of scope")
+	assert plain_output.index("Out of scope") < plain_output.index("Notes")
+
+
+def test_release_get_omits_empty_optional_sections() -> None:
+	output = render_module.render(
+		"release get",
+		{
+			"id": "rel_empty_view",
+			"title": "Minimal release",
+			"status": "planned",
+			"overview": "Overview only.",
+			"purpose": None,
+			"risks": None,
+			"out_of_scope": [],
+			"notes": [],
+		},
+	)
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", output)
+
+	assert "Overview" in plain_output
+	assert "Purpose" not in plain_output
+	assert "Risks" not in plain_output
+	assert "Out of scope" not in plain_output
+	assert "Notes" not in plain_output
+
+
+def test_release_get_routes_to_the_dedicated_release_view(monkeypatch) -> None:
+	monkeypatch.setattr(
+		render_module,
+		"_render_object",
+		lambda data: pytest.fail("release get used the generic renderer"),
+	)
+	monkeypatch.setattr(
+		render_module, "_render_release", lambda release: "release view"
+	)
+
+	assert render_module.render("release get", {"id": "rel_test"}) == "release view"
+
+
+def test_json_release_get_includes_planning_fields(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {
+		"id": "rel_test",
+		"title": "Release",
+		"purpose": "Purpose.",
+		"risks": "Risks.",
+		"out_of_scope": ["Excluded work."],
+		"notes": [{"type": "decision", "body": "Decision."}],
+	}
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def release_get(self, release_id):
+			assert release_id == "rel_test"
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert (
+		cli.main(
+			[
+				"release",
+				"get",
+				"rel_test",
+				"--json",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
 def test_task_get_routes_around_the_generic_object_renderer(monkeypatch) -> None:
 	monkeypatch.setattr(
 		render_module,
@@ -2718,6 +2841,115 @@ def test_next_reuses_the_task_view_and_keeps_position_and_active_chunk(
 	assert "chunk 1 / 3 for task" in output
 	assert "Active chunk" in output
 	assert "Active chunk description." in output
+
+
+def test_human_next_renders_release_before_task(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {
+		"project": {"name": "Agents"},
+		"release": {
+			"id": "rel_next",
+			"title": "Current release",
+			"status": "active",
+			"overview": "Release overview.",
+			"purpose": "Release purpose.",
+			"risks": "Release risks.",
+			"out_of_scope": ["Excluded work."],
+			"notes": [
+				{
+					"type": "decision",
+					"body": "Release decision.",
+					"release_id": "rel_next",
+					"task_id": None,
+				}
+			],
+		},
+		"task": {"id": "tsk_next", "title": "Current task", "status": "ready"},
+		"chunk": None,
+		"task_rank": 1,
+		"task_total": 1,
+	}
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def next(self, *, include_position_totals=False):
+			assert include_position_totals is True
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert cli.main(["next", "--database", str(tmp_path / "db")]) == 0
+
+	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert "Current release" in output
+	assert "Release overview." in output
+	assert "Release decision." in output
+	assert "Current task" in output
+	assert output.index("Current release") < output.index("Current task")
+
+
+def test_human_next_omits_release_without_one(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {
+		"project": {"name": "Agents"},
+		"release": None,
+		"task": {"id": "tsk_next", "title": "Current task", "status": "ready"},
+		"chunk": None,
+		"task_rank": 1,
+		"task_total": 1,
+	}
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def next(self, *, include_position_totals=False):
+			assert include_position_totals is True
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert cli.main(["next", "--database", str(tmp_path / "db")]) == 0
+
+	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert "Current task" in output
+	assert "Release" not in output
+
+
+def test_json_next_includes_the_release_data(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	data = {
+		"project": {"name": "Agents"},
+		"release": {
+			"id": "rel_next",
+			"purpose": "Release purpose.",
+			"risks": "Release risks.",
+			"out_of_scope": ["Excluded work."],
+			"notes": [{"type": "discovery", "body": "Release discovery."}],
+		},
+		"task": None,
+		"chunk": None,
+		"dependency_ids": [],
+		"hint_command": "progress task list",
+	}
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def next(self):
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert cli.main(["next", "--json", "--database", str(tmp_path / "db")]) == 0
+
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 
 def test_human_next_renders_done_chunk_with_success_status(
