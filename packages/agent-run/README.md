@@ -96,6 +96,33 @@ private log file. Text and JSON failures include the same report, with JSON
 placing it in `error.data.failure`; the run ID and log path remain in the error
 message and data.
 
+## Retrieve past runs
+
+Read saved runs without running the command again. `runs` lists the 20 newest
+runs for the current repository by default. Pass `--limit N` to choose another
+positive number of runs.
+
+```sh
+agent-run runs
+agent-run runs --limit 5
+agent-run runs --limit 5 --json
+```
+
+Use the run ID from the list to inspect its record, complete log, or failure
+details:
+
+```sh
+agent-run show RUN_ID
+agent-run log RUN_ID
+agent-run failures RUN_ID
+```
+
+`show` returns the stored command, status, duration, and log path. `log`
+returns the complete saved log. `failures` runs the log through the matching
+failure reader and returns only the failure detail. A passed run reports that
+it has no failures. Add `--json` to any of these commands for the shared JSON
+envelope.
+
 Logs are stored in `agent-run-logs` beside the database. With the default
 database, logs are written to `~/.agents/agent-run-logs`; setting
 `AGENT_RUN_DATABASE` moves the log directory beside the selected database.

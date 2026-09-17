@@ -32,7 +32,16 @@ from agent_run.failures import (
 from agent_run.output import render_error, render_success
 from agent_run.readers import read_failure_report
 from agent_run.repository import RepositoryError, identify_repository
-from agent_run.runs import RunRecord, create_run_log, discard_run_log, save_run
+from agent_run.runs import (
+    DEFAULT_RUN_LIMIT,
+    RunNotFoundError,
+    RunRecord,
+    create_run_log,
+    discard_run_log,
+    get_run,
+    list_runs,
+    save_run,
+)
 from agent_run.schema import NewerSchemaError
 
 
@@ -315,6 +324,106 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Write one structured JSON result to standard output.",
     )
 
+    runs_parser = subparsers.add_parser(
+        "runs",
+        help="List recent runs for the current repository.",
+        description="List recent runs for the current repository.",
+        add_help=False,
+        json_mode=json_mode,
+    )
+    runs_parser.add_argument(
+        "--help",
+        "-h",
+        action="store_true",
+        dest="runs_help",
+        help="Show this help message and exit.",
+    )
+    runs_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Write one structured JSON result to standard output.",
+    )
+    runs_parser.add_argument(
+        "--limit",
+        metavar="N",
+        type=int,
+        default=DEFAULT_RUN_LIMIT,
+        help=(
+            f"Show the N newest runs (default: {DEFAULT_RUN_LIMIT}); "
+            "N must be positive."
+        ),
+    )
+
+    show_parser = subparsers.add_parser(
+        "show",
+        help="Show one saved run record.",
+        description="Show one saved run record without rerunning it.",
+        usage="agent-run show RUN_ID [--json]",
+        add_help=False,
+        json_mode=json_mode,
+    )
+    show_parser.add_argument(
+        "--help",
+        "-h",
+        action="store_true",
+        dest="show_help",
+        help="Show this help message and exit.",
+    )
+    show_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Write one structured JSON result to standard output.",
+    )
+    show_parser.add_argument("run_id", nargs="?", help="ID of the saved run.")
+
+    log_parser = subparsers.add_parser(
+        "log",
+        help="Print the complete log for one saved run.",
+        description="Print the complete log for one saved run without rerunning it.",
+        usage="agent-run log RUN_ID [--json]",
+        add_help=False,
+        json_mode=json_mode,
+    )
+    log_parser.add_argument(
+        "--help",
+        "-h",
+        action="store_true",
+        dest="log_help",
+        help="Show this help message and exit.",
+    )
+    log_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Write one structured JSON result to standard output.",
+    )
+    log_parser.add_argument("run_id", nargs="?", help="ID of the saved run.")
+
+    failures_parser = subparsers.add_parser(
+        "failures",
+        help="Show failure details from one saved run.",
+        description="Show failure details from one saved run without rerunning it.",
+        usage="agent-run failures RUN_ID [--json]",
+        add_help=False,
+        json_mode=json_mode,
+    )
+    failures_parser.add_argument(
+        "--help",
+        "-h",
+        action="store_true",
+        dest="failures_help",
+        help="Show this help message and exit.",
+    )
+    failures_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Write one structured JSON result to standard output.",
+    )
+    failures_parser.add_argument("run_id", nargs="?", help="ID of the saved run.")
+
     # Only the part before `--` is parsed, so argparse never reads stored command
     # arguments. Leftovers are reported here so add can give a message that
     # names the separator.
@@ -391,6 +500,41 @@ def main(argv: Sequence[str] | None = None) -> int:
             return render_success(json_mode=True, data={"help": list_help_text})
 
         return render_success(json_mode=False, text=list_help_text)
+
+    if parsed.command == "runs" and parsed.runs_help:
+        runs_help_text = runs_parser.format_help()
+
+        if parsed.json:
+            return render_success(json_mode=True, data={"help": runs_help_text})
+
+        return render_success(json_mode=False, text=runs_help_text)
+
+    if parsed.command == "show" and parsed.show_help:
+        show_help_text = show_parser.format_help()
+
+        if parsed.json:
+            return render_success(json_mode=True, data={"help": show_help_text})
+
+        return render_success(json_mode=False, text=show_help_text)
+
+    if parsed.command == "log" and parsed.log_help:
+        log_help_text = log_parser.format_help()
+
+        if parsed.json:
+            return render_success(json_mode=True, data={"help": log_help_text})
+
+        return render_success(json_mode=False, text=log_help_text)
+
+    if parsed.command == "failures" and parsed.failures_help:
+        failures_help_text = failures_parser.format_help()
+
+        if parsed.json:
+            return render_success(
+                json_mode=True,
+                data={"help": failures_help_text},
+            )
+
+        return render_success(json_mode=False, text=failures_help_text)
 
     if parsed.help or parsed.command is None:
         help_text = parser.format_help()
@@ -783,6 +927,176 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         return render_success(json_mode=False, text=text)
 
+    if parsed.command == "runs":
+        if parsed.limit <= 0:
+            runs_parser.error("--limit must be a positive integer")
+
+        try:
+            repository = identify_repository()
+            connection = connect_database()
+            try:
+                records = list_runs(connection, repository.id, parsed.limit)
+            finally:
+                connection.close()
+        except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="environment",
+                message=str(error),
+            )
+
+        data = {"runs": [_saved_run_record(record) for record in records]}
+        text = _format_runs(records)
+
+        if parsed.json:
+            return render_success(json_mode=True, data=data)
+
+        return render_success(json_mode=False, text=text)
+
+    if parsed.command == "show":
+        if parsed.run_id is None or not parsed.run_id.strip():
+            show_parser.error(
+                "A run ID is required. Run `agent-run runs` to list saved run IDs."
+            )
+
+        try:
+            repository = identify_repository()
+            connection = connect_database()
+            try:
+                record = get_run(connection, parsed.run_id)
+            finally:
+                connection.close()
+
+            if record.repository_id != repository.id:
+                raise RunNotFoundError(f'Run "{parsed.run_id}" was not found.')
+        except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="environment",
+                message=str(error),
+            )
+        except RunNotFoundError as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="not-found",
+                message=str(error),
+            )
+
+        data = _saved_run_record(record)
+        text = _format_saved_run(record)
+
+        if parsed.json:
+            return render_success(json_mode=True, data=data)
+
+        return render_success(json_mode=False, text=text)
+
+    if parsed.command == "log":
+        if parsed.run_id is None or not parsed.run_id.strip():
+            log_parser.error(
+                "A run ID is required. Run `agent-run runs` to list saved run IDs."
+            )
+
+        try:
+            repository = identify_repository()
+            connection = connect_database()
+            try:
+                record = get_run(connection, parsed.run_id)
+            finally:
+                connection.close()
+
+            if record.repository_id != repository.id:
+                raise RunNotFoundError(f'Run "{parsed.run_id}" was not found.')
+
+            log_text = record.log_path.read_bytes().decode("utf-8", errors="replace")
+
+        except (RepositoryError, NewerSchemaError, OSError, sqlite3.Error) as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="environment",
+                message=str(error),
+            )
+        except RunNotFoundError as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="not-found",
+                message=str(error),
+            )
+
+        data = {
+            "run_id": record.run_id,
+            "log_path": str(record.log_path),
+            "log": log_text,
+        }
+
+        if parsed.json:
+            return render_success(json_mode=True, data=data)
+
+        return render_success(json_mode=False, text=log_text)
+
+    if parsed.command == "failures":
+        if parsed.run_id is None or not parsed.run_id.strip():
+            failures_parser.error(
+                "A run ID is required. Run `agent-run runs` to list saved run IDs."
+            )
+
+        try:
+            repository = identify_repository()
+            connection = connect_database()
+            try:
+                record = get_run(connection, parsed.run_id)
+            finally:
+                connection.close()
+
+            if record.repository_id != repository.id:
+                raise RunNotFoundError(f'Run "{parsed.run_id}" was not found.')
+        except (RepositoryError, NewerSchemaError, OSError, sqlite3.Error) as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="environment",
+                message=str(error),
+            )
+        except RunNotFoundError as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="not-found",
+                message=str(error),
+            )
+
+        if record.exit_status == 0:
+            failure_report = FailureReport(
+                recognised=False,
+                first=None,
+                more=(),
+                hidden_count=0,
+                truncated=False,
+                tail=(),
+            )
+            text = "No failures: the run passed."
+        else:
+            try:
+                log_text = record.log_path.read_bytes().decode(
+                    "utf-8", errors="replace"
+                )
+            except OSError as error:
+                return render_error(
+                    json_mode=parsed.json,
+                    code="environment",
+                    message=str(error),
+                )
+
+            failure_report = read_failure_report(record.argv, log_text)
+            text = _format_failure_report(failure_report)
+
+        data = {
+            "run_id": record.run_id,
+            "failure": _failure_report_record(failure_report),
+        }
+
+        if parsed.json:
+            return render_success(json_mode=True, data=data)
+
+        return render_success(json_mode=False, text=text)
+
 
 def _format_command(command: Command) -> str:
     """Format one named command for human-readable output."""
@@ -806,6 +1120,46 @@ def _format_commands(commands: Sequence[Command]) -> str:
         return "No named commands registered."
 
     return "\n\n".join(_format_command(command) for command in commands)
+
+
+def _saved_run_record(record: RunRecord) -> dict[str, object]:
+    """Return the public fields for a stored run record."""
+    return {
+        "run_id": record.run_id,
+        "argv": list(record.argv),
+        "working_directory": record.working_directory,
+        "timeout_seconds": record.timeout_seconds,
+        "started_at": record.started_at,
+        "duration_seconds": record.duration_seconds,
+        "exit_status": record.exit_status,
+        "timed_out": record.timed_out,
+        "log_path": str(record.log_path),
+    }
+
+
+def _format_saved_run(record: RunRecord) -> str:
+    """Format one stored run record for human-readable output."""
+    return "\n".join(
+        [
+            f"run ID: {record.run_id}",
+            f"command: {json.dumps(list(record.argv))}",
+            f"working directory: {record.working_directory}",
+            f"timeout: {record.timeout_seconds:g}",
+            f"started at: {record.started_at}",
+            f"exit status: {record.exit_status}",
+            f"timed out: {str(record.timed_out).lower()}",
+            f"duration: {record.duration_seconds:.3f}s",
+            f"log path: {record.log_path}",
+        ]
+    )
+
+
+def _format_runs(records: Sequence[RunRecord]) -> str:
+    """Format saved runs for text output, one block per run, or say there are none."""
+    if not records:
+        return "No runs recorded."
+
+    return "\n\n".join(_format_saved_run(record) for record in records)
 
 
 def _command_record(command: Command) -> dict[str, object]:

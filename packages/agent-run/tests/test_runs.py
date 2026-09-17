@@ -9,6 +9,7 @@ from agent_run.runs import (
     RunNotFoundError,
     create_run_log,
     get_run,
+    list_runs,
     resolve_log_directory,
     save_run,
 )
@@ -64,3 +65,61 @@ def test_get_run_rejects_an_unknown_id(tmp_path: Path) -> None:
             get_run(connection, "missing-run")
     finally:
         connection.close()
+
+
+def test_list_runs_returns_one_repository_newest_first(tmp_path: Path) -> None:
+    """Run listing is limited to the repository and ordered newest first."""
+    database_path = tmp_path / "agent-run.db"
+    connection = connect_database(database_path)
+    first_id, first_log_path = create_run_log(database_path)
+    second_id, second_log_path = create_run_log(database_path)
+    other_id, other_log_path = create_run_log(database_path)
+
+    try:
+        save_run(
+            connection,
+            run_id=first_id,
+            repository_id="repository-id",
+            argv=("first",),
+            working_directory=".",
+            timeout_seconds=5,
+            started_at="2026-09-16T12:00:00+00:00",
+            duration_seconds=0.25,
+            exit_status=0,
+            timed_out=False,
+            log_path=first_log_path,
+        )
+        save_run(
+            connection,
+            run_id=second_id,
+            repository_id="repository-id",
+            argv=("second",),
+            working_directory=".",
+            timeout_seconds=5,
+            started_at="2026-09-16T13:00:00+00:00",
+            duration_seconds=0.5,
+            exit_status=1,
+            timed_out=False,
+            log_path=second_log_path,
+        )
+        save_run(
+            connection,
+            run_id=other_id,
+            repository_id="other-repository-id",
+            argv=("other",),
+            working_directory=".",
+            timeout_seconds=5,
+            started_at="2026-09-16T14:00:00+00:00",
+            duration_seconds=0.75,
+            exit_status=0,
+            timed_out=False,
+            log_path=other_log_path,
+        )
+
+        records = list_runs(connection, "repository-id")
+        limited_records = list_runs(connection, "repository-id", limit=1)
+    finally:
+        connection.close()
+
+    assert [record.run_id for record in records] == [second_id, first_id]
+    assert [record.run_id for record in limited_records] == [second_id]

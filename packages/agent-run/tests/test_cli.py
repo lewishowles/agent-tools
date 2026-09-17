@@ -539,6 +539,310 @@ def test_cli_run_text_failure_prints_output_before_error(
     assert "Failure output (last 1 line):" in captured.err
 
 
+def test_cli_retrieves_saved_run_records_logs_and_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Past-run commands read saved evidence without running the command again."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    command_path = root / "pytest"
+    command_path.write_text(
+        """#!/usr/bin/env python3
+print('run preamble')
+print('============================= FAILURES =============================')
+print('____________________________ test_demo ______________________________')
+print('E       AssertionError: values differ')
+print('=========================== short test summary info ============================')
+print('FAILED tests/test_demo.py::test_demo - values differ')
+print('PASSED tests/test_ok.py::test_ok')
+raise SystemExit(1)
+"""
+    )
+    command_path.chmod(0o700)
+
+    run_exit_code = main(["run", "--timeout", "5", "--json", "--", str(command_path)])
+    run_output = capsys.readouterr()
+    run_result = json.loads(run_output.out)
+    run_id = run_result["error"]["data"]["run_id"]
+
+    assert run_exit_code == 1
+
+    runs_exit_code = main(["runs", "--json"])
+    runs_output = capsys.readouterr()
+    runs_result = json.loads(runs_output.out)
+
+    assert runs_exit_code == 0
+    assert runs_result["data"]["runs"][0]["run_id"] == run_id
+    assert runs_result["data"]["runs"][0]["argv"] == [str(command_path)]
+
+    runs_text_exit_code = main(["runs"])
+    runs_text_output = capsys.readouterr()
+
+    assert runs_text_exit_code == 0
+    assert f"run ID: {run_id}" in runs_text_output.out
+    assert f'command: ["{command_path}"]' in runs_text_output.out
+
+    show_exit_code = main(["show", run_id, "--json"])
+    show_output = capsys.readouterr()
+    show_result = json.loads(show_output.out)
+
+    assert show_exit_code == 0
+    assert show_result["data"]["run_id"] == run_id
+    assert show_result["data"]["exit_status"] == 1
+    assert show_result["data"]["duration_seconds"] >= 0
+    assert show_result["data"]["log_path"] == run_result["error"]["data"]["log_path"]
+
+    show_text_exit_code = main(["show", run_id])
+    show_text_output = capsys.readouterr()
+
+    assert show_text_exit_code == 0
+    assert f"run ID: {run_id}" in show_text_output.out
+    assert f'command: ["{command_path}"]' in show_text_output.out
+    assert "exit status: 1" in show_text_output.out
+    assert "duration:" in show_text_output.out
+    assert "log path:" in show_text_output.out
+
+    log_exit_code = main(["log", run_id])
+    log_output = capsys.readouterr()
+
+    assert log_exit_code == 0
+    assert "run preamble\n" in log_output.out
+    assert "PASSED tests/test_ok.py::test_ok\n" in log_output.out
+
+    log_json_exit_code = main(["log", run_id, "--json"])
+    log_json_output = capsys.readouterr()
+    log_json_result = json.loads(log_json_output.out)
+
+    assert log_json_exit_code == 0
+    assert log_json_result["data"]["log"] == log_output.out
+
+    failure_exit_code = main(["failures", run_id])
+    failure_output = capsys.readouterr()
+
+    assert failure_exit_code == 0
+    assert "AssertionError: values differ" in failure_output.out
+    assert "run preamble" not in failure_output.out
+    assert "PASSED tests/test_ok.py::test_ok" not in failure_output.out
+
+    failure_json_exit_code = main(["failures", run_id, "--json"])
+    failure_json_output = capsys.readouterr()
+    failure_json_result = json.loads(failure_json_output.out)
+
+    assert failure_json_exit_code == 0
+    assert failure_json_result["data"]["run_id"] == run_id
+    assert failure_json_result["data"]["failure"]["first"]["detail"] == [
+        "E       AssertionError: values differ"
+    ]
+    assert failure_json_result["data"]["failure"]["tail"] == []
+
+
+@pytest.mark.parametrize("command", ["show", "log", "failures"])
+def test_cli_retrieval_rejects_an_unknown_run_id(
+    command: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Past-run commands return not-found for an unknown ID."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    exit_code = main([command, "missing-run", "--json"])
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 1
+    assert result == {
+        "ok": False,
+        "error": {
+            "code": "not-found",
+            "message": 'Run "missing-run" was not found.',
+        },
+    }
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("command", ["show", "log", "failures"])
+@pytest.mark.parametrize("run_id", [None, "", "   "])
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_cli_retrieval_rejects_a_blank_run_id(
+    command: str,
+    run_id: str | None,
+    json_mode: bool,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Past-run commands explain how to find a missing or blank run ID."""
+    arguments = [command]
+
+    if run_id is not None:
+        arguments.append(run_id)
+
+    if json_mode:
+        arguments.append("--json")
+
+    with pytest.raises(SystemExit) as error:
+        main(arguments)
+
+    captured = capsys.readouterr()
+    message = "A run ID is required. Run `agent-run runs` to list saved run IDs."
+
+    assert error.value.code == 2
+
+    if json_mode:
+        assert json.loads(captured.out) == {
+            "ok": False,
+            "error": {"code": "usage", "message": message},
+        }
+    else:
+        assert captured.out == ""
+        assert f"error: {message}" in captured.err
+
+
+def test_cli_failures_reports_a_passed_run_without_reading_its_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Passed runs report no failures without calling a failure reader."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    assert main(["run", "--json", "--", sys.executable, "-c", "print('passed')"]) == 0
+    run_output = capsys.readouterr()
+    run_id = json.loads(run_output.out)["data"]["run_id"]
+    reader = Mock(side_effect=AssertionError("passed runs must not read failures"))
+    monkeypatch.setattr("agent_run.cli.read_failure_report", reader)
+
+    text_exit_code = main(["failures", run_id])
+    text_output = capsys.readouterr()
+
+    assert text_exit_code == 0
+    assert text_output.out == "No failures: the run passed.\n"
+    assert text_output.err == ""
+    assert reader.call_count == 0
+
+    json_exit_code = main(["failures", run_id, "--json"])
+    json_output = capsys.readouterr()
+    json_result = json.loads(json_output.out)
+
+    assert json_exit_code == 0
+    assert json_result["data"]["failure"] == {
+        "recognised": False,
+        "first": None,
+        "more": [],
+        "hidden_count": 0,
+        "truncated": False,
+        "tail": [],
+    }
+    assert json_output.err == ""
+
+
+def test_cli_runs_text_reports_no_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The text run list names an empty repository clearly."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    exit_code = main(["runs"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.out == "No runs recorded.\n"
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("limit", ["0", "-1", "not-a-number"])
+def test_cli_runs_rejects_a_non_positive_or_invalid_limit(
+    limit: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The run list requires a positive integer limit."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    with pytest.raises(SystemExit) as error:
+        main(["runs", "--limit", limit, "--json"])
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert error.value.code == 2
+    assert result["ok"] is False
+    assert result["error"]["code"] == "usage"
+    assert captured.err
+
+
+def test_cli_runs_applies_a_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The run list returns only the requested number of newest runs."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    assert main(["run", "--json", "--", "echo", "first"]) == 0
+    capsys.readouterr()
+    assert main(["run", "--json", "--", "echo", "second"]) == 0
+    second_result = json.loads(capsys.readouterr().out)
+
+    exit_code = main(["runs", "--limit", "1", "--json"])
+    output = capsys.readouterr()
+    result = json.loads(output.out)
+
+    assert exit_code == 0
+    assert len(result["data"]["runs"]) == 1
+    assert result["data"]["runs"][0]["run_id"] == second_result["data"]["run_id"]
+
+
+@pytest.mark.parametrize("command", ["show", "log", "failures"])
+def test_cli_retrieval_rejects_a_run_from_another_repository(
+    command: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Past-run commands hide runs saved for another repository."""
+    first_root = _initialise_repository(tmp_path / "first-repository")
+    monkeypatch.chdir(first_root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    assert main(["run", "--json", "--", "echo", "saved"]) == 0
+    run_output = capsys.readouterr()
+    run_id = json.loads(run_output.out)["data"]["run_id"]
+
+    second_root = _initialise_repository(tmp_path / "second-repository")
+    monkeypatch.chdir(second_root)
+
+    exit_code = main([command, run_id, "--json"])
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 1
+    assert result == {
+        "ok": False,
+        "error": {
+            "code": "not-found",
+            "message": f'Run "{run_id}" was not found.',
+        },
+    }
+    assert captured.err == ""
+
+
 def test_text_mode_renders_result() -> None:
     """Text mode writes only the text, with one trailing newline, to stdout."""
     stdout = StringIO()

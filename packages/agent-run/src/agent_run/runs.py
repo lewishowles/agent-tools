@@ -13,6 +13,9 @@ from agent_run.database import resolve_database_path
 # Folder beside the database that holds one log file per run.
 LOG_DIRECTORY_NAME = "agent-run-logs"
 
+# Number of recent runs shown when no listing limit is supplied.
+DEFAULT_RUN_LIMIT = 20
+
 
 class RunNotFoundError(LookupError):
     """Raised when no saved run has the requested ID."""
@@ -202,3 +205,36 @@ def get_run(connection: sqlite3.Connection, run_id: str) -> RunRecord:
         raise RunNotFoundError(f'Run "{run_id}" was not found.')
 
     return _run_from_row(row)
+
+
+def list_runs(
+    connection: sqlite3.Connection,
+    repository_id: str,
+    limit: int = DEFAULT_RUN_LIMIT,
+) -> tuple[RunRecord, ...]:
+    """Return up to ``limit`` saved runs for one repository, newest first."""
+    if limit <= 0:
+        raise ValueError("Run limit must be a positive integer.")
+
+    rows = connection.execute(
+        """
+        SELECT
+            run_id,
+            repository_id,
+            argv,
+            working_directory,
+            timeout_seconds,
+            started_at,
+            duration_seconds,
+            exit_status,
+            timed_out,
+            log_path
+        FROM runs
+        WHERE repository_id = ?
+        ORDER BY started_at DESC, rowid DESC
+        LIMIT ?
+        """,
+        (repository_id, limit),
+    ).fetchall()
+
+    return tuple(_run_from_row(row) for row in rows)
