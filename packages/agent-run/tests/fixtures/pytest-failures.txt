@@ -1,0 +1,28 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.11.0, pytest-8.0.0
+collected 3 items
+
+tests/test_example.py F
+tests/test_other.py F
+tests/test_ok.py .
+
+=================================== FAILURES ===================================
+_______________________________ test_example ________________________________
+
+    def test_example():
+>       assert 1 == 2
+E       assert 1 == 2
+E       assert 1 == 2
+
+tests/test_example.py:4: AssertionError
+_______________________________ test_other __________________________________
+
+    def test_other():
+>       assert False
+E       assert False
+
+tests/test_other.py:4: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_example.py::test_example - assert 1 == 2
+FAILED tests/test_other.py::test_other - assert False
+========================= 2 failed, 1 passed in 0.05s ==========================

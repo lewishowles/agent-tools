@@ -25,7 +25,12 @@ from agent_run.commands import (
 )
 from agent_run.database import connect_database, resolve_database_path
 from agent_run.execution import DEFAULT_TIMEOUT_SECONDS, RunResult, run_command
+from agent_run.failures import (
+    Failure,
+    FailureReport,
+)
 from agent_run.output import render_error, render_success
+from agent_run.readers import read_failure_report
 from agent_run.repository import RepositoryError, identify_repository
 from agent_run.runs import RunRecord, create_run_log, discard_run_log, save_run
 from agent_run.schema import NewerSchemaError
@@ -540,12 +545,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         failure_message = (
             f"{failure_message} run ID: {record.run_id}; log path: {record.log_path}"
         )
+        failure_data = _run_record(result, record)
+        # Interrupted runs stop part-way, so their output is not read for failures.
+        failure_text = None
+
+        if not interrupted:
+            try:
+                log_text = record.log_path.read_bytes().decode(
+                    "utf-8", errors="replace"
+                )
+            except OSError:
+                failure_report = FailureReport(
+                    recognised=False,
+                    first=None,
+                    more=(),
+                    hidden_count=0,
+                    truncated=False,
+                    tail=(),
+                )
+            else:
+                failure_report = read_failure_report(result.argv, log_text)
+
+            failure_data["failure"] = _failure_report_record(failure_report)
+            failure_text = (
+                f"Error: {failure_message}\n\n{_format_failure_report(failure_report)}"
+            )
 
         exit_code = render_error(
             json_mode=parsed.json,
             code="check-failed",
             message=failure_message,
-            data=_run_record(result, record),
+            data=failure_data,
+            text=failure_text,
         )
 
         return 130 if interrupted else exit_code
@@ -798,6 +829,75 @@ def _run_record(result: RunResult, record: RunRecord) -> dict[str, object]:
         "run_id": record.run_id,
         "log_path": str(record.log_path),
     }
+
+
+def _failure_record(failure: Failure) -> dict[str, object]:
+    """Return the public fields for one extracted failure."""
+    return {
+        "path": failure.path,
+        "line": failure.line,
+        "column": failure.column,
+        "title": failure.title,
+        "detail": list(failure.detail),
+    }
+
+
+def _failure_report_record(report: FailureReport) -> dict[str, object]:
+    """Return the failure report as the fields placed in `error.data.failure`."""
+    return {
+        "recognised": report.recognised,
+        "first": (None if report.first is None else _failure_record(report.first)),
+        "more": [_failure_record(failure) for failure in report.more],
+        "hidden_count": report.hidden_count,
+        "truncated": report.truncated,
+        "tail": list(report.tail),
+    }
+
+
+def _format_failure_report(report: FailureReport) -> str:
+    """Format the same bounded failure evidence shown in JSON data."""
+    if not report.recognised or report.first is None:
+        if not report.tail:
+            return "Failure output was not recognised."
+
+        tail_count = len(report.tail)
+        tail_unit = "line" if tail_count == 1 else "lines"
+
+        return "\n".join(
+            [f"Failure output (last {tail_count} {tail_unit}):", *report.tail]
+        )
+
+    lines = ["First failure:", _format_failure_line(report.first)]
+    lines.extend(report.first.detail)
+
+    if report.more:
+        lines.extend(["", "Additional failures:"])
+        lines.extend(_format_failure_line(failure) for failure in report.more)
+
+    if report.hidden_count:
+        lines.append(
+            f"{report.hidden_count} additional failure(s) hidden by the limit."
+        )
+
+    if report.truncated:
+        lines.append("Some failure details were truncated by the limit.")
+
+    return "\n".join(lines)
+
+
+def _format_failure_line(failure: Failure) -> str:
+    """Format one failure as a compact source location and title line."""
+    location_parts = [failure.path] if failure.path else []
+
+    if failure.line is not None:
+        location_parts.append(str(failure.line))
+
+        if failure.column is not None:
+            location_parts.append(str(failure.column))
+
+    location = ":".join(location_parts)
+
+    return f"{location}: {failure.title}" if location else failure.title
 
 
 def _format_run(result: RunResult, record: RunRecord) -> str:

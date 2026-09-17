@@ -427,6 +427,40 @@ def test_cli_run_returns_130_after_interrupt(
     assert row == (-signal.SIGINT, 0)
 
 
+def test_cli_run_json_failure_includes_unrecognised_tail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """JSON failures keep a fallback tail for commands without a reader."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    exit_code = main(
+        [
+            "run",
+            "--timeout",
+            "5",
+            "--json",
+            "--",
+            sys.executable,
+            "-c",
+            "print('captured', flush=True); raise SystemExit(9)",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    failure = result["error"]["data"]["failure"]
+
+    assert exit_code == 1
+    assert result["ok"] is False
+    assert failure["recognised"] is False
+    assert failure["tail"]
+    assert captured.err == ""
+
+
 def test_cli_run_maps_non_positive_timeout_to_usage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -502,6 +536,7 @@ def test_cli_run_text_failure_prints_output_before_error(
     assert "Error: Command exited with status 9." in captured.err
     assert "run ID:" in captured.err
     assert "log path:" in captured.err
+    assert "Failure output (last 1 line):" in captured.err
 
 
 def test_text_mode_renders_result() -> None:

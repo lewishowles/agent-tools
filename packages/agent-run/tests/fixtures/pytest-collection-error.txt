@@ -1,0 +1,11 @@
+============================= test session starts ==============================
+collected 0 items / 1 error
+
+==================================== ERRORS ====================================
+________________ ERROR collecting tests/test_example.py _________________
+ImportError while importing test module '/workspace/tests/test_example.py'.
+E   ModuleNotFoundError: No module named 'missing_dependency'
+=========================== short test summary info ============================
+ERROR tests/test_example.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+=============================== 1 error in 0.02s ================================

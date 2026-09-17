@@ -1,0 +1,15 @@
+============================= test session starts ==============================
+collected 1 item
+
+=================================== FAILURES ===================================
+_______________________________ test_server __________________________________
+
+>       assert response.ok
+E       AssertionError
+
+tests/test_server.py:12: AssertionError
+----------------------------- Captured stdout call -----------------------------
+listening on 127.0.0.1:8080
+=========================== short test summary info ============================
+FAILED tests/test_server.py::test_server - AssertionError
+============================== 1 failed in 0.01s ===============================

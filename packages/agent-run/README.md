@@ -85,9 +85,16 @@ private log file. Text output reports the exit status, duration, run ID, and log
 path. JSON output returns the same run details in `data`, including for failed,
 timed-out, and interrupted runs.
 
-Text-mode failures include the run ID and log path in the error message. JSON
-failures include those same run details in the error `data` field alongside the
-failure code and message.
+Failures from pytest include the first failure's source location, title, and
+bounded detail. Up to 20 further failures are shown as one-line entries, with a
+count for anything hidden by the limit. The first failure detail is limited to
+20 lines, keeping the code frame and error message when a traceback is longer.
+
+When the command is not recognised, or its output cannot be parsed, the final
+15 log lines are shown instead. The complete combined output remains in the
+private log file. Text and JSON failures include the same report, with JSON
+placing it in `error.data.failure`; the run ID and log path remain in the error
+message and data.
 
 Logs are stored in `agent-run-logs` beside the database. With the default
 database, logs are written to `~/.agents/agent-run-logs`; setting

@@ -1,0 +1,14 @@
+============================= test session starts ==============================
+collected 1 item
+
+=================================== FAILURES ===================================
+_______________________________ test_failure _________________________________
+
+>       assert False
+E       assert False
+
+tests/test_failure.py:4: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_failure.py::test_failure - assert False
+ERROR tests/test_collection.py - ImportError
+============================== 1 failed, 1 error ===============================
