@@ -74,7 +74,15 @@ agent-run run --timeout 30 -- pytest
 agent-run run --cwd tools --timeout 10 --json -- ruff check
 ```
 
-Text output includes the command's combined standard output and standard error,
-followed by its exit status. JSON output returns the captured output and run
-details in `data`. Until complete private log files and run IDs arrive, output
-capture is provisional and a JSON failure returns only the error message.
+The command's combined standard output and standard error is written to a
+private log file. Text output reports the exit status, duration, run ID, and log
+path. JSON output returns the same run details in `data`, including for failed,
+timed-out, and interrupted runs.
+
+Text-mode failures include the run ID and log path in the error message. JSON
+failures include those same run details in the error `data` field alongside the
+failure code and message.
+
+Logs are stored in `agent-run-logs` beside the database. With the default
+database, logs are written to `~/.agents/agent-run-logs`; setting
+`AGENT_RUN_DATABASE` moves the log directory beside the selected database.

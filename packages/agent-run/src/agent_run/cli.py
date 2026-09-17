@@ -2,9 +2,13 @@
 
 import argparse
 import json
+import signal
 import sqlite3
 import sys
+import time
 from collections.abc import Sequence
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import NoReturn
 
 from agent_run.commands import (
@@ -18,10 +22,11 @@ from agent_run.commands import (
     remove_command,
     rename_command,
 )
-from agent_run.database import connect_database
+from agent_run.database import connect_database, resolve_database_path
 from agent_run.execution import RunResult, run_command
 from agent_run.output import render_error, render_success
 from agent_run.repository import RepositoryError, identify_repository
+from agent_run.runs import RunRecord, create_run_log, discard_run_log, save_run
 from agent_run.schema import NewerSchemaError
 
 
@@ -400,17 +405,58 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not command_arguments:
             run_parser.error("the following arguments are required: ARGV")
 
+        connection: sqlite3.Connection | None = None
+        log_path: Path | None = None
+
         try:
             repository = identify_repository()
             relative_working_directory = normalise_working_directory(
                 repository, parsed.cwd
             )
-            result = run_command(
-                command_arguments,
-                repository.root / relative_working_directory,
-                parsed.timeout,
+            database_path = resolve_database_path()
+            connection = connect_database(database_path)
+            run_id, log_path = create_run_log(database_path)
+            started_at = datetime.now(timezone.utc).isoformat()
+            started_monotonic = time.monotonic()
+            interrupted = False
+
+            try:
+                result = run_command(
+                    command_arguments,
+                    repository.root / relative_working_directory,
+                    parsed.timeout,
+                    log_path,
+                )
+            except KeyboardInterrupt:
+                interrupted = True
+                result = RunResult(
+                    argv=tuple(command_arguments),
+                    working_directory=(
+                        repository.root / relative_working_directory
+                    ).resolve(),
+                    exit_status=-signal.SIGINT,
+                    timed_out=False,
+                    duration_seconds=time.monotonic() - started_monotonic,
+                    log_path=log_path,
+                )
+
+            record = save_run(
+                connection,
+                run_id=run_id,
+                repository_id=repository.id,
+                argv=result.argv,
+                working_directory=relative_working_directory,
+                timeout_seconds=parsed.timeout,
+                started_at=started_at,
+                duration_seconds=result.duration_seconds,
+                exit_status=result.exit_status,
+                timed_out=result.timed_out,
+                log_path=result.log_path,
             )
-        except (RepositoryError, OSError) as error:
+        except (RepositoryError, NewerSchemaError, OSError, sqlite3.Error) as error:
+            if log_path is not None:
+                discard_run_log(log_path)
+
             return render_error(
                 json_mode=parsed.json,
                 code="environment",
@@ -422,39 +468,41 @@ def main(argv: Sequence[str] | None = None) -> int:
                 code="usage",
                 message=str(error),
             )
-        except KeyboardInterrupt:
-            render_error(
-                json_mode=parsed.json,
-                code="check-failed",
-                message="Command interrupted.",
-            )
-            return 130
+        finally:
+            if connection is not None:
+                connection.close()
 
         failure_message = None
 
-        if result.timed_out:
+        if interrupted:
+            failure_message = "Command interrupted."
+        elif result.timed_out:
             unit = "second" if parsed.timeout == 1 else "seconds"
             failure_message = f"Command killed after {parsed.timeout:g} {unit}."
         elif result.exit_status != 0:
             failure_message = f"Command exited with status {result.exit_status}."
 
         if failure_message is None:
-            data = _run_record(result)
-            text = _format_run(result)
+            data = _run_record(result, record)
+            text = _format_run(result, record)
 
             if parsed.json:
                 return render_success(json_mode=True, data=data)
 
             return render_success(json_mode=False, text=text)
 
-        if not parsed.json and result.output:
-            print(result.output, end="" if result.output.endswith("\n") else "\n")
+        failure_message = (
+            f"{failure_message} run ID: {record.run_id}; log path: {record.log_path}"
+        )
 
-        return render_error(
+        exit_code = render_error(
             json_mode=parsed.json,
             code="check-failed",
             message=failure_message,
+            data=_run_record(result, record),
         )
+
+        return 130 if interrupted else exit_code
 
     if parsed.command == "add":
         # The name is optional to argparse only so `add --help` reaches the help
@@ -685,7 +733,7 @@ def _command_record(command: Command) -> dict[str, object]:
     }
 
 
-def _run_record(result: RunResult) -> dict[str, object]:
+def _run_record(result: RunResult, record: RunRecord) -> dict[str, object]:
     """Return the public fields for one direct command result."""
     return {
         "argv": list(result.argv),
@@ -693,18 +741,18 @@ def _run_record(result: RunResult) -> dict[str, object]:
         "exit_status": result.exit_status,
         "timed_out": result.timed_out,
         "duration_seconds": result.duration_seconds,
-        "output": result.output,
+        "run_id": record.run_id,
+        "log_path": str(record.log_path),
     }
 
 
-def _format_run(result: RunResult) -> str:
-    """Format direct command output followed by one exit status line."""
-    output = result.output
-
-    if output and not output.endswith("\n"):
-        output += "\n"
-
-    return f"{output}exit status: {result.exit_status}"
+def _format_run(result: RunResult, record: RunRecord) -> str:
+    """Format one human-readable status line for a completed command."""
+    return (
+        f"exit status: {result.exit_status}; "
+        f"duration: {result.duration_seconds:.3f}s; "
+        f"run ID: {record.run_id}; log path: {record.log_path}"
+    )
 
 
 if __name__ == "__main__":

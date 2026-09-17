@@ -40,9 +40,33 @@ def _create_commands(connection: sqlite3.Connection) -> None:
     )
 
 
+def _create_runs(connection: sqlite3.Connection) -> None:
+    """Create the table that stores immutable command run records."""
+    connection.execute(
+        """
+        CREATE TABLE runs (
+            run_id TEXT PRIMARY KEY,
+            repository_id TEXT NOT NULL,
+            argv TEXT NOT NULL,
+            working_directory TEXT NOT NULL,
+            timeout_seconds REAL NOT NULL,
+            started_at TEXT NOT NULL,
+            duration_seconds REAL NOT NULL,
+            exit_status INTEGER NOT NULL,
+            timed_out INTEGER NOT NULL,
+            log_path TEXT NOT NULL
+        )
+        """
+    )
+
+
 # Migrations in the order they run. A migration's version is its position,
 # starting at 1, so add new migrations to the end and never reorder them.
-MIGRATIONS: tuple[Migration, ...] = (_create_schema_migrations, _create_commands)
+MIGRATIONS: tuple[Migration, ...] = (
+    _create_schema_migrations,
+    _create_commands,
+    _create_runs,
+)
 # Newest schema version this release understands.
 LATEST_SCHEMA_VERSION = len(MIGRATIONS)
 

@@ -55,6 +55,7 @@ def render_error(
     json_mode: bool,
     code: str,
     message: str,
+    data: object | None = None,
     text: str | None = None,
     diagnostic: str | None = None,
     stdout: TextIO | None = None,
@@ -70,6 +71,7 @@ def render_error(
         code: Error code from the shared CLI contract. An unknown code raises
             `KeyError`.
         message: Short explanation included in the JSON error.
+        data: Optional structured details included in the JSON error.
         text: Full text-mode error; defaults to `Error: <message>`.
         diagnostic: Extra detail sent to stderr in JSON mode only.
         stdout: Stream for the JSON envelope; defaults to `sys.stdout`.
@@ -80,7 +82,12 @@ def render_error(
     exit_code = _EXIT_CODES[code]
 
     if json_mode:
-        payload = {"ok": False, "error": {"code": code, "message": message}}
+        error = {"code": code, "message": message}
+
+        if data is not None:
+            error["data"] = data
+
+        payload = {"ok": False, "error": error}
         print(json.dumps(payload), file=output_stream)
 
         if diagnostic:

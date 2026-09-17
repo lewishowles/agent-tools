@@ -46,9 +46,10 @@ error with one of the error codes below:
 }
 ```
 
-`ok` is always a Boolean. `data` is present only for success, and `error` is
-present only for failure. An error contains exactly `code` and `message`.
-Only the codes in the error table are valid.
+`ok` is always a Boolean. `data` is present for successful results, and `error`
+is present for failures. An error always contains `code` and `message`, and may
+also carry an optional `data` object. For `agent-run run`, this object has the
+same shape as success data when the command ran but failed.
 
 ## Exit codes
 

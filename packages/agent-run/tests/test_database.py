@@ -77,6 +77,30 @@ def test_commands_table_is_created_by_second_migration(tmp_path: Path) -> None:
     ]
 
 
+def test_runs_table_is_created_by_third_migration(tmp_path: Path) -> None:
+    """The run migration creates all fields needed for immutable records."""
+    database_path = tmp_path / "agent-run.db"
+
+    connection = connect_database(database_path)
+    try:
+        columns = connection.execute("PRAGMA table_info(runs)").fetchall()
+    finally:
+        connection.close()
+
+    assert [column[1] for column in columns] == [
+        "run_id",
+        "repository_id",
+        "argv",
+        "working_directory",
+        "timeout_seconds",
+        "started_at",
+        "duration_seconds",
+        "exit_status",
+        "timed_out",
+        "log_path",
+    ]
+
+
 def test_newer_schema_version_raises_and_closes_connection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

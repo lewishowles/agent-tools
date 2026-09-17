@@ -8,6 +8,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 
 @dataclass(frozen=True)
@@ -20,7 +21,7 @@ class RunResult:
         exit_status: Process exit status, including a negative signal status.
         timed_out: Whether the process group was terminated at the timeout.
         duration_seconds: Elapsed foreground execution time.
-        output: Combined standard output and standard error.
+        log_path: Private file containing combined standard output and error.
     """
 
     argv: tuple[str, ...]
@@ -28,17 +29,31 @@ class RunResult:
     exit_status: int
     timed_out: bool
     duration_seconds: float
-    output: str
+    log_path: Path
 
 
-def _terminate_process_group(process: subprocess.Popen[str]) -> str:
-    """Terminate a process group, escalating after a two-second grace period.
+def _open_log_file(log_path: Path) -> BinaryIO:
+    """Open a run log so the command can write its output straight to the file.
+
+    Appends rather than truncates, and keeps the file readable only by its owner.
+    """
+    descriptor = os.open(
+        log_path,
+        os.O_CREAT | os.O_APPEND | os.O_WRONLY,
+        0o600,
+    )
+    os.fchmod(descriptor, 0o600)
+    return os.fdopen(descriptor, "ab")
+
+
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Stop a command and everything it started, then reap the process.
+
+    Sends SIGTERM to the whole group and SIGKILL if it is still running after
+    two seconds.
 
     Args:
         process: Running process whose session contains the full command tree.
-
-    Returns:
-        All output collected while terminating and reaping the process group.
     """
     try:
         os.killpg(process.pid, signal.SIGTERM)
@@ -46,25 +61,26 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> str:
         pass
 
     try:
-        output, _ = process.communicate(timeout=2)
+        process.communicate(timeout=2)
     except subprocess.TimeoutExpired:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
 
-        output, _ = process.communicate()
-
-    return output or ""
+        process.communicate()
 
 
-def run_command(argv: Sequence[str], cwd: str | Path, timeout: float) -> RunResult:
+def run_command(
+    argv: Sequence[str], cwd: str | Path, timeout: float, log_path: str | Path
+) -> RunResult:
     """Run an argument-array command in the foreground.
 
     Args:
         argv: Non-empty argument array, including the executable name.
         cwd: Directory in which the command process starts.
         timeout: Positive number of seconds allowed before termination.
+        log_path: File that receives combined standard output and standard error.
 
     Raises:
         ValueError: If ``argv`` is empty or ``timeout`` is not a finite positive
@@ -82,28 +98,27 @@ def run_command(argv: Sequence[str], cwd: str | Path, timeout: float) -> RunResu
         raise ValueError("Command timeout must be finite and greater than zero.")
 
     working_directory = Path(cwd).expanduser().resolve()
+    resolved_log_path = Path(log_path).expanduser().resolve()
     started_at = time.monotonic()
-    process = subprocess.Popen(
-        command_arguments,
-        cwd=working_directory,
-        start_new_session=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-
     timed_out = False
 
-    try:
-        output, _ = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        output = _terminate_process_group(process)
-    except KeyboardInterrupt:
-        _terminate_process_group(process)
-        raise
+    with _open_log_file(resolved_log_path) as log_file:
+        process = subprocess.Popen(
+            command_arguments,
+            cwd=working_directory,
+            start_new_session=True,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+        )
+
+        try:
+            process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _terminate_process_group(process)
+        except KeyboardInterrupt:
+            _terminate_process_group(process)
+            raise
 
     duration_seconds = time.monotonic() - started_at
 
@@ -113,5 +128,5 @@ def run_command(argv: Sequence[str], cwd: str | Path, timeout: float) -> RunResu
         exit_status=process.returncode,
         timed_out=timed_out,
         duration_seconds=duration_seconds,
-        output=output or "",
+        log_path=resolved_log_path,
     )
