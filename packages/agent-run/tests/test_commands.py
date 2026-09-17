@@ -52,7 +52,8 @@ def test_add_command_stores_repository_relative_directory(tmp_path: Path) -> Non
             "tools",
         )
         rows = connection.execute(
-            "SELECT repository_id, name, argv, working_directory FROM commands"
+            "SELECT repository_id, name, argv, working_directory, timeout_seconds "
+            "FROM commands"
         ).fetchall()
     finally:
         connection.close()
@@ -60,7 +61,7 @@ def test_add_command_stores_repository_relative_directory(tmp_path: Path) -> Non
     assert command.name == "format"
     assert command.argv == ("ruff", "check")
     assert command.working_directory == "tools"
-    assert rows == [("repository-id", "format", '["ruff", "check"]', "tools")]
+    assert rows == [("repository-id", "format", '["ruff", "check"]', "tools", None)]
 
 
 def test_add_command_uses_dot_for_repository_root(tmp_path: Path) -> None:
@@ -112,7 +113,7 @@ def test_edit_command_changes_arguments_and_directory(tmp_path: Path) -> None:
             "tools",
         )
         row = connection.execute(
-            "SELECT argv, working_directory, created_at FROM commands"
+            "SELECT argv, working_directory, created_at, timeout_seconds FROM commands"
         ).fetchone()
     finally:
         connection.close()
@@ -122,11 +123,13 @@ def test_edit_command_changes_arguments_and_directory(tmp_path: Path) -> None:
         argv=("pytest", "tests"),
         working_directory="tools",
         created_at=original.created_at,
+        timeout_seconds=None,
     )
     assert row == (
         '["pytest", "tests"]',
         "tools",
         original.created_at,
+        None,
     )
 
 
@@ -152,6 +155,36 @@ def test_edit_command_can_change_one_field_and_rejects_no_change(
     assert edited.argv == original.argv
     assert edited.working_directory == "."
     assert edited.created_at == original.created_at
+
+
+def test_add_and_edit_command_store_timeout_override(tmp_path: Path) -> None:
+    """Adding and editing stores the optional timeout with the command."""
+    root = _initialise_repository(tmp_path / "repository")
+    repository = _repository(root)
+    connection = connect_database(tmp_path / "agent-run.db")
+    try:
+        added = add_command(
+            connection,
+            repository,
+            "test",
+            ["pytest"],
+            timeout_seconds=7.5,
+        )
+        edited = edit_command(
+            connection,
+            repository,
+            "test",
+            timeout_seconds=2.5,
+        )
+        timeout = connection.execute(
+            "SELECT timeout_seconds FROM commands WHERE name = 'test'"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+    assert added.timeout_seconds == 7.5
+    assert edited.timeout_seconds == 2.5
+    assert timeout == 2.5
 
 
 def test_edit_command_rejects_unknown_name(tmp_path: Path) -> None:
@@ -276,12 +309,57 @@ def test_cli_add_and_list_support_text_and_json(
                 {
                     "name": "build",
                     "working_directory": "scripts",
+                    "timeout_seconds": None,
                     "argv": ["make", "all"],
                 }
             ]
         },
     }
     assert list_output.err == ""
+
+
+@pytest.mark.parametrize("timeout", ["0", "-1"])
+@pytest.mark.parametrize("command", ["add", "edit"])
+def test_cli_command_timeout_validation(
+    command: str,
+    timeout: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Add and edit reject non-positive timeout values as usage errors."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    if command == "edit":
+        assert main(["add", "build", "--", "echo"]) == 0
+        capsys.readouterr()
+        arguments = ["edit", "build", "--timeout", timeout, "--json"]
+    else:
+        arguments = [
+            "add",
+            "build",
+            "--timeout",
+            timeout,
+            "--json",
+            "--",
+            "echo",
+        ]
+
+    exit_code = main(arguments)
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 2
+    assert result == {
+        "ok": False,
+        "error": {
+            "code": "usage",
+            "message": "Command timeout must be finite and greater than zero.",
+        },
+    }
+    assert captured.err == ""
 
 
 def test_cli_list_rejects_separator(
@@ -323,6 +401,8 @@ def test_cli_edit_rename_and_remove_support_text_and_json(
             "build",
             "--cwd",
             "scripts",
+            "--timeout",
+            "3",
             "--json",
             "--",
             "make",
@@ -338,6 +418,7 @@ def test_cli_edit_rename_and_remove_support_text_and_json(
         "data": {
             "name": "build",
             "working_directory": "scripts",
+            "timeout_seconds": 3.0,
             "argv": ["make", "all"],
         },
     }
@@ -398,7 +479,7 @@ def test_cli_mutations_report_unknown_names_as_not_found(
         (
             ["edit", "build", "--json"],
             ["build"],
-            "Edit must change arguments or working directory.",
+            "Edit must change arguments, working directory, or timeout.",
             False,
         ),
         (
@@ -499,6 +580,7 @@ def test_cli_add_help_uses_json_envelope(
     assert exit_code == 0
     assert result["ok"] is True
     assert "Register a named project command." in result["data"]["help"]
+    assert "default: 120 seconds" in " ".join(result["data"]["help"].split())
     assert captured.err == ""
 
 

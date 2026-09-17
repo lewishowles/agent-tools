@@ -74,7 +74,49 @@ def test_commands_table_is_created_by_second_migration(tmp_path: Path) -> None:
         "argv",
         "working_directory",
         "created_at",
+        "timeout_seconds",
     ]
+
+
+def test_existing_commands_gain_an_optional_timeout_column(tmp_path: Path) -> None:
+    """Opening an existing database adds a nullable command timeout."""
+    database_path = tmp_path / "agent-run.db"
+
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+            CREATE TABLE commands (
+                repository_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                argv TEXT NOT NULL,
+                working_directory TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE (repository_id, name)
+            );
+            INSERT INTO schema_migrations (version, applied_at)
+            VALUES
+                (1, '2026-01-01T00:00:00+00:00'),
+                (2, '2026-01-01T00:00:00+00:00'),
+                (3, '2026-01-01T00:00:00+00:00');
+            INSERT INTO commands (
+                repository_id, name, argv, working_directory, created_at
+            ) VALUES ('repository-id', 'test', '["echo"]', '.', '2026-01-01');
+            """
+        )
+
+    connection = connect_database(database_path)
+    try:
+        timeout = connection.execute(
+            "SELECT timeout_seconds FROM commands WHERE name = 'test'"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+    assert timeout is None
 
 
 def test_runs_table_is_created_by_third_migration(tmp_path: Path) -> None:

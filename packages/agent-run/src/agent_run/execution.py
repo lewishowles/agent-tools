@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
+# Timeout used when a direct or named run has no configured override.
+DEFAULT_TIMEOUT_SECONDS = 120
+
 
 @dataclass(frozen=True)
 class RunResult:

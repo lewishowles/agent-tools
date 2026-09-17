@@ -17,13 +17,14 @@ from agent_run.commands import (
     CommandNotFoundError,
     add_command,
     edit_command,
+    find_command,
     list_commands,
     normalise_working_directory,
     remove_command,
     rename_command,
 )
 from agent_run.database import connect_database, resolve_database_path
-from agent_run.execution import RunResult, run_command
+from agent_run.execution import DEFAULT_TIMEOUT_SECONDS, RunResult, run_command
 from agent_run.output import render_error, render_success
 from agent_run.repository import RepositoryError, identify_repository
 from agent_run.runs import RunRecord, create_run_log, discard_run_log, save_run
@@ -123,7 +124,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "add",
         help="Register a named project command.",
         description="Register a named project command.",
-        usage="agent-run add NAME [--cwd DIR] [--json] -- ARGV...",
+        usage="agent-run add NAME [--cwd DIR] [--timeout SECONDS] [--json] -- ARGV...",
         add_help=False,
         json_mode=json_mode,
     )
@@ -149,13 +150,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             "symlinked directories are stored as their resolved target."
         ),
     )
+    add_parser.add_argument(
+        "--timeout",
+        metavar="SECONDS",
+        type=float,
+        default=None,
+        help=(
+            f"Use this positive timeout for named runs "
+            f"(default: {DEFAULT_TIMEOUT_SECONDS} seconds)."
+        ),
+    )
     add_parser.add_argument("name", nargs="?", help="Name used to run the command.")
 
     edit_parser = subparsers.add_parser(
         "edit",
         help="Change a named project command.",
         description="Change a named project command.",
-        usage="agent-run edit NAME [--cwd DIR] [--json] [-- ARGV...]",
+        usage="agent-run edit NAME [--cwd DIR] [--timeout SECONDS] [--json] [-- ARGV...]",
         add_help=False,
         json_mode=json_mode,
     )
@@ -181,13 +192,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             "symlinked directories are stored as their resolved target."
         ),
     )
+    edit_parser.add_argument(
+        "--timeout",
+        metavar="SECONDS",
+        type=float,
+        default=None,
+        help="Change the timeout for named runs to this positive number of seconds.",
+    )
     edit_parser.add_argument("name", nargs="?", help="Name of the command to change.")
 
     run_parser = subparsers.add_parser(
         "run",
-        help="Run a direct project command.",
-        description="Run a direct project command in the foreground.",
-        usage="agent-run run [--cwd DIR] --timeout SECONDS [--json] -- ARGV...",
+        help="Run a named or direct project command.",
+        description="Run a named or direct project command in the foreground.",
+        usage="agent-run run [NAME] [--cwd DIR] [--timeout SECONDS] [--json] [-- ARGV...]",
         add_help=False,
         json_mode=json_mode,
     )
@@ -220,6 +238,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Stop the command after this positive number of seconds.",
     )
+    run_parser.add_argument("name", nargs="?", help="Name of a stored command to run.")
 
     rename_parser = subparsers.add_parser(
         "rename",
@@ -395,26 +414,47 @@ def main(argv: Sequence[str] | None = None) -> int:
         return render_success(json_mode=False, text=text)
 
     if parsed.command == "run":
-        # The timeout is optional to argparse so `run --help` reaches the help
-        # branch above; it is still required to execute a command.
-        if parsed.timeout is None:
-            run_parser.error("the following arguments are required: --timeout")
+        if parsed.name is not None and separator_index + 1 < len(values):
+            run_parser.error("named commands cannot include arguments after --")
 
-        command_arguments = values[separator_index + 1 :]
+        if parsed.name is None and separator_index == len(values):
+            run_parser.error("the following arguments are required: name or --")
 
-        if not command_arguments:
+        direct_arguments = values[separator_index + 1 :]
+
+        if parsed.name is None and not direct_arguments:
             run_parser.error("the following arguments are required: ARGV")
+
+        if parsed.name is not None and parsed.cwd is not None:
+            run_parser.error("named commands use their stored working directory")
 
         connection: sqlite3.Connection | None = None
         log_path: Path | None = None
 
         try:
             repository = identify_repository()
-            relative_working_directory = normalise_working_directory(
-                repository, parsed.cwd
-            )
             database_path = resolve_database_path()
             connection = connect_database(database_path)
+            timeout_seconds = parsed.timeout
+
+            if parsed.name is None:
+                relative_working_directory = normalise_working_directory(
+                    repository, parsed.cwd
+                )
+                command_arguments = tuple(direct_arguments)
+            else:
+                command = find_command(connection, repository, parsed.name)
+                relative_working_directory = normalise_working_directory(
+                    repository, command.working_directory
+                )
+                command_arguments = command.argv
+
+                if timeout_seconds is None:
+                    timeout_seconds = command.timeout_seconds
+
+            if timeout_seconds is None:
+                timeout_seconds = DEFAULT_TIMEOUT_SECONDS
+
             run_id, log_path = create_run_log(database_path)
             started_at = datetime.now(timezone.utc).isoformat()
             started_monotonic = time.monotonic()
@@ -424,7 +464,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = run_command(
                     command_arguments,
                     repository.root / relative_working_directory,
-                    parsed.timeout,
+                    timeout_seconds,
                     log_path,
                 )
             except KeyboardInterrupt:
@@ -446,7 +486,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 repository_id=repository.id,
                 argv=result.argv,
                 working_directory=relative_working_directory,
-                timeout_seconds=parsed.timeout,
+                timeout_seconds=timeout_seconds,
                 started_at=started_at,
                 duration_seconds=result.duration_seconds,
                 exit_status=result.exit_status,
@@ -460,6 +500,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             return render_error(
                 json_mode=parsed.json,
                 code="environment",
+                message=str(error),
+            )
+        except CommandNotFoundError as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="not-found",
                 message=str(error),
             )
         except (CommandError, ValueError) as error:
@@ -477,8 +523,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if interrupted:
             failure_message = "Command interrupted."
         elif result.timed_out:
-            unit = "second" if parsed.timeout == 1 else "seconds"
-            failure_message = f"Command killed after {parsed.timeout:g} {unit}."
+            unit = "second" if timeout_seconds == 1 else "seconds"
+            failure_message = f"Command killed after {timeout_seconds:g} {unit}."
         elif result.exit_status != 0:
             failure_message = f"Command exited with status {result.exit_status}."
 
@@ -525,6 +571,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     parsed.name,
                     command_arguments,
                     parsed.cwd,
+                    parsed.timeout,
                 )
             finally:
                 connection.close()
@@ -569,6 +616,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     parsed.name,
                     command_arguments,
                     parsed.cwd,
+                    parsed.timeout,
                 )
             finally:
                 connection.close()
@@ -711,6 +759,11 @@ def _format_command(command: Command) -> str:
         [
             f"name: {command.name}",
             f"working directory: {command.working_directory}",
+            (
+                "timeout: default"
+                if command.timeout_seconds is None
+                else f"timeout: {command.timeout_seconds:g}"
+            ),
             f"argv: {json.dumps(list(command.argv))}",
         ]
     )
@@ -729,6 +782,7 @@ def _command_record(command: Command) -> dict[str, object]:
     return {
         "name": command.name,
         "working_directory": command.working_directory,
+        "timeout_seconds": command.timeout_seconds,
         "argv": list(command.argv),
     }
 

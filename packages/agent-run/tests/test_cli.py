@@ -232,12 +232,136 @@ def test_cli_run_non_executable_file_removes_empty_log_and_run_record(
         connection.close()
 
 
-def test_cli_run_requires_timeout(
+def test_cli_run_defaults_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The run command rejects a missing timeout before executing anything."""
+    """The run command uses the default timeout when none is supplied."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    exit_code = main(["run", "--json", "--", "echo"])
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert result["ok"] is True
+    assert result["data"]["exit_status"] == 0
+    assert captured.err == ""
+
+    connection = connect_database(database_path)
+    try:
+        timeout = connection.execute("SELECT timeout_seconds FROM runs").fetchone()[0]
+    finally:
+        connection.close()
+
+    assert timeout == 120
+
+
+def test_cli_named_run_uses_saved_directory_and_timeout_precedence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Named runs use stored values unless the CLI supplies a timeout override."""
+    root = _initialise_repository(tmp_path / "repository")
+    (root / "tools").mkdir()
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    command = [sys.executable, "-c", "print('ok')"]
+    assert main(["add", "default", "--", *command]) == 0
+    capsys.readouterr()
+
+    default_exit_code = main(["run", "default", "--json"])
+    default_output = capsys.readouterr()
+    default_result = json.loads(default_output.out)
+
+    assert default_exit_code == 0
+    assert default_result["ok"] is True
+    assert default_result["data"]["working_directory"] == str(root)
+
+    assert (
+        main(
+            [
+                "add",
+                "build",
+                "--cwd",
+                "tools",
+                "--timeout",
+                "5",
+                "--",
+                *command,
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    saved_exit_code = main(["run", "build", "--json"])
+    saved_output = capsys.readouterr()
+    saved_result = json.loads(saved_output.out)
+
+    assert saved_exit_code == 0
+    assert saved_result["ok"] is True
+    assert saved_result["data"]["working_directory"] == str(root / "tools")
+
+    override_exit_code = main(["run", "build", "--timeout", "2", "--json"])
+    override_output = capsys.readouterr()
+    override_result = json.loads(override_output.out)
+
+    assert override_exit_code == 0
+    assert override_result["ok"] is True
+
+    connection = connect_database(database_path)
+    try:
+        timeouts = [
+            row[0]
+            for row in connection.execute(
+                "SELECT timeout_seconds FROM runs ORDER BY rowid"
+            ).fetchall()
+        ]
+    finally:
+        connection.close()
+
+    assert timeouts == [120.0, 5.0, 2.0]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (
+            ["run", "build", "--json", "--", "echo"],
+            "named commands cannot include arguments after --",
+        ),
+        (
+            ["run", "build", "--cwd", ".", "--json"],
+            "named commands use their stored working directory",
+        ),
+    ],
+)
+def test_cli_named_run_rejects_direct_only_arguments(
+    arguments: list[str],
+    message: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Named runs reject direct-run arguments before opening the database."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    assert main(["add", "build", "--", "echo"]) == 0
+    capsys.readouterr()
+
     with pytest.raises(SystemExit) as error:
-        main(["run", "--json", "--", "echo"])
+        main(arguments)
 
     captured = capsys.readouterr()
     result = json.loads(captured.out)
@@ -245,12 +369,30 @@ def test_cli_run_requires_timeout(
     assert error.value.code == 2
     assert result == {
         "ok": False,
-        "error": {
-            "code": "usage",
-            "message": "the following arguments are required: --timeout",
-        },
+        "error": {"code": "usage", "message": message},
     }
-    assert "agent-run run: error:" in captured.err
+
+
+def test_cli_named_run_ignores_an_empty_separator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An empty separator is not treated as named-run arguments."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    assert main(["add", "build", "--", "echo"]) == 0
+    capsys.readouterr()
+
+    exit_code = main(["run", "build", "--json", "--"])
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert result["ok"] is True
+    assert captured.err == ""
 
 
 def test_cli_run_returns_130_after_interrupt(

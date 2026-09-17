@@ -60,12 +60,18 @@ def _create_runs(connection: sqlite3.Connection) -> None:
     )
 
 
+def _add_command_timeout(connection: sqlite3.Connection) -> None:
+    """Add the optional timeout stored for each named command."""
+    connection.execute("ALTER TABLE commands ADD COLUMN timeout_seconds REAL")
+
+
 # Migrations in the order they run. A migration's version is its position,
 # starting at 1, so add new migrations to the end and never reorder them.
 MIGRATIONS: tuple[Migration, ...] = (
     _create_schema_migrations,
     _create_commands,
     _create_runs,
+    _add_command_timeout,
 )
 # Newest schema version this release understands.
 LATEST_SCHEMA_VERSION = len(MIGRATIONS)

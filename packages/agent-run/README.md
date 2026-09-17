@@ -31,19 +31,22 @@ the main checkout's local configuration and therefore share its ID.
 
 Add a named command from inside a Git repository. The command stores its
 argument array and working directory, which defaults to the repository root;
-pass `--cwd` to choose another directory inside it.
+pass `--cwd` to choose another directory inside it and `--timeout` to set the
+timeout used by named runs. If you leave out `--timeout`, named runs use the
+120-second default.
 
 ```sh
-agent-run add test -- pytest
+agent-run add test --timeout 30 -- pytest
 agent-run add lint --cwd tools --json -- ruff check
 ```
 
-Change a command's working directory, its arguments, or both. Anything you
-leave out stays as it is:
+Change a command's working directory, arguments, or timeout. Anything you leave
+out stays as it is:
 
 ```sh
 agent-run edit lint --cwd scripts
 agent-run edit lint -- ruff check --fix
+agent-run edit lint --timeout 10
 ```
 
 Rename or remove a command:
@@ -65,11 +68,14 @@ stored as its resolved target.
 
 ## Run commands
 
-Run a direct argument-array command in the foreground. A positive `--timeout`
-in seconds is required, and `--cwd` selects a directory inside the current
-repository.
+Run a saved command by name or a direct argument-array command in the
+foreground. For direct runs, `--cwd` selects a directory inside the current
+repository. Named runs use the saved command's working directory. The effective
+timeout is chosen in this order: `--timeout`, the saved command's timeout, then
+the 120-second default.
 
 ```sh
+agent-run run test
 agent-run run --timeout 30 -- pytest
 agent-run run --cwd tools --timeout 10 --json -- ruff check
 ```
