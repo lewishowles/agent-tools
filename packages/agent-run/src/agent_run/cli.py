@@ -27,6 +27,7 @@ from agent_run.commands import (
     rename_command,
 )
 from agent_run.database import connect_database, resolve_database_path
+from agent_run.detectors import Candidate, collect_candidates
 from agent_run.execution import DEFAULT_TIMEOUT_SECONDS, RunResult, run_command
 from agent_run.failures import (
     Failure,
@@ -357,6 +358,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Write one structured JSON result to standard output.",
     )
 
+    detect_parser = subparsers.add_parser(
+        "detect",
+        help="Preview detected project commands.",
+        description="Preview detected project commands without registering them.",
+        add_help=False,
+        json_mode=json_mode,
+    )
+    detect_parser.add_argument(
+        "--help",
+        "-h",
+        action="store_true",
+        dest="detect_help",
+        help="Show this help message and exit.",
+    )
+    detect_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Write one structured JSON result to standard output.",
+    )
+
     runs_parser = subparsers.add_parser(
         "runs",
         help="List recent runs for the current repository.",
@@ -533,6 +555,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return render_success(json_mode=True, data={"help": list_help_text})
 
         return render_success(json_mode=False, text=list_help_text)
+
+    if parsed.command == "detect" and parsed.detect_help:
+        detect_help_text = detect_parser.format_help()
+
+        if parsed.json:
+            return render_success(json_mode=True, data={"help": detect_help_text})
+
+        return render_success(json_mode=False, text=detect_help_text)
 
     if parsed.command == "runs" and parsed.runs_help:
         runs_help_text = runs_parser.format_help()
@@ -984,6 +1014,47 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         return render_success(json_mode=False, text=text)
 
+    if parsed.command == "detect":
+        try:
+            repository = identify_repository()
+            connection = connect_database()
+            try:
+                registered_names = {
+                    command.name for command in list_commands(connection, repository)
+                }
+            finally:
+                connection.close()
+
+            collection = collect_candidates(repository)
+        except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="environment",
+                message=str(error),
+            )
+
+        data = {
+            "candidates": [
+                _candidate_record(candidate, registered_names)
+                for candidate in collection.candidates
+            ],
+            "skipped": [
+                _candidate_record(candidate, registered_names)
+                for candidate in collection.skipped
+            ],
+        }
+        text_sections = [_format_candidates(collection.candidates, registered_names)]
+
+        if collection.skipped:
+            text_sections.append(_format_skipped_candidates(collection.skipped))
+
+        text = "\n\n".join(text_sections)
+
+        if parsed.json:
+            return render_success(json_mode=True, data=data)
+
+        return render_success(json_mode=False, text=text)
+
     if parsed.command == "runs":
         if parsed.limit <= 0:
             runs_parser.error("--limit must be a positive integer")
@@ -1178,6 +1249,58 @@ def _format_commands(commands: Sequence[Command]) -> str:
         return "No named commands registered."
 
     return "\n\n".join(_format_command(command) for command in commands)
+
+
+def _candidate_record(
+    candidate: Candidate, registered_names: set[str]
+) -> dict[str, object]:
+    """Return one detected candidate with its registration status."""
+    return {
+        "name": candidate.name,
+        "working_directory": candidate.working_directory,
+        "argv": list(candidate.argv),
+        "detector": candidate.detector,
+        "registered": candidate.name in registered_names,
+    }
+
+
+def _format_candidate(candidate: Candidate, registered: bool) -> str:
+    """Format one detected candidate for human-readable output."""
+    return "\n".join(
+        [
+            f"name: {candidate.name}",
+            f"working directory: {candidate.working_directory}",
+            f"argv: {json.dumps(list(candidate.argv))}",
+            f"detector: {candidate.detector}",
+            f"registered: {str(registered).lower()}",
+        ]
+    )
+
+
+def _format_candidates(
+    candidates: Sequence[Candidate], registered_names: set[str]
+) -> str:
+    """Format detected candidates, or explain that none were found."""
+    if not candidates:
+        return "No commands detected."
+
+    return "\n\n".join(
+        _format_candidate(candidate, candidate.name in registered_names)
+        for candidate in candidates
+    )
+
+
+def _format_skipped_candidates(skipped: Sequence[Candidate]) -> str:
+    """List candidates dropped because an earlier detector already used their name."""
+    lines = ["Skipped duplicate candidates:"]
+    lines.extend(
+        "detector: "
+        f"{candidate.detector}; name: {candidate.name}; "
+        f"argv: {json.dumps(list(candidate.argv))}"
+        for candidate in skipped
+    )
+
+    return "\n".join(lines)
 
 
 def _saved_run_record(record: RunRecord) -> dict[str, object]:

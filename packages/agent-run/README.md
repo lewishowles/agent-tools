@@ -67,6 +67,17 @@ agent-run list
 agent-run list --json
 ```
 
+Preview commands detected in the current repository without registering them:
+
+```sh
+agent-run detect
+agent-run detect --json
+```
+
+Detection never changes your registered commands. agent-run has no built-in
+detectors yet, so `detect` reports that no commands were detected. Saving a
+detected command is not available yet; register it with `agent-run add`.
+
 Working directories must stay inside the repository. A symlinked directory is
 stored as its resolved target.
 
