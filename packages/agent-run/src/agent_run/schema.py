@@ -65,6 +65,13 @@ def _add_command_timeout(connection: sqlite3.Connection) -> None:
     connection.execute("ALTER TABLE commands ADD COLUMN timeout_seconds REAL")
 
 
+def _add_command_capability(connection: sqlite3.Connection) -> None:
+    """Add the capability that controls which run inputs a command accepts."""
+    connection.execute(
+        "ALTER TABLE commands ADD COLUMN capability TEXT NOT NULL DEFAULT 'none'"
+    )
+
+
 # Migrations in the order they run. A migration's version is its position,
 # starting at 1, so add new migrations to the end and never reorder them.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -72,6 +79,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _create_commands,
     _create_runs,
     _add_command_timeout,
+    _add_command_capability,
 )
 # Newest schema version this release understands.
 LATEST_SCHEMA_VERSION = len(MIGRATIONS)

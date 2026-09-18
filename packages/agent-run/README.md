@@ -33,11 +33,13 @@ Add a named command from inside a Git repository. The command stores its
 argument array and working directory, which defaults to the repository root;
 pass `--cwd` to choose another directory inside it and `--timeout` to set the
 timeout used by named runs. If you leave out `--timeout`, named runs use the
-120-second default.
+120-second default. Set `--capability file-list` when the command accepts file
+paths appended with `--file`; commands use the `none` capability by default.
 
 ```sh
 agent-run add test --timeout 30 -- pytest
 agent-run add lint --cwd tools --json -- ruff check
+agent-run add lint-changed --capability file-list -- ruff check
 ```
 
 Change a command's working directory, arguments, or timeout. Anything you leave
@@ -47,6 +49,7 @@ out stays as it is:
 agent-run edit lint --cwd scripts
 agent-run edit lint -- ruff check --fix
 agent-run edit lint --timeout 10
+agent-run edit lint-changed --capability none
 ```
 
 Rename or remove a command:
@@ -78,12 +81,16 @@ the 120-second default.
 agent-run run test
 agent-run run --timeout 30 -- pytest
 agent-run run --cwd tools --timeout 10 --json -- ruff check
+agent-run run lint-changed --file src/main.py --file src/cli.py
 ```
 
 The command's combined standard output and standard error is written to a
 private log file. Text output reports the exit status, duration, run ID, and log
 path. JSON output returns the same run details in `data`, including for failed,
-timed-out, and interrupted runs.
+timed-out, and interrupted runs. A named command with the `file-list`
+capability appends each `--file` path to its stored arguments. Paths are
+resolved from the current directory, must be regular files inside the
+repository, and are reported relative to the command's working directory.
 
 Failures from pytest, ruff, and Vitest include the first failure's
 source location, title, and bounded detail. Up to 20 further failures are shown

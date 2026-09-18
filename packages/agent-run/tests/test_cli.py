@@ -332,6 +332,146 @@ def test_cli_named_run_uses_saved_directory_and_timeout_precedence(
     assert timeouts == [120.0, 5.0, 2.0]
 
 
+def test_cli_named_file_list_run_appends_relative_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A file-list command appends unique paths relative to its run directory."""
+    root = _initialise_repository(tmp_path / "repository")
+    (root / "tools").mkdir()
+    (root / "src").mkdir()
+    (root / "src" / "one.py").write_text("one")
+    (root / "src" / "two.py").write_text("two")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    command = [
+        sys.executable,
+        "-c",
+        "import json, sys; print(json.dumps(sys.argv[1:]))",
+    ]
+    assert (
+        main(
+            [
+                "add",
+                "format",
+                "--cwd",
+                "tools",
+                "--capability",
+                "file-list",
+                "--",
+                *command,
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    list_exit_code = main(["list"])
+    list_output = capsys.readouterr()
+
+    assert list_exit_code == 0
+    assert "capability: file-list" in list_output.out
+
+    exit_code = main(
+        [
+            "run",
+            "format",
+            "--file",
+            "src/one.py",
+            "--file",
+            "src/one.py",
+            "--file",
+            "src/two.py",
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert result["ok"] is True
+    assert result["data"]["files"] == ["../src/one.py", "../src/two.py"]
+    assert result["data"]["argv"] == command + ["../src/one.py", "../src/two.py"]
+    assert captured.err == ""
+
+
+def test_cli_file_targets_report_usage_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """File targets reject direct runs, unsupported commands, and missing files."""
+    root = _initialise_repository(tmp_path / "repository")
+    (root / "file.py").write_text("file")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    assert main(["add", "plain", "--", "echo"]) == 0
+    assert main(["add", "files", "--capability", "file-list", "--", "echo"]) == 0
+    capsys.readouterr()
+
+    unsupported_exit_code = main(["run", "plain", "--file", "file.py", "--json"])
+    unsupported_output = capsys.readouterr()
+    unsupported_result = json.loads(unsupported_output.out)
+
+    assert unsupported_exit_code == 2
+    assert unsupported_result["error"]["code"] == "usage"
+    assert 'capability "none"' in unsupported_result["error"]["message"]
+    assert (
+        "agent-run edit plain --capability file-list"
+        in unsupported_result["error"]["message"]
+    )
+    assert unsupported_output.err == ""
+
+    missing_exit_code = main(["run", "files", "--file", "missing.py", "--json"])
+    missing_output = capsys.readouterr()
+    missing_result = json.loads(missing_output.out)
+
+    assert missing_exit_code == 2
+    assert missing_result["error"]["code"] == "usage"
+    assert "missing.py" in missing_result["error"]["message"]
+    assert missing_output.err == ""
+
+    with pytest.raises(SystemExit) as error:
+        main(["run", "--file", "file.py", "--json", "--", "echo"])
+
+    direct_output = capsys.readouterr()
+    direct_result = json.loads(direct_output.out)
+
+    assert error.value.code == 2
+    assert direct_result["error"]["code"] == "usage"
+    assert "only valid for a named command" in direct_result["error"]["message"]
+    assert "agent-run run: error:" in direct_output.err
+
+
+def test_cli_named_file_list_failure_includes_files_in_json_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A failed file-list run includes its resolved files in error data."""
+    root = _initialise_repository(tmp_path / "repository")
+    (root / "file.py").write_text("file")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    command = [sys.executable, "-c", "raise SystemExit(4)"]
+    assert main(["add", "check", "--capability", "file-list", "--", *command]) == 0
+    capsys.readouterr()
+
+    exit_code = main(["run", "check", "--file", "file.py", "--json"])
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 1
+    assert result["ok"] is False
+    assert result["error"]["data"]["files"] == ["file.py"]
+    assert captured.err == ""
+
+
 @pytest.mark.parametrize(
     ("arguments", "message"),
     [

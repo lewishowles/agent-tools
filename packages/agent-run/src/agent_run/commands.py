@@ -10,6 +10,13 @@ from pathlib import Path
 
 from agent_run.repository import Repository
 
+# Capability of a command that takes no run inputs.
+DEFAULT_CAPABILITY = "none"
+# Capability of a command that accepts file paths appended with `--file`.
+FILE_LIST_CAPABILITY = "file-list"
+# Every capability a stored command may hold, offered as argparse choices.
+COMMAND_CAPABILITIES: tuple[str, ...] = (DEFAULT_CAPABILITY, FILE_LIST_CAPABILITY)
+
 
 class CommandError(RuntimeError):
     """Report a command that cannot be stored or changed."""
@@ -29,6 +36,7 @@ class Command:
         working_directory: Repository-relative directory, using `.` for the root.
         created_at: UTC timestamp recorded when the command was added.
         timeout_seconds: Optional timeout override, or `None` to use the default.
+        capability: Inputs that a named run may append to the command.
     """
 
     name: str
@@ -36,6 +44,7 @@ class Command:
     working_directory: str
     created_at: str
     timeout_seconds: float | None = None
+    capability: str = DEFAULT_CAPABILITY
 
 
 def normalise_working_directory(
@@ -93,15 +102,25 @@ def _validate_timeout(timeout_seconds: float | None) -> float | None:
     return timeout_seconds
 
 
+def _validate_capability(capability: str) -> str:
+    """Validate a command capability and return it unchanged."""
+    if capability not in COMMAND_CAPABILITIES:
+        capabilities = ", ".join(COMMAND_CAPABILITIES)
+        raise CommandError(f"Command capability must be one of: {capabilities}.")
+
+    return capability
+
+
 def _command_from_row(row: sqlite3.Row | tuple[object, ...]) -> Command:
     """Decode one database row into a stored command."""
-    name, argv, working_directory, created_at, timeout_seconds = row
+    name, argv, working_directory, created_at, timeout_seconds, capability = row
     return Command(
         name=str(name),
         argv=tuple(json.loads(str(argv))),
         working_directory=str(working_directory),
         created_at=str(created_at),
         timeout_seconds=(None if timeout_seconds is None else float(timeout_seconds)),
+        capability=str(capability),
     )
 
 
@@ -120,7 +139,7 @@ def find_command(
     """
     row = connection.execute(
         """
-        SELECT name, argv, working_directory, created_at, timeout_seconds
+        SELECT name, argv, working_directory, created_at, timeout_seconds, capability
         FROM commands
         WHERE repository_id = ? AND name = ?
         """,
@@ -140,6 +159,7 @@ def add_command(
     argv: Sequence[str],
     cwd: str | Path | None = None,
     timeout_seconds: float | None = None,
+    capability: str = DEFAULT_CAPABILITY,
 ) -> Command:
     """Add a named command for a repository and return the stored command.
 
@@ -150,6 +170,7 @@ def add_command(
         argv: Non-empty argument array passed to the command process.
         cwd: Optional directory relative to the repository root.
         timeout_seconds: Optional positive timeout override for the command.
+        capability: Inputs that a named run may append to the command.
 
     Raises:
         CommandError: If the arguments, directory, or name are invalid.
@@ -157,6 +178,7 @@ def add_command(
     command_arguments = _validate_name_and_arguments(name, argv)
 
     timeout_seconds = _validate_timeout(timeout_seconds)
+    capability = _validate_capability(capability)
 
     relative_working_directory = normalise_working_directory(repository, cwd)
 
@@ -171,8 +193,9 @@ def add_command(
                 argv,
                 working_directory,
                 created_at,
-                timeout_seconds
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                timeout_seconds,
+                capability
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 repository.id,
@@ -181,6 +204,7 @@ def add_command(
                 relative_working_directory,
                 created_at,
                 timeout_seconds,
+                capability,
             ),
         )
     except sqlite3.IntegrityError as error:
@@ -194,6 +218,7 @@ def add_command(
         working_directory=relative_working_directory,
         created_at=created_at,
         timeout_seconds=timeout_seconds,
+        capability=capability,
     )
 
 
@@ -208,7 +233,7 @@ def list_commands(
     """
     rows = connection.execute(
         """
-        SELECT name, argv, working_directory, created_at, timeout_seconds
+        SELECT name, argv, working_directory, created_at, timeout_seconds, capability
         FROM commands
         WHERE repository_id = ?
         ORDER BY name
@@ -226,8 +251,9 @@ def edit_command(
     argv: Sequence[str] | None = None,
     cwd: str | Path | None = None,
     timeout_seconds: float | None = None,
+    capability: str | None = None,
 ) -> Command:
-    """Change a named command's arguments, working directory, or timeout.
+    """Change a named command's arguments, working directory, timeout, or capability.
 
     Args:
         connection: Open agent-run database connection.
@@ -236,6 +262,7 @@ def edit_command(
         argv: Optional non-empty replacement argument array.
         cwd: Optional replacement directory relative to the repository root.
         timeout_seconds: Optional positive replacement timeout override.
+        capability: Optional replacement for the command's run input capability.
 
     Raises:
         CommandNotFoundError: If the command is not registered for the repository.
@@ -245,8 +272,10 @@ def edit_command(
 
     timeout_seconds = _validate_timeout(timeout_seconds)
 
-    if argv is None and cwd is None and timeout_seconds is None:
-        raise CommandError("Edit must change arguments, working directory, or timeout.")
+    if argv is None and cwd is None and timeout_seconds is None and capability is None:
+        raise CommandError(
+            "Edit must change arguments, working directory, timeout, or capability."
+        )
 
     command_arguments = (
         command.argv if argv is None else _validate_name_and_arguments(name, argv)
@@ -261,16 +290,21 @@ def edit_command(
     if timeout_seconds is not None:
         command_timeout_seconds = timeout_seconds
 
+    command_capability = (
+        command.capability if capability is None else _validate_capability(capability)
+    )
+
     connection.execute(
         """
         UPDATE commands
-        SET argv = ?, working_directory = ?, timeout_seconds = ?
+        SET argv = ?, working_directory = ?, timeout_seconds = ?, capability = ?
         WHERE repository_id = ? AND name = ?
         """,
         (
             json.dumps(command_arguments),
             relative_working_directory,
             command_timeout_seconds,
+            command_capability,
             repository.id,
             name,
         ),
@@ -282,6 +316,7 @@ def edit_command(
         working_directory=relative_working_directory,
         created_at=command.created_at,
         timeout_seconds=command_timeout_seconds,
+        capability=command_capability,
     )
 
 
@@ -328,6 +363,7 @@ def rename_command(
         working_directory=command.working_directory,
         created_at=command.created_at,
         timeout_seconds=command.timeout_seconds,
+        capability=command.capability,
     )
 
 

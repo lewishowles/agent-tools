@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import NoReturn
 
 from agent_run.commands import (
+    COMMAND_CAPABILITIES,
+    DEFAULT_CAPABILITY,
+    FILE_LIST_CAPABILITY,
     Command,
     CommandError,
     CommandNotFoundError,
@@ -43,6 +46,7 @@ from agent_run.runs import (
     save_run,
 )
 from agent_run.schema import NewerSchemaError
+from agent_run.targets import resolve_file_targets
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -138,7 +142,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "add",
         help="Register a named project command.",
         description="Register a named project command.",
-        usage="agent-run add NAME [--cwd DIR] [--timeout SECONDS] [--json] -- ARGV...",
+        usage="agent-run add NAME [--cwd DIR] [--timeout SECONDS] [--capability CAPABILITY] [--json] -- ARGV...",
         add_help=False,
         json_mode=json_mode,
     )
@@ -174,13 +178,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"(default: {DEFAULT_TIMEOUT_SECONDS} seconds)."
         ),
     )
+    add_parser.add_argument(
+        "--capability",
+        choices=COMMAND_CAPABILITIES,
+        default=DEFAULT_CAPABILITY,
+        help="Allow named runs to append file paths with `--file`.",
+    )
     add_parser.add_argument("name", nargs="?", help="Name used to run the command.")
 
     edit_parser = subparsers.add_parser(
         "edit",
         help="Change a named project command.",
         description="Change a named project command.",
-        usage="agent-run edit NAME [--cwd DIR] [--timeout SECONDS] [--json] [-- ARGV...]",
+        usage="agent-run edit NAME [--cwd DIR] [--timeout SECONDS] [--capability CAPABILITY] [--json] [-- ARGV...]",
         add_help=False,
         json_mode=json_mode,
     )
@@ -213,13 +223,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Change the timeout for named runs to this positive number of seconds.",
     )
+    edit_parser.add_argument(
+        "--capability",
+        choices=COMMAND_CAPABILITIES,
+        default=None,
+        help="Change whether named runs may append file paths with `--file`.",
+    )
     edit_parser.add_argument("name", nargs="?", help="Name of the command to change.")
 
     run_parser = subparsers.add_parser(
         "run",
         help="Run a named or direct project command.",
         description="Run a named or direct project command in the foreground.",
-        usage="agent-run run [NAME] [--cwd DIR] [--timeout SECONDS] [--json] [-- ARGV...]",
+        usage="agent-run run [NAME] [--cwd DIR] [--timeout SECONDS] [--file PATH] [--json] [-- ARGV...]",
         add_help=False,
         json_mode=json_mode,
     )
@@ -251,6 +267,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=float,
         default=None,
         help="Stop the command after this positive number of seconds.",
+    )
+    run_parser.add_argument(
+        "--file",
+        metavar="PATH",
+        action="append",
+        default=[],
+        help="Append PATH to a named command with the `file-list` capability.",
     )
     run_parser.add_argument("name", nargs="?", help="Name of a stored command to run.")
 
@@ -577,6 +600,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if parsed.name is not None and parsed.cwd is not None:
             run_parser.error("named commands use their stored working directory")
 
+        if parsed.name is None and parsed.file:
+            run_parser.error(
+                "--file is only valid for a named command with the file-list capability"
+            )
+
         connection: sqlite3.Connection | None = None
         log_path: Path | None = None
 
@@ -585,6 +613,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             database_path = resolve_database_path()
             connection = connect_database(database_path)
             timeout_seconds = parsed.timeout
+            resolved_file_paths: tuple[str, ...] = ()
 
             if parsed.name is None:
                 relative_working_directory = normalise_working_directory(
@@ -596,10 +625,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 relative_working_directory = normalise_working_directory(
                     repository, command.working_directory
                 )
-                command_arguments = command.argv
-
                 if timeout_seconds is None:
                     timeout_seconds = command.timeout_seconds
+
+                if parsed.file:
+                    if command.capability != FILE_LIST_CAPABILITY:
+                        raise CommandError(
+                            f'Command "{command.name}" has capability '
+                            f'"{command.capability}"; use agent-run edit '
+                            f"{command.name} --capability file-list to accept --file targets."
+                        )
+
+                    resolved_file_paths = resolve_file_targets(
+                        repository,
+                        repository.root / relative_working_directory,
+                        parsed.file,
+                    )
+
+                command_arguments = command.argv + resolved_file_paths
 
             if timeout_seconds is None:
                 timeout_seconds = DEFAULT_TIMEOUT_SECONDS
@@ -678,7 +721,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             failure_message = f"Command exited with status {result.exit_status}."
 
         if failure_message is None:
-            data = _run_record(result, record)
+            data = _run_record(result, record, resolved_file_paths)
             text = _format_run(result, record)
 
             if parsed.json:
@@ -689,7 +732,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         failure_message = (
             f"{failure_message} run ID: {record.run_id}; log path: {record.log_path}"
         )
-        failure_data = _run_record(result, record)
+        failure_data = _run_record(result, record, resolved_file_paths)
         # Interrupted runs stop part-way, so their output is not read for failures.
         failure_text = None
 
@@ -747,6 +790,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     command_arguments,
                     parsed.cwd,
                     parsed.timeout,
+                    parsed.capability,
                 )
             finally:
                 connection.close()
@@ -792,6 +836,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     command_arguments,
                     parsed.cwd,
                     parsed.timeout,
+                    parsed.capability,
                 )
             finally:
                 connection.close()
@@ -1104,6 +1149,7 @@ def _format_command(command: Command) -> str:
         [
             f"name: {command.name}",
             f"working directory: {command.working_directory}",
+            f"capability: {command.capability}",
             (
                 "timeout: default"
                 if command.timeout_seconds is None
@@ -1167,15 +1213,25 @@ def _command_record(command: Command) -> dict[str, object]:
     return {
         "name": command.name,
         "working_directory": command.working_directory,
+        "capability": command.capability,
         "timeout_seconds": command.timeout_seconds,
         "argv": list(command.argv),
     }
 
 
-def _run_record(result: RunResult, record: RunRecord) -> dict[str, object]:
-    """Return the public fields for one direct command result."""
+def _run_record(
+    result: RunResult, record: RunRecord, files: Sequence[str]
+) -> dict[str, object]:
+    """Return the public fields for one named or direct command result.
+
+    Args:
+        result: Outcome of the command process.
+        record: Saved run record holding the run ID and log path.
+        files: Paths resolved from `--file`, empty for a direct run.
+    """
     return {
         "argv": list(result.argv),
+        "files": list(files),
         "working_directory": str(result.working_directory),
         "exit_status": result.exit_status,
         "timed_out": result.timed_out,

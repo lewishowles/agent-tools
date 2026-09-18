@@ -50,9 +50,11 @@ def test_add_command_stores_repository_relative_directory(tmp_path: Path) -> Non
             "format",
             ["ruff", "check"],
             "tools",
+            capability="file-list",
         )
         rows = connection.execute(
-            "SELECT repository_id, name, argv, working_directory, timeout_seconds "
+            "SELECT repository_id, name, argv, working_directory, timeout_seconds, "
+            "capability "
             "FROM commands"
         ).fetchall()
     finally:
@@ -61,7 +63,10 @@ def test_add_command_stores_repository_relative_directory(tmp_path: Path) -> Non
     assert command.name == "format"
     assert command.argv == ("ruff", "check")
     assert command.working_directory == "tools"
-    assert rows == [("repository-id", "format", '["ruff", "check"]', "tools", None)]
+    assert command.capability == "file-list"
+    assert rows == [
+        ("repository-id", "format", '["ruff", "check"]', "tools", None, "file-list")
+    ]
 
 
 def test_add_command_uses_dot_for_repository_root(tmp_path: Path) -> None:
@@ -187,6 +192,41 @@ def test_add_and_edit_command_store_timeout_override(tmp_path: Path) -> None:
     assert timeout == 2.5
 
 
+def test_add_and_edit_command_store_capability(tmp_path: Path) -> None:
+    """Adding and editing stores the capability used by named runs."""
+    root = _initialise_repository(tmp_path / "repository")
+    repository = _repository(root)
+    connection = connect_database(tmp_path / "agent-run.db")
+    try:
+        added = add_command(
+            connection,
+            repository,
+            "format",
+            ["ruff"],
+            capability="file-list",
+        )
+        edited = edit_command(
+            connection,
+            repository,
+            "format",
+            capability="none",
+        )
+
+        with pytest.raises(CommandError, match="none.*file-list"):
+            add_command(
+                connection,
+                repository,
+                "invalid",
+                ["echo"],
+                capability="unknown",
+            )
+    finally:
+        connection.close()
+
+    assert added.capability == "file-list"
+    assert edited.capability == "none"
+
+
 def test_edit_command_rejects_unknown_name(tmp_path: Path) -> None:
     """Editing an unknown name raises the command-specific not-found error."""
     root = _initialise_repository(tmp_path / "repository")
@@ -309,6 +349,7 @@ def test_cli_add_and_list_support_text_and_json(
                 {
                     "name": "build",
                     "working_directory": "scripts",
+                    "capability": "none",
                     "timeout_seconds": None,
                     "argv": ["make", "all"],
                 }
@@ -418,6 +459,7 @@ def test_cli_edit_rename_and_remove_support_text_and_json(
         "data": {
             "name": "build",
             "working_directory": "scripts",
+            "capability": "none",
             "timeout_seconds": 3.0,
             "argv": ["make", "all"],
         },
@@ -479,7 +521,7 @@ def test_cli_mutations_report_unknown_names_as_not_found(
         (
             ["edit", "build", "--json"],
             ["build"],
-            "Edit must change arguments, working directory, or timeout.",
+            "Edit must change arguments, working directory, timeout, or capability.",
             False,
         ),
         (
