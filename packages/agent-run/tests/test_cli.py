@@ -343,6 +343,7 @@ def test_cli_named_file_list_run_appends_relative_files(
     (root / "src").mkdir()
     (root / "src" / "one.py").write_text("one")
     (root / "src" / "two.py").write_text("two")
+    (root / "src" / "three.py").write_text("three")
     monkeypatch.chdir(root)
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
 
@@ -384,6 +385,8 @@ def test_cli_named_file_list_run_appends_relative_files(
             "src/one.py",
             "--file",
             "src/two.py",
+            "--glob",
+            "src/*.py",
             "--json",
         ]
     )
@@ -393,8 +396,16 @@ def test_cli_named_file_list_run_appends_relative_files(
 
     assert exit_code == 0
     assert result["ok"] is True
-    assert result["data"]["files"] == ["../src/one.py", "../src/two.py"]
-    assert result["data"]["argv"] == command + ["../src/one.py", "../src/two.py"]
+    assert result["data"]["files"] == [
+        "../src/one.py",
+        "../src/two.py",
+        "../src/three.py",
+    ]
+    assert result["data"]["argv"] == command + [
+        "../src/one.py",
+        "../src/two.py",
+        "../src/three.py",
+    ]
     assert captured.err == ""
 
 
@@ -403,7 +414,7 @@ def test_cli_file_targets_report_usage_errors(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """File targets reject direct runs, unsupported commands, and missing files."""
+    """File targets reject direct runs, unsupported commands, missing files, and unmatched globs."""
     root = _initialise_repository(tmp_path / "repository")
     (root / "file.py").write_text("file")
     monkeypatch.chdir(root)
@@ -435,6 +446,17 @@ def test_cli_file_targets_report_usage_errors(
     assert "missing.py" in missing_result["error"]["message"]
     assert missing_output.err == ""
 
+    unmatched_glob_exit_code = main(
+        ["run", "files", "--glob", "missing/**/*.py", "--json"]
+    )
+    unmatched_glob_output = capsys.readouterr()
+    unmatched_glob_result = json.loads(unmatched_glob_output.out)
+
+    assert unmatched_glob_exit_code == 2
+    assert unmatched_glob_result["error"]["code"] == "usage"
+    assert "missing/**/*.py" in unmatched_glob_result["error"]["message"]
+    assert unmatched_glob_output.err == ""
+
     with pytest.raises(SystemExit) as error:
         main(["run", "--file", "file.py", "--json", "--", "echo"])
 
@@ -445,6 +467,17 @@ def test_cli_file_targets_report_usage_errors(
     assert direct_result["error"]["code"] == "usage"
     assert "only valid for a named command" in direct_result["error"]["message"]
     assert "agent-run run: error:" in direct_output.err
+
+    with pytest.raises(SystemExit) as glob_error:
+        main(["run", "--glob", "*.py", "--json", "--", "echo"])
+
+    glob_direct_output = capsys.readouterr()
+    glob_direct_result = json.loads(glob_direct_output.out)
+
+    assert glob_error.value.code == 2
+    assert glob_direct_result["error"]["code"] == "usage"
+    assert "only valid for a named command" in glob_direct_result["error"]["message"]
+    assert "agent-run run: error:" in glob_direct_output.err
 
 
 def test_cli_named_file_list_failure_includes_files_in_json_data(
@@ -462,7 +495,7 @@ def test_cli_named_file_list_failure_includes_files_in_json_data(
     assert main(["add", "check", "--capability", "file-list", "--", *command]) == 0
     capsys.readouterr()
 
-    exit_code = main(["run", "check", "--file", "file.py", "--json"])
+    exit_code = main(["run", "check", "--file", "file.py", "--glob", "*.py", "--json"])
     captured = capsys.readouterr()
     result = json.loads(captured.out)
 

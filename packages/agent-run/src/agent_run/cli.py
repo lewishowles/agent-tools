@@ -182,7 +182,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--capability",
         choices=COMMAND_CAPABILITIES,
         default=DEFAULT_CAPABILITY,
-        help="Allow named runs to append file paths with `--file`.",
+        help="Allow named runs to append file paths with `--file` or `--glob`.",
     )
     add_parser.add_argument("name", nargs="?", help="Name used to run the command.")
 
@@ -227,7 +227,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--capability",
         choices=COMMAND_CAPABILITIES,
         default=None,
-        help="Change whether named runs may append file paths with `--file`.",
+        help="Change whether named runs may append file paths with `--file` or `--glob`.",
     )
     edit_parser.add_argument("name", nargs="?", help="Name of the command to change.")
 
@@ -235,7 +235,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "run",
         help="Run a named or direct project command.",
         description="Run a named or direct project command in the foreground.",
-        usage="agent-run run [NAME] [--cwd DIR] [--timeout SECONDS] [--file PATH] [--json] [-- ARGV...]",
+        usage="agent-run run [NAME] [--cwd DIR] [--timeout SECONDS] [--file PATH] [--glob PATTERN] [--json] [-- ARGV...]",
         add_help=False,
         json_mode=json_mode,
     )
@@ -274,6 +274,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         default=[],
         help="Append PATH to a named command with the `file-list` capability.",
+    )
+    run_parser.add_argument(
+        "--glob",
+        metavar="PATTERN",
+        action="append",
+        default=[],
+        help=(
+            "Append sorted non-ignored files matching PATTERN from the repository "
+            "root with the `file-list` capability."
+        ),
     )
     run_parser.add_argument("name", nargs="?", help="Name of a stored command to run.")
 
@@ -600,9 +610,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if parsed.name is not None and parsed.cwd is not None:
             run_parser.error("named commands use their stored working directory")
 
-        if parsed.name is None and parsed.file:
+        if parsed.name is None and (parsed.file or parsed.glob):
             run_parser.error(
-                "--file is only valid for a named command with the file-list capability"
+                "--file and --glob are only valid for a named command with the "
+                "file-list capability"
             )
 
         connection: sqlite3.Connection | None = None
@@ -628,18 +639,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if timeout_seconds is None:
                     timeout_seconds = command.timeout_seconds
 
-                if parsed.file:
+                if parsed.file or parsed.glob:
                     if command.capability != FILE_LIST_CAPABILITY:
                         raise CommandError(
                             f'Command "{command.name}" has capability '
                             f'"{command.capability}"; use agent-run edit '
-                            f"{command.name} --capability file-list to accept --file targets."
+                            f"{command.name} --capability file-list to accept file targets."
                         )
 
                     resolved_file_paths = resolve_file_targets(
                         repository,
                         repository.root / relative_working_directory,
                         parsed.file,
+                        parsed.glob,
                     )
 
                 command_arguments = command.argv + resolved_file_paths
@@ -1227,7 +1239,7 @@ def _run_record(
     Args:
         result: Outcome of the command process.
         record: Saved run record holding the run ID and log path.
-        files: Paths resolved from `--file`, empty for a direct run.
+        files: Paths resolved from `--file` and `--glob`, empty for a direct run.
     """
     return {
         "argv": list(result.argv),
