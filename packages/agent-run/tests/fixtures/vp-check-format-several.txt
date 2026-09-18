@@ -1,0 +1,5 @@
+src/format.ts (4ms)
+src/other-format.ts (5ms)
+
+Found formatting issues in 2 files (143ms, 8 threads). Run vp check --fix to fix them.
+error: Formatting issues found

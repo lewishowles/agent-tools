@@ -1,0 +1,8 @@
+x Unexpected token
+   ,-[src/lint.ts:1:15]
+ 1 | const value = ;
+   :               ^
+   `----
+
+Found 1 error and 0 warnings in 1 file (16ms, 8 threads)
+error: Lint issues found

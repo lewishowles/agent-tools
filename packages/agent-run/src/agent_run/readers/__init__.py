@@ -13,12 +13,14 @@ from agent_run.failures import (
 from agent_run.readers.pytest import PytestReader
 from agent_run.readers.ruff import RuffReader
 from agent_run.readers.vitest import VitestReader
+from agent_run.readers.vp_check import VpCheckReader
 
 # Readers are tried in this order, and the first that matches a command reads its log.
 FAILURE_READERS: tuple[FailureReader, ...] = (
     PytestReader(),
     RuffReader(),
     VitestReader(),
+    VpCheckReader(),
 )
 
 

@@ -1,0 +1,12 @@
+Checking formatting...
+
+src/format.ts (3ms)
+  x Unexpected token
+   ,-[src/lint.ts:1:19]
+ 1 | const lintValue = ;
+   :                   ^
+   `----
+Error occurred when checking code style in the above files.
+
+Formatting failed before analysis started
+error: Formatting could not start

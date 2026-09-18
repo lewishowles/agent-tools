@@ -1,0 +1,16 @@
+! eslint(no-unused-vars): Variable 'typed' is declared but never used. Unused variables should start with a '_'.
+   ,-[src/type.ts:1:7]
+ 1 | const typed: string = 42;
+   :       ^^|^^
+   :         `-- 'typed' is declared here
+   `----
+  help: Consider removing this declaration.
+
+  x typescript(TS2322): Type 'number' is not assignable to type 'string'.
+   ,-[src/type.ts:1:7]
+ 1 | const typed: string = 42;
+   :       ^^^^^
+   `----
+
+Found 1 error and 1 warning in 1 file (790ms, 8 threads)
+error: Lint or type issues found

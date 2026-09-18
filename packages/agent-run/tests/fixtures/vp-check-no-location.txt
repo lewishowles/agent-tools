@@ -1,0 +1,10 @@
+x Unexpected token
+ 1 | const value = ;
+   :               ^
+   `----
+
+  x Unexpected token
+   ,-[src/lint.ts:1:19]
+ 1 | const lintValue = ;
+   :                   ^
+   `----
