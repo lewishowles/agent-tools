@@ -42,6 +42,11 @@ from agent_run.locking import RunBusyError, RunLock, acquire_run_lock
 from agent_run.output import render_error, render_success
 from agent_run.readers import read_failure_report
 from agent_run.repository import RepositoryError, identify_repository
+from agent_run.retention import (
+    RetentionPlan,
+    measure_log_sizes,
+    select_prune_candidates,
+)
 from agent_run.runs import (
     DEFAULT_RUN_LIMIT,
     RunNotFoundError,
@@ -49,7 +54,9 @@ from agent_run.runs import (
     create_run_log,
     discard_run_log,
     get_run,
+    list_all_runs,
     list_runs,
+    resolve_log_directory,
     save_run,
 )
 from agent_run.schema import NewerSchemaError
@@ -450,6 +457,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
 
+    prune_parser = subparsers.add_parser(
+        "prune",
+        help="Preview saved runs selected by log retention.",
+        description="Preview saved runs selected by log retention without deleting them.",
+        usage="agent-run prune [--json]",
+        add_help=False,
+        json_mode=json_mode,
+    )
+    prune_parser.add_argument(
+        "--help",
+        "-h",
+        action="store_true",
+        dest="prune_help",
+        help="Show this help message and exit.",
+    )
+    prune_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Write one structured JSON result to standard output.",
+    )
+
     show_parser = subparsers.add_parser(
         "show",
         help="Show one saved run record.",
@@ -627,6 +656,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return render_success(json_mode=True, data={"help": runs_help_text})
 
         return render_success(json_mode=False, text=runs_help_text)
+
+    if parsed.command == "prune" and parsed.prune_help:
+        prune_help_text = prune_parser.format_help()
+
+        if parsed.json:
+            return render_success(json_mode=True, data={"help": prune_help_text})
+
+        return render_success(json_mode=False, text=prune_help_text)
 
     if parsed.command == "show" and parsed.show_help:
         show_help_text = show_parser.format_help()
@@ -1247,6 +1284,39 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         return render_success(json_mode=False, text=text)
 
+    if parsed.command == "prune":
+        try:
+            database_path = resolve_database_path()
+            connection = connect_database(database_path)
+            try:
+                records = list_all_runs(connection)
+            finally:
+                connection.close()
+
+            total_bytes, sizes = measure_log_sizes(
+                resolve_log_directory(database_path), records
+            )
+            plan = select_prune_candidates(
+                records,
+                now=datetime.now(timezone.utc),
+                sizes=sizes,
+                total_bytes=total_bytes,
+            )
+        except (NewerSchemaError, OSError, sqlite3.Error, ValueError) as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="environment",
+                message=str(error),
+            )
+
+        data = _retention_plan_record(plan)
+        text = _format_retention_plan(plan)
+
+        if parsed.json:
+            return render_success(json_mode=True, data=data)
+
+        return render_success(json_mode=False, text=text)
+
     if parsed.command == "runs":
         if parsed.limit <= 0:
             runs_parser.error("--limit must be a positive integer")
@@ -1690,6 +1760,43 @@ def _format_runs(records: Sequence[RunRecord]) -> str:
         return "No runs recorded."
 
     return "\n\n".join(_format_saved_run(record) for record in records)
+
+
+def _retention_plan_record(plan: RetentionPlan) -> dict[str, object]:
+    """Return the public fields for a retention preview."""
+    return {
+        "runs": [
+            {
+                "run_id": candidate.record.run_id,
+                "reason": candidate.reason,
+                "space_freed_bytes": candidate.size_bytes,
+            }
+            for candidate in plan.candidates
+        ],
+        "total_log_bytes": plan.total_bytes,
+        "space_freed_bytes": plan.freed_bytes,
+    }
+
+
+def _format_retention_plan(plan: RetentionPlan) -> str:
+    """Format a retention preview for human-readable output."""
+    lines = [
+        f"total log size: {plan.total_bytes} bytes",
+        f"space freed: {plan.freed_bytes} bytes",
+    ]
+
+    if not plan.candidates:
+        lines.append("No runs need pruning.")
+    else:
+        lines.append("Runs to remove:")
+        lines.extend(
+            "run ID: "
+            f"{candidate.record.run_id}; reason: {candidate.reason}; "
+            f"space freed: {candidate.size_bytes} bytes"
+            for candidate in plan.candidates
+        )
+
+    return "\n".join(lines)
 
 
 def _command_record(command: Command) -> dict[str, object]:

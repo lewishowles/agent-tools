@@ -193,3 +193,26 @@ envelope.
 Logs are stored in `agent-run-logs` beside the database. With the default
 database, logs are written to `~/.agents/agent-run-logs`; setting
 `AGENT_RUN_DATABASE` moves the log directory beside the selected database.
+
+## Preview log retention
+
+`prune` previews the saved runs that the fixed retention policy would remove.
+It does not delete anything yet.
+
+```sh
+agent-run prune
+agent-run prune --json
+```
+
+The policy selects saved runs older than 7 days. If saved-run logs add up to
+more than 25 MB, it then selects the oldest remaining saved runs until the
+saved-run total would be at or under that limit. The preview covers every saved
+run in the database, including runs from other repositories. The reported total
+log size includes every `.log` file in the shared directory, so logs without a
+saved run record remain visible in that total but never trigger size selection
+or appear as removable runs. The limits are fixed module constants, and there
+are no settings for changing them.
+
+Both output modes report the total log size, each selected run's reason and
+space freed, and the total space that would be freed. The next retention step
+will add deletion behind an explicit flag.

@@ -247,3 +247,26 @@ def list_runs(
     ).fetchall()
 
     return tuple(_run_from_row(row) for row in rows)
+
+
+def list_all_runs(connection: sqlite3.Connection) -> tuple[RunRecord, ...]:
+    """Return every saved run across repositories, oldest first."""
+    rows = connection.execute(
+        """
+        SELECT
+            run_id,
+            repository_id,
+            argv,
+            working_directory,
+            timeout_seconds,
+            started_at,
+            duration_seconds,
+            exit_status,
+            timed_out,
+            log_path
+        FROM runs
+        ORDER BY started_at ASC, rowid ASC
+        """
+    ).fetchall()
+
+    return tuple(_run_from_row(row) for row in rows)
