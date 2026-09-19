@@ -2,14 +2,17 @@
 
 import argparse
 import json
+import shlex
 import signal
 import sqlite3
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
+
+import questionary
 
 from agent_run.commands import (
     COMMAND_CAPABILITIES,
@@ -48,6 +51,11 @@ from agent_run.runs import (
 )
 from agent_run.schema import NewerSchemaError
 from agent_run.targets import resolve_file_targets
+
+# How a detected command compares with the saved command of the same name.
+CANDIDATE_NEW = "new"
+CANDIDATE_SAVED = "saved"
+CANDIDATE_CLASH = "clash"
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -378,6 +386,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=argparse.SUPPRESS,
         help="Write one structured JSON result to standard output.",
     )
+    detect_parser.add_argument(
+        "--add",
+        dest="add_names",
+        action="append",
+        nargs="?",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Save a detected command by name; repeat for several commands, "
+            "or omit NAME to choose interactively."
+        ),
+    )
+    detect_parser.add_argument(
+        "--all",
+        dest="add_all",
+        action="store_true",
+        help="Save every detected command that is not already registered.",
+    )
 
     runs_parser = subparsers.add_parser(
         "runs",
@@ -563,6 +589,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             return render_success(json_mode=True, data={"help": detect_help_text})
 
         return render_success(json_mode=False, text=detect_help_text)
+
+    if parsed.command == "detect":
+        if parsed.add_names is not None and parsed.add_all:
+            detect_parser.error("--add and --all cannot be used together")
+
+        if parsed.add_names == [None] and not _is_interactive_terminal():
+            detect_parser.error(
+                "bare --add requires an interactive terminal; pass --add NAME "
+                "or --all instead"
+            )
+
+        if parsed.add_names and None in parsed.add_names and parsed.add_names != [None]:
+            detect_parser.error(
+                "bare --add cannot be combined with a command name; pass names "
+                "or use --all"
+            )
 
     if parsed.command == "runs" and parsed.runs_help:
         runs_help_text = runs_parser.format_help()
@@ -1015,40 +1057,136 @@ def main(argv: Sequence[str] | None = None) -> int:
         return render_success(json_mode=False, text=text)
 
     if parsed.command == "detect":
+        add_names = parsed.add_names
+        add_requested = add_names is not None or parsed.add_all
+
         try:
             repository = identify_repository()
             connection = connect_database()
             try:
-                registered_names = {
-                    command.name for command in list_commands(connection, repository)
+                registered_commands = {
+                    command.name: command
+                    for command in list_commands(connection, repository)
                 }
+
+                collection = collect_candidates(repository)
+
+                if not add_requested:
+                    data = {
+                        "candidates": [
+                            _candidate_record(candidate, registered_commands)
+                            for candidate in collection.candidates
+                        ],
+                        "skipped": [
+                            _candidate_record(candidate, registered_commands)
+                            for candidate in collection.skipped
+                        ],
+                    }
+                    text_sections = [
+                        _format_candidates(collection.candidates, registered_commands)
+                    ]
+
+                    if collection.skipped:
+                        text_sections.append(
+                            _format_skipped_candidates(collection.skipped)
+                        )
+
+                    text = "\n\n".join(text_sections)
+
+                    if parsed.json:
+                        return render_success(json_mode=True, data=data)
+
+                    return render_success(json_mode=False, text=text)
+
+                candidate_by_name = {
+                    candidate.name: candidate for candidate in collection.candidates
+                }
+
+                if parsed.add_all:
+                    selected_candidates = collection.candidates
+                    reported_candidates = collection.candidates
+                elif add_names == [None]:
+                    selected_names = _prompt_for_candidates(
+                        collection.candidates, registered_commands
+                    )
+                    selected_candidates = tuple(
+                        candidate
+                        for candidate in collection.candidates
+                        if candidate.name in selected_names
+                    )
+                    reported_candidates = collection.candidates
+                else:
+                    requested_names = tuple(add_names or ())
+                    missing_names = tuple(
+                        name
+                        for name in requested_names
+                        if name not in candidate_by_name
+                    )
+
+                    if missing_names:
+                        missing = ", ".join(f'"{name}"' for name in missing_names)
+                        detect_parser.error(f"detected command {missing} was not found")
+
+                    selected_candidates = tuple(
+                        candidate_by_name[name]
+                        for name in dict.fromkeys(requested_names)
+                    )
+                    reported_candidates = selected_candidates
+
+                added: list[Candidate] = []
+                already_registered: list[Candidate] = []
+                conflicts: list[Candidate] = []
+                names_to_save = {candidate.name for candidate in selected_candidates}
+
+                for candidate in reported_candidates:
+                    status = _classify_candidate(candidate, registered_commands)
+
+                    if status == CANDIDATE_SAVED:
+                        already_registered.append(candidate)
+                    elif status == CANDIDATE_CLASH:
+                        conflicts.append(candidate)
+                    elif candidate.name in names_to_save:
+                        stored_command = add_command(
+                            connection,
+                            repository,
+                            candidate.name,
+                            candidate.argv,
+                            candidate.working_directory,
+                        )
+                        registered_commands[candidate.name] = stored_command
+                        added.append(candidate)
             finally:
                 connection.close()
-
-            collection = collect_candidates(repository)
         except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
             return render_error(
                 json_mode=parsed.json,
                 code="environment",
                 message=str(error),
             )
+        except CommandError as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="usage",
+                message=str(error),
+            )
 
         data = {
-            "candidates": [
-                _candidate_record(candidate, registered_names)
-                for candidate in collection.candidates
+            "added": [
+                _candidate_record(candidate, registered_commands) for candidate in added
             ],
-            "skipped": [
-                _candidate_record(candidate, registered_names)
-                for candidate in collection.skipped
+            "already_registered": [
+                _candidate_record(candidate, registered_commands)
+                for candidate in already_registered
+            ],
+            "conflicts": [
+                {
+                    **_candidate_record(candidate, registered_commands),
+                    "edit_command": _edit_command(candidate),
+                }
+                for candidate in conflicts
             ],
         }
-        text_sections = [_format_candidates(collection.candidates, registered_names)]
-
-        if collection.skipped:
-            text_sections.append(_format_skipped_candidates(collection.skipped))
-
-        text = "\n\n".join(text_sections)
+        text = _format_detect_changes(added, already_registered, conflicts)
 
         if parsed.json:
             return render_success(json_mode=True, data=data)
@@ -1251,8 +1389,92 @@ def _format_commands(commands: Sequence[Command]) -> str:
     return "\n\n".join(_format_command(command) for command in commands)
 
 
+def _is_interactive_terminal() -> bool:
+    """Return whether someone at a terminal can answer the checkbox list."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _classify_candidate(
+    candidate: Candidate, registered_commands: Mapping[str, Command]
+) -> str:
+    """Return whether a detected command is new, saved exactly, or clashes.
+
+    A clash is a saved command with the same name but a different command or
+    working directory; it is never replaced automatically.
+    """
+    registered_command = registered_commands.get(candidate.name)
+
+    if registered_command is None:
+        return CANDIDATE_NEW
+
+    if (
+        registered_command.argv == candidate.argv
+        and registered_command.working_directory == candidate.working_directory
+    ):
+        return CANDIDATE_SAVED
+
+    return CANDIDATE_CLASH
+
+
+def _edit_command(candidate: Candidate) -> str:
+    """Return the `agent-run edit` command that replaces the saved command with the detected one."""
+    return shlex.join(
+        [
+            "agent-run",
+            "edit",
+            candidate.name,
+            "--cwd",
+            candidate.working_directory,
+            "--",
+            *candidate.argv,
+        ]
+    )
+
+
+def _prompt_for_candidates(
+    candidates: Sequence[Candidate], registered_commands: Mapping[str, Command]
+) -> tuple[str, ...]:
+    """Show a checkbox list of detected commands and return the ticked names.
+
+    New commands start ticked. Saved and clashing commands are listed but
+    cannot be ticked. Cancelling the list returns no names.
+    """
+    if not candidates:
+        return ()
+
+    choices = []
+
+    for candidate in candidates:
+        status = _classify_candidate(candidate, registered_commands)
+        disabled = None
+        checked = status == CANDIDATE_NEW
+
+        if status == CANDIDATE_SAVED:
+            disabled = "already registered"
+        elif status == CANDIDATE_CLASH:
+            disabled = f"conflict; use {_edit_command(candidate)}"
+
+        choices.append(
+            questionary.Choice(
+                title=(
+                    f"{candidate.name}: {json.dumps(list(candidate.argv))} "
+                    f"(cwd: {candidate.working_directory})"
+                ),
+                value=candidate.name,
+                disabled=disabled,
+                checked=checked,
+            )
+        )
+
+    selected_names = questionary.checkbox(
+        "Select detected commands to add:", choices=choices
+    ).ask()
+
+    return tuple(selected_names or ())
+
+
 def _candidate_record(
-    candidate: Candidate, registered_names: set[str]
+    candidate: Candidate, registered_commands: Mapping[str, Command]
 ) -> dict[str, object]:
     """Return one detected candidate with its registration status."""
     return {
@@ -1260,7 +1482,8 @@ def _candidate_record(
         "working_directory": candidate.working_directory,
         "argv": list(candidate.argv),
         "detector": candidate.detector,
-        "registered": candidate.name in registered_names,
+        "registered": _classify_candidate(candidate, registered_commands)
+        == CANDIDATE_SAVED,
     }
 
 
@@ -1278,14 +1501,17 @@ def _format_candidate(candidate: Candidate, registered: bool) -> str:
 
 
 def _format_candidates(
-    candidates: Sequence[Candidate], registered_names: set[str]
+    candidates: Sequence[Candidate], registered_commands: Mapping[str, Command]
 ) -> str:
     """Format detected candidates, or explain that none were found."""
     if not candidates:
         return "No commands detected."
 
     return "\n\n".join(
-        _format_candidate(candidate, candidate.name in registered_names)
+        _format_candidate(
+            candidate,
+            _classify_candidate(candidate, registered_commands) == CANDIDATE_SAVED,
+        )
         for candidate in candidates
     )
 
@@ -1301,6 +1527,41 @@ def _format_skipped_candidates(skipped: Sequence[Candidate]) -> str:
     )
 
     return "\n".join(lines)
+
+
+def _format_detect_changes(
+    added: Sequence[Candidate],
+    already_registered: Sequence[Candidate],
+    conflicts: Sequence[Candidate],
+) -> str:
+    """Format what `detect --add` or `--all` saved, found already saved, or skipped because of a clash."""
+    sections = []
+
+    if added:
+        sections.append(
+            "Added detected commands:\n"
+            + "\n".join(f"- {candidate.name}" for candidate in added)
+        )
+
+    if already_registered:
+        sections.append(
+            "Already registered:\n"
+            + "\n".join(f"- {candidate.name}" for candidate in already_registered)
+        )
+
+    if conflicts:
+        sections.append(
+            "Conflicting registered commands:\n"
+            + "\n".join(
+                f"- {candidate.name}: edit with {_edit_command(candidate)}"
+                for candidate in conflicts
+            )
+        )
+
+    if not sections:
+        return "No detected commands were added."
+
+    return "\n\n".join(sections)
 
 
 def _saved_run_record(record: RunRecord) -> dict[str, object]:

@@ -74,9 +74,23 @@ agent-run detect
 agent-run detect --json
 ```
 
-Detection never changes your registered commands. agent-run has no built-in
-detectors yet, so `detect` reports that no commands were detected. Saving a
-detected command is not available yet; register it with `agent-run add`.
+On its own, `detect` only lists what it finds and saves nothing. agent-run has
+no built-in detectors yet, so it currently reports that no commands were
+detected.
+
+Save detected commands by name, or save every one that is not saved yet:
+
+```sh
+agent-run detect --add test
+agent-run detect --add test --add lint
+agent-run detect --all
+```
+
+Run `agent-run detect --add` in an interactive terminal to choose from a
+checkbox list. New commands start ticked. Commands already saved exactly are
+shown as already registered. A command whose name is saved with a different
+command or folder can't be ticked; the list shows the `agent-run edit` command
+that would replace it. Saving never overwrites an existing command.
 
 Working directories must stay inside the repository. A symlinked directory is
 stored as its resolved target.
