@@ -38,6 +38,11 @@ paths appended with `--file` or `--glob`; commands use the `none` capability by
 default. Add `--manual` when a command needs a human to run it instead of
 agent-run.
 
+Agent-run also marks commands that start Playwright or Cypress as manual-only.
+This includes commands run through `npx`, `pnpm exec`, `yarn`, `bunx`, or
+`uv run`. Use `agent-run edit NAME --no-manual` when a command has been checked
+and is safe to run automatically.
+
 ```sh
 agent-run add test --timeout 30 -- pytest
 agent-run add lint --cwd tools --json -- ruff check
@@ -55,6 +60,9 @@ agent-run edit lint --timeout 10
 agent-run edit lint-changed --capability none
 agent-run edit browser-check --no-manual
 ```
+
+Changing a command's arguments to a Playwright or Cypress runner marks it
+manual-only, unless the same edit includes `--no-manual`.
 
 Rename or remove a command:
 
@@ -89,6 +97,10 @@ at files in the repository root:
 Xcode projects and packages below the root are not detected; add those with
 `agent-run add`.
 
+When a package script starts a Playwright or Cypress runner, saving the detected
+command marks it manual-only. Detection checks the script body once and does not
+follow other package scripts.
+
 Save detected commands by name, or save every one that is not saved yet:
 
 ```sh
@@ -116,7 +128,8 @@ the 120-second default.
 
 A command marked `--manual` still appears in `list`, but `run` refuses to
 execute it and prints the exact command and working directory for a human to
-run instead.
+run instead. Direct Playwright and Cypress commands are refused in the same
+way, before they start or create a run record.
 
 ```sh
 agent-run run test

@@ -19,12 +19,14 @@ class Candidate:
         argv: Argument array the command would run.
         working_directory: Repository-relative directory, using `.` for the root.
         detector: Name of the detector that produced the suggestion.
+        manual: Whether the candidate needs a human to run it.
     """
 
     name: str
     argv: tuple[str, ...]
     working_directory: str
     detector: str
+    manual: bool = False
 
 
 class Detector(Protocol):

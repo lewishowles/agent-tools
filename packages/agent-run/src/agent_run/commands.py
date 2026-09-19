@@ -17,6 +17,17 @@ FILE_LIST_CAPABILITY = "file-list"
 # Every capability a stored command may hold, offered as argparse choices.
 COMMAND_CAPABILITIES: tuple[str, ...] = (DEFAULT_CAPABILITY, FILE_LIST_CAPABILITY)
 
+# Browser test runners that a person must start; agents never run them.
+_BROWSER_RUNNERS: tuple[str, ...] = ("playwright", "cypress")
+# Package-runner prefixes that can come before a browser test runner.
+_BROWSER_RUNNER_WRAPPERS: tuple[tuple[str, ...], ...] = (
+    ("npx",),
+    ("pnpm", "exec"),
+    ("yarn",),
+    ("bunx",),
+    ("uv", "run"),
+)
+
 
 class CommandError(RuntimeError):
     """Report a command that cannot be stored or changed."""
@@ -24,6 +35,26 @@ class CommandError(RuntimeError):
 
 class CommandNotFoundError(CommandError):
     """Report a named command that does not exist for the repository."""
+
+
+def starts_browser_runner(argv: Sequence[str]) -> bool:
+    """Return whether an argument array starts Playwright or Cypress, directly or through a package runner."""
+    command_arguments = tuple(argv)
+
+    if command_arguments and command_arguments[0] in _BROWSER_RUNNERS:
+        return True
+
+    for wrapper in _BROWSER_RUNNER_WRAPPERS:
+        if command_arguments[: len(wrapper)] != wrapper:
+            continue
+
+        runner_index = len(wrapper)
+        return (
+            runner_index < len(command_arguments)
+            and command_arguments[runner_index] in _BROWSER_RUNNERS
+        )
+
+    return False
 
 
 @dataclass(frozen=True)
@@ -282,7 +313,9 @@ def edit_command(
         cwd: Optional replacement directory relative to the repository root.
         timeout_seconds: Optional positive replacement timeout override.
         capability: Optional replacement for the command's run input capability.
-        manual: Optional replacement for the command's manual-only mark.
+        manual: Optional replacement for the command's manual-only mark. When it is
+            left out and the new arguments start Playwright or Cypress, the
+            command is marked manual-only.
 
     Raises:
         CommandNotFoundError: If the command is not registered for the repository.
@@ -321,6 +354,11 @@ def edit_command(
         command.capability if capability is None else _validate_capability(capability)
     )
     command_manual = command.manual if manual is None else manual
+
+    # New arguments that start a browser runner make the command manual-only, unless
+    # this edit sets the mark itself.
+    if manual is None and argv is not None and starts_browser_runner(command_arguments):
+        command_manual = True
 
     connection.execute(
         """

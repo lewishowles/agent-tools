@@ -392,6 +392,155 @@ def test_cli_manual_named_run_reports_command_without_executing_or_resolving_tar
         connection.close()
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        ("playwright", "test"),
+        ("cypress", "run"),
+        ("npx", "playwright", "test"),
+        ("pnpm", "exec", "cypress", "run"),
+        ("yarn", "playwright", "test"),
+        ("bunx", "cypress", "run"),
+        ("uv", "run", "playwright", "test"),
+    ],
+)
+def test_cli_direct_browser_runner_is_manual(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: tuple[str, ...],
+) -> None:
+    """Direct browser runners are refused before execution and logging."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    exit_code = main(["run", "--json", "--", *command])
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 1
+    assert result["error"]["code"] == "manual"
+    assert result["error"]["data"] == {"argv": list(command), "cwd": str(root)}
+    expected_line = f"cd {shlex.quote(str(root))} && {shlex.join(command)}"
+    assert (
+        result["error"]["message"]
+        == f"This command is manual-only. Run it manually with: {expected_line}"
+    )
+    assert captured.err == ""
+
+    connection = connect_database(database_path)
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_cli_add_auto_marks_browser_runner_and_edit_can_remove_mark(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Adding a browser runner marks it manual until the existing edit override clears it."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    assert main(["add", "browser", "--", "npx", "playwright", "test"]) == 0
+    add_output = capsys.readouterr()
+
+    assert "manual: true" in add_output.out
+
+    assert (
+        main(
+            [
+                "edit",
+                "browser",
+                "--no-manual",
+                "--json",
+                "--",
+                "npx",
+                "playwright",
+                "test",
+            ]
+        )
+        == 0
+    )
+    edit_output = capsys.readouterr()
+    result = json.loads(edit_output.out)
+
+    assert result["data"]["manual"] is False
+    assert edit_output.err == ""
+
+
+def test_cli_edit_replacement_auto_marks_browser_runner_unless_overridden(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Replacing a command with a browser runner marks it unless unmarked in that edit."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    assert main(["add", "browser", "--", "echo", "ok"]) == 0
+    capsys.readouterr()
+
+    assert main(["edit", "browser", "--", "playwright", "test"]) == 0
+    marked_output = capsys.readouterr()
+
+    assert "manual: true" in marked_output.out
+
+    assert (
+        main(
+            [
+                "edit",
+                "browser",
+                "--no-manual",
+                "--",
+                "playwright",
+                "test",
+            ]
+        )
+        == 0
+    )
+    overridden_output = capsys.readouterr()
+
+    assert "manual: false" in overridden_output.out
+
+
+def test_cli_detect_add_marks_browser_runner_script_manual(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Saving a detected browser script stores the inferred manual mark."""
+    root = _initialise_repository(tmp_path / "repository")
+    (root / "package.json").write_text(
+        json.dumps({"scripts": {"browser": "playwright test"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    assert main(["detect", "--add", "browser", "--json"]) == 0
+    output = capsys.readouterr()
+
+    assert output.err == ""
+
+    connection = connect_database(database_path)
+    try:
+        manual = connection.execute("SELECT manual FROM commands").fetchone()[0]
+    finally:
+        connection.close()
+
+    assert manual == 1
+
+
 def test_cli_named_file_list_run_appends_relative_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

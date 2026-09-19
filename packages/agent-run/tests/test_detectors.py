@@ -107,6 +107,29 @@ def test_package_json_detector_returns_every_root_script(
     )
 
 
+def test_package_json_detector_marks_browser_runner_scripts(
+    tmp_path: Path,
+) -> None:
+    """Package scripts that start browser runners are marked manual once."""
+    root = _initialise_repository(tmp_path / "repository")
+    (root / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "browser": "npx playwright test",
+                    "e2e": "npm run lint && cypress run",
+                    "plain": "echo playwright test",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    candidates = detect_package_json_scripts(_repository(root))
+
+    assert [candidate.manual for candidate in candidates] == [True, True, False]
+
+
 def test_package_json_detector_ignores_missing_or_malformed_manifests(
     tmp_path: Path,
 ) -> None:

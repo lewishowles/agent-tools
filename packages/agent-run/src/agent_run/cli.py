@@ -28,6 +28,7 @@ from agent_run.commands import (
     normalise_working_directory,
     remove_command,
     rename_command,
+    starts_browser_runner,
 )
 from agent_run.database import connect_database, resolve_database_path
 from agent_run.detectors import Candidate, collect_candidates
@@ -714,29 +715,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                     repository, parsed.cwd
                 )
                 command_arguments = tuple(direct_arguments)
+
+                if starts_browser_runner(command_arguments):
+                    return _manual_command_error(
+                        json_mode=parsed.json,
+                        argv=command_arguments,
+                        cwd=repository.root / relative_working_directory,
+                    )
             else:
                 command = find_command(connection, repository, parsed.name)
 
                 # A manual-only command stops here, before file targets are resolved
                 # or a log is opened, so nothing runs and no run record is saved.
                 if command.manual:
-                    command_cwd = repository.root / command.working_directory
-                    command_line = (
-                        f"cd {shlex.quote(str(command_cwd))} && "
-                        f"{shlex.join(command.argv)}"
-                    )
-                    manual_message = (
-                        f'Command "{command.name}" is manual-only. '
-                        f"Run it manually with: {command_line}"
-                    )
-                    return render_error(
+                    return _manual_command_error(
                         json_mode=parsed.json,
-                        code="manual",
-                        message=manual_message,
-                        data={
-                            "argv": list(command.argv),
-                            "cwd": str(command_cwd),
-                        },
+                        argv=command.argv,
+                        cwd=repository.root / command.working_directory,
+                        name=command.name,
                     )
 
                 relative_working_directory = normalise_working_directory(
@@ -909,7 +905,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     parsed.cwd,
                     parsed.timeout,
                     parsed.capability,
-                    parsed.manual,
+                    parsed.manual or starts_browser_runner(command_arguments),
                 )
             finally:
                 connection.close()
@@ -1188,6 +1184,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             candidate.name,
                             candidate.argv,
                             candidate.working_directory,
+                            manual=candidate.manual,
                         )
                         registered_commands[candidate.name] = stored_command
                         added.append(candidate)
@@ -1398,6 +1395,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             return render_success(json_mode=True, data=data)
 
         return render_success(json_mode=False, text=text)
+
+
+def _manual_command_error(
+    *,
+    json_mode: bool,
+    argv: Sequence[str],
+    cwd: Path,
+    name: str | None = None,
+) -> int:
+    """Render the refusal for a command that must be started by a person."""
+    command_line = f"cd {shlex.quote(str(cwd))} && {shlex.join(argv)}"
+    command_label = "This command" if name is None else f'Command "{name}"'
+
+    return render_error(
+        json_mode=json_mode,
+        code="manual",
+        message=(
+            f"{command_label} is manual-only. Run it manually with: {command_line}"
+        ),
+        data={"argv": list(argv), "cwd": str(cwd)},
+    )
 
 
 def _format_command(command: Command) -> str:
