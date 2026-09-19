@@ -157,8 +157,8 @@ Without `--force`, removal is a hard delete that raises
 `StillReferencedError` when any task refers to a release or the release owns
 notes. The error names the blocking task or note IDs and suggests `--force`.
 With `--force`, every task in the release is removed with its chunks, notes,
-dependency edges, contract and file rows, followed by the release's notes and
-out-of-scope entries. The human output lists the deleted records grouped by
+dependency edges, contract and file rows, followed by the release's notes. The
+human output lists the deleted records grouped by
 type. Forced removal does not ask for confirmation.
 
 ### `progress release rename`

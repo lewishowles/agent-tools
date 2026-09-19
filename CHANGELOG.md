@@ -7,7 +7,7 @@ All notable changes to `progress` are documented here. The format is based on [K
 ### Added
 
 - `release remove --force` removes every task in a release, its owned rows,
-  release-owned notes, and out-of-scope entries in one transaction.
+  and release-owned notes in one transaction.
 - `task remove --force` removes a task and its owned rows, and makes dependants
   ready when they have no remaining unfinished dependencies.
 
@@ -21,6 +21,8 @@ All notable changes to `progress` are documented here. The format is based on [K
 
 ### Removed
 
+- Breaking: releases no longer have a purpose, risks or out-of-scope list, and `release add` and `release edit` no longer accept `--purpose`, `--risks`, `--out-of-scope` or their `--clear-*` flags. Upgrading the database adds existing purpose text and out-of-scope items to the end of each release overview; release risks are deleted.
+- The unused `model_tier` task column is removed from databases that have it.
 - Breaking: `--contract` and `--files` have been removed. Use `--contract-step` and `--file` instead.
 
 ## [0.2.0] - 2026-08-30

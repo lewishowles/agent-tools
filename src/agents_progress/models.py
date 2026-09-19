@@ -13,8 +13,6 @@ class Release:
 	slug: str
 	title: str
 	overview: str
-	purpose: str | None
-	risks: str | None
 	status: str
 	position: int
 

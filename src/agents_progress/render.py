@@ -364,30 +364,22 @@ def _render_release(release: dict[str, object]) -> str:
 		)
 	)
 
-	for label, key in (
-		("Overview", "overview"),
-		("Purpose", "purpose"),
-		("Risks", "risks"),
-	):
-		value = release.get(key)
-		if not value:
-			continue
+	overview = release.get("overview")
+	if overview:
+		# Wrap each line on its own so paragraph breaks and bullet lists in the
+		# overview stay on separate lines.
+		overview_lines = [
+			textwrap.fill(line, _ROW_WRAP_WIDTH) for line in str(overview).split("\n")
+		]
 		blocks.extend(
 			[
-				render_span(label),
+				render_span("Overview"),
 				render_span(
-					textwrap.fill(str(value), _ROW_WRAP_WIDTH),
+					"\n".join(overview_lines),
 					"muted",
 					weight="normal",
 				),
 			]
-		)
-
-	out_of_scope = release.get("out_of_scope")
-	if isinstance(out_of_scope, list) and out_of_scope:
-		blocks.append(render_span("Out of scope"))
-		blocks.extend(
-			render_span(f"- {item}", "muted", weight="normal") for item in out_of_scope
 		)
 
 	notes = release.get("notes")

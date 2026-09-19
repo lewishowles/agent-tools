@@ -11,7 +11,7 @@ from .errors import DatabaseBusyError, MigrationFailedError, StaleSchemaError
 Migration = Callable[[sqlite3.Connection], None]
 
 # the schema version this package writes when creating a database from empty
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 # the newest schema version this package knows how to migrate to
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION
 
@@ -286,11 +286,55 @@ def _migrate_to_version_3(connection: sqlite3.Connection) -> None:
 	connection.execute("ALTER TABLE notes_new RENAME TO notes")
 
 
+def _migrate_to_version_4(connection: sqlite3.Connection) -> None:
+	"""Remove release purpose, risks and out-of-scope items, and the unused task model tier.
+
+	Existing purpose text and out-of-scope items are added to the end of the
+	release overview, so that text is kept. Release risks are dropped.
+	The model tier column was never part of this package's schema but exists in
+	some live databases, so it is dropped only when present.
+	"""
+	release_rows = connection.execute(
+		"SELECT id, overview, purpose FROM releases"
+	).fetchall()
+	for release_id, overview, purpose in release_rows:
+		parts = []
+		if purpose:
+			parts.append(purpose)
+
+		out_of_scope = connection.execute(
+			"SELECT text FROM release_out_of_scope "
+			"WHERE release_id = ? ORDER BY position",
+			(release_id,),
+		).fetchall()
+		if out_of_scope:
+			parts.append(
+				"Out of scope:\n" + "\n".join(f"- {row[0]}" for row in out_of_scope)
+			)
+
+		if parts:
+			connection.execute(
+				"UPDATE releases SET overview = ? WHERE id = ?",
+				("\n\n".join((overview, *parts)), release_id),
+			)
+
+	connection.execute("DROP TABLE release_out_of_scope")
+	connection.execute("ALTER TABLE releases DROP COLUMN purpose")
+	connection.execute("ALTER TABLE releases DROP COLUMN risks")
+
+	task_columns = {
+		row[1] for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
+	}
+	if "model_tier" in task_columns:
+		connection.execute("ALTER TABLE tasks DROP COLUMN model_tier")
+
+
 # maps each supported schema version to the migration that produces it
 MIGRATIONS: dict[int, Migration] = {
 	1: _create_schema,
 	2: _migrate_to_version_2,
 	3: _migrate_to_version_3,
+	4: _migrate_to_version_4,
 }
 
 

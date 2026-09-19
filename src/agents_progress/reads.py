@@ -29,9 +29,7 @@ MAX_LIMIT = 200
 TASK_STATUSES = frozenset({"ready", "in-progress", "blocked", "needs-decision", "done"})
 
 # Columns selected from releases in list and single-row queries.
-_RELEASE_COLUMNS = (
-	"id, project_id, slug, title, overview, purpose, risks, status, position"
-)
+_RELEASE_COLUMNS = "id, project_id, slug, title, overview, status, position"
 
 # Columns selected from tasks in list and single-row queries.
 _TASK_COLUMNS = (
@@ -281,17 +279,10 @@ def _task_public_row(
 def _release_public_data(
 	connection: sqlite3.Connection, release_row: object
 ) -> dict[str, object]:
-	"""Return a release as release get and next show it, with its out-of-scope items in order and the notes that belong to it."""
+	"""Return a release with the notes that belong to it."""
 	release = Release.from_row(release_row).to_dict()
 	release_id = str(release["id"])
 	project_id = str(release["project_id"])
-	release["out_of_scope"] = [
-		row["text"]
-		for row in connection.execute(
-			"SELECT text FROM release_out_of_scope WHERE release_id = ? ORDER BY position",
-			(release_id,),
-		).fetchall()
-	]
 	release["notes"] = [
 		Note.from_row(row).to_dict()
 		for row in connection.execute(

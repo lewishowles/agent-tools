@@ -175,13 +175,13 @@ def test_first_connection_creates_the_schema_and_sqlite_safety_settings(
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 3
+			== 4
 		)
 		release_columns = {
 			row[1] for row in connection.execute("PRAGMA table_info(releases)")
 		}
-		assert {"purpose", "risks"}.issubset(release_columns)
-		assert "release_out_of_scope" in tables
+		assert {"purpose", "risks"}.isdisjoint(release_columns)
+		assert "release_out_of_scope" not in tables
 		assert "split_rationale" in {
 			row[1] for row in connection.execute("PRAGMA table_info(tasks)")
 		}
@@ -208,7 +208,7 @@ def test_an_older_schema_version_migrates_forward(tmp_path) -> None:
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 3
+			== 4
 		)
 		assert connection.execute("SELECT 1 FROM projects").fetchone() is None
 		assert (
@@ -300,7 +300,7 @@ def test_schema_version_two_migrates_task_notes_without_loss(tmp_path) -> None:
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 3
+			== 4
 		)
 		assert [
 			tuple(row)
@@ -319,6 +319,110 @@ def test_schema_version_two_migrates_task_notes_without_loss(tmp_path) -> None:
 				first_note_id,
 			),
 		]
+
+
+def test_schema_version_three_moves_release_fields_and_drops_legacy_model_tier(
+	tmp_path,
+) -> None:
+	database_path = tmp_path / "progress.db"
+	with sqlite3.connect(database_path) as connection:
+		schema._create_schema(connection)
+		schema._migrate_to_version_2(connection)
+		schema._migrate_to_version_3(connection)
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.executemany(
+			"INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+			[
+				(1, "2026-01-01T00:00:00+00:00"),
+				(2, "2026-01-01T00:00:00+00:00"),
+				(3, "2026-01-01T00:00:00+00:00"),
+			],
+		)
+		project_id = generate_object_id(PROJECT_PREFIX)
+		release_id = generate_object_id(RELEASE_PREFIX)
+		unchanged_release_id = generate_object_id(RELEASE_PREFIX)
+		_insert_project(connection, project_id)
+		connection.executemany(
+			"""
+			INSERT INTO releases (
+				id, project_id, slug, title, overview, purpose, risks, status, position
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			""",
+			[
+				(
+					release_id,
+					project_id,
+					"release",
+					"Release",
+					"Release overview.",
+					"Release purpose.",
+					"Release risks.",
+					"planned",
+					1,
+				),
+				(
+					unchanged_release_id,
+					project_id,
+					"unchanged",
+					"Unchanged release",
+					"Unchanged overview.",
+					None,
+					"Dropped risks.",
+					"planned",
+					2,
+				),
+			],
+		)
+		connection.executemany(
+			"INSERT INTO release_out_of_scope (release_id, position, text) VALUES (?, ?, ?)",
+			[
+				(release_id, 1, "First excluded item."),
+				(release_id, 2, "Second excluded item."),
+			],
+		)
+		connection.execute("ALTER TABLE tasks ADD COLUMN model_tier TEXT")
+		_insert_task(connection, project_id, generate_object_id(TASK_PREFIX), "task")
+		connection.execute(
+			"UPDATE tasks SET model_tier = ? WHERE project_id = ?",
+			("legacy", project_id),
+		)
+
+	with Database(database_path).connection() as connection:
+		assert (
+			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
+				0
+			]
+			== 4
+		)
+		assert connection.execute(
+			"SELECT overview FROM releases WHERE id = ?", (release_id,)
+		).fetchone()[0] == (
+			"Release overview.\n\nRelease purpose.\n\nOut of scope:\n"
+			"- First excluded item.\n- Second excluded item."
+		)
+		assert (
+			connection.execute(
+				"SELECT overview FROM releases WHERE id = ?", (unchanged_release_id,)
+			).fetchone()[0]
+			== "Unchanged overview."
+		)
+		release_columns = {
+			row[1] for row in connection.execute("PRAGMA table_info(releases)")
+		}
+		task_columns = {
+			row[1] for row in connection.execute("PRAGMA table_info(tasks)")
+		}
+		assert {"purpose", "risks"}.isdisjoint(release_columns)
+		assert "model_tier" not in task_columns
+		assert (
+			connection.execute(
+				"SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+				("release_out_of_scope",),
+			).fetchone()
+			is None
+		)
 
 
 def test_notes_require_exactly_one_owner(tmp_path) -> None:

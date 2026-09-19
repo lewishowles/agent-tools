@@ -729,14 +729,6 @@ def test_write_commands_dispatch_to_the_matching_store_method(
 				"Release",
 				"--overview",
 				"Overview",
-				"--purpose",
-				"Purpose",
-				"--risks",
-				"Risks",
-				"--out-of-scope",
-				"First",
-				"--out-of-scope",
-				"Second",
 			],
 			"release_add",
 			(),
@@ -744,9 +736,6 @@ def test_write_commands_dispatch_to_the_matching_store_method(
 				"slug": "release",
 				"title": "Release",
 				"overview": "Overview",
-				"purpose": "Purpose",
-				"risks": "Risks",
-				"out_of_scope": ["First", "Second"],
 				"status": "planned",
 				"position": None,
 			},
@@ -756,71 +745,16 @@ def test_write_commands_dispatch_to_the_matching_store_method(
 				"release",
 				"edit",
 				"rel_" + "r" * 22,
-				"--purpose",
-				"Updated purpose",
-				"--risks",
-				"Updated risks",
-				"--out-of-scope",
-				"Replacement",
-				"--out-of-scope",
-				"Second replacement",
+				"--overview",
+				"Updated overview",
 			],
 			"release_edit",
 			("rel_" + "r" * 22,),
-			{
-				"overview": None,
-				"purpose": "Updated purpose",
-				"risks": "Updated risks",
-				"out_of_scope": ["Replacement", "Second replacement"],
-				"clear_purpose": False,
-				"clear_risks": False,
-				"clear_out_of_scope": False,
-			},
-		),
-		(
-			[
-				"release",
-				"edit",
-				"rel_" + "r" * 22,
-				"--purpose",
-				"Updated purpose",
-			],
-			"release_edit",
-			("rel_" + "r" * 22,),
-			{
-				"overview": None,
-				"purpose": "Updated purpose",
-				"risks": None,
-				"out_of_scope": None,
-				"clear_purpose": False,
-				"clear_risks": False,
-				"clear_out_of_scope": False,
-			},
-		),
-		(
-			[
-				"release",
-				"edit",
-				"rel_" + "r" * 22,
-				"--clear-purpose",
-				"--clear-risks",
-				"--clear-out-of-scope",
-			],
-			"release_edit",
-			("rel_" + "r" * 22,),
-			{
-				"overview": None,
-				"purpose": None,
-				"risks": None,
-				"out_of_scope": None,
-				"clear_purpose": True,
-				"clear_risks": True,
-				"clear_out_of_scope": True,
-			},
+			{"overview": "Updated overview"},
 		),
 	],
 )
-def test_release_planning_options_dispatch_with_their_values(
+def test_release_edit_dispatches_overview(
 	tmp_path: Path,
 	monkeypatch,
 	capsys,
@@ -849,6 +783,28 @@ def test_release_planning_options_dispatch_with_their_values(
 
 	assert calls == [(method_name, expected_arguments, expected_keywords)]
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+@pytest.mark.parametrize("flag", ["--purpose", "--risks", "--out-of-scope"])
+def test_release_removed_flags_are_rejected(tmp_path: Path, capsys, flag: str) -> None:
+	arguments = [
+		"release",
+		"add",
+		"--slug",
+		"release",
+		"--title",
+		"Release",
+		"--overview",
+		"Overview",
+		flag,
+		"Removed",
+		"--database",
+		str(tmp_path / "db"),
+		"--json",
+	]
+
+	assert cli.main(arguments) == 2
+	assert "unrecognized arguments" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -2677,11 +2633,10 @@ def test_release_get_uses_one_readable_release_view() -> None:
 		"project_id": "prj_release_view",
 		"slug": "hidden-release-slug",
 		"title": "Readable release",
-		"overview": "The release overview.",
-		"purpose": "The release purpose.",
-		"risks": "The release risks.",
+		"overview": (
+			"The release overview.\n\nOut of scope:\n- First item.\n- Second item."
+		),
 		"status": "in-progress",
-		"out_of_scope": ["First excluded item.", "Second excluded item."],
 		"notes": [
 			{
 				"type": "discovery",
@@ -2699,12 +2654,13 @@ def test_release_get_uses_one_readable_release_view() -> None:
 	assert plain_output.startswith("Readable release")
 	assert "Status" in plain_output and "in progress" in plain_output
 	assert "ID" in plain_output and "rel_release_view" in plain_output
-	assert "Overview" in plain_output and "The release overview." in plain_output
-	assert "Purpose" in plain_output and "The release purpose." in plain_output
-	assert "Risks" in plain_output and "The release risks." in plain_output
-	assert "Out of scope" in plain_output
-	assert "First excluded item." in plain_output
-	assert "Second excluded item." in plain_output
+	assert "Overview" in plain_output
+	assert (
+		"The release overview.\n\nOut of scope:\n- First item.\n- Second item."
+		in plain_output
+	)
+	assert "Purpose" not in plain_output
+	assert "Risks" not in plain_output
 	assert plain_output.count("Notes") == 1
 	assert "Release notes" not in plain_output
 	assert "release rel_release_view" not in plain_output
@@ -2713,10 +2669,7 @@ def test_release_get_uses_one_readable_release_view() -> None:
 	assert "position" not in plain_output.lower()
 	assert plain_output.index("Readable release") < plain_output.index("Status")
 	assert plain_output.index("Status") < plain_output.index("Overview")
-	assert plain_output.index("Overview") < plain_output.index("Purpose")
-	assert plain_output.index("Purpose") < plain_output.index("Risks")
-	assert plain_output.index("Risks") < plain_output.index("Out of scope")
-	assert plain_output.index("Out of scope") < plain_output.index("Notes")
+	assert plain_output.index("Overview") < plain_output.index("Notes")
 
 
 def test_release_get_omits_empty_optional_sections() -> None:
@@ -2727,9 +2680,6 @@ def test_release_get_omits_empty_optional_sections() -> None:
 			"title": "Minimal release",
 			"status": "planned",
 			"overview": "Overview only.",
-			"purpose": None,
-			"risks": None,
-			"out_of_scope": [],
 			"notes": [],
 		},
 	)
@@ -2755,15 +2705,12 @@ def test_release_get_routes_to_the_dedicated_release_view(monkeypatch) -> None:
 	assert render_module.render("release get", {"id": "rel_test"}) == "release view"
 
 
-def test_json_release_get_includes_planning_fields(
+def test_json_release_get_includes_overview_and_notes(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
 	data = {
 		"id": "rel_test",
 		"title": "Release",
-		"purpose": "Purpose.",
-		"risks": "Risks.",
-		"out_of_scope": ["Excluded work."],
 		"notes": [{"type": "decision", "body": "Decision."}],
 	}
 
@@ -2853,9 +2800,6 @@ def test_human_next_renders_release_before_task(
 			"title": "Current release",
 			"status": "active",
 			"overview": "Release overview.",
-			"purpose": "Release purpose.",
-			"risks": "Release risks.",
-			"out_of_scope": ["Excluded work."],
 			"notes": [
 				{
 					"type": "decision",
@@ -2927,9 +2871,6 @@ def test_json_next_includes_the_release_data(
 		"project": {"name": "Agents"},
 		"release": {
 			"id": "rel_next",
-			"purpose": "Release purpose.",
-			"risks": "Release risks.",
-			"out_of_scope": ["Excluded work."],
 			"notes": [{"type": "discovery", "body": "Release discovery."}],
 		},
 		"task": None,
@@ -4433,7 +4374,6 @@ def test_force_remove_passes_the_flag_and_returns_deleted_json(
 				"notes": [],
 				"dependencies": [],
 				"tasks": [identifier],
-				"out_of_scope": [],
 			},
 		}
 		for identifier in ids
@@ -4480,7 +4420,6 @@ def test_force_remove_human_output_groups_deleted_records(
 			"notes": ["nte_test"],
 			"dependencies": ["tsk_other -> tsk_test"],
 			"tasks": ["tsk_test"],
-			"out_of_scope": ["Out of scope"],
 		},
 		"unblocked_tasks": ["tsk_ready"],
 	}
@@ -4516,7 +4455,6 @@ def test_force_remove_human_output_groups_deleted_records(
 	assert "Notes: nte_test" in plain_output
 	assert "Dependencies: tsk_other -> tsk_test" in plain_output
 	assert "Tasks: tsk_test" in plain_output
-	assert "Out of scope: Out of scope" in plain_output
 	assert "Unblocked tasks: tsk_ready" in plain_output
 
 

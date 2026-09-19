@@ -39,11 +39,7 @@ from .schema import utc_timestamp
 # Status values accepted when creating or updating a release.
 _RELEASE_STATUSES = frozenset({"planned", "active", "done"})
 # Release columns returned by release write queries.
-_RELEASE_COLUMNS = (
-	"id, project_id, slug, title, overview, purpose, risks, status, position"
-)
-# Table holding the ordered items excluded from a release.
-_RELEASE_OUT_OF_SCOPE_TABLE = "release_out_of_scope"
+_RELEASE_COLUMNS = "id, project_id, slug, title, overview, status, position"
 # Qualified chunk columns used by chunk write queries scoped to a task.
 _QUALIFIED_CHUNK_COLUMNS = (
 	"chunks.id, chunks.task_id, chunks.position, chunks.title, chunks.description, "
@@ -69,9 +65,6 @@ class WriteStore(_StoreBase):
 		slug: str,
 		title: str,
 		overview: str = "",
-		purpose: str | None = None,
-		risks: str | None = None,
-		out_of_scope: Sequence[str] | None = None,
 		status: str = "planned",
 		position: int | None = None,
 		path: str | Path | None = None,
@@ -80,17 +73,6 @@ class WriteStore(_StoreBase):
 		_require_text(slug, "release slug")
 		_require_text(title, "release title")
 		_require_text(overview, "release overview")
-		if purpose is not None:
-			if not isinstance(purpose, str):
-				raise ProgressError("release purpose must be text")
-			_require_text(purpose, "release purpose")
-		if risks is not None:
-			if not isinstance(risks, str):
-				raise ProgressError("release risks must be text")
-			_require_text(risks, "release risks")
-		out_of_scope_values = _normalise_ordered_values(
-			out_of_scope, "release out-of-scope"
-		)
 		if status not in _RELEASE_STATUSES:
 			raise InvalidStatusError(
 				f"unknown release status {status!r}",
@@ -109,9 +91,9 @@ class WriteStore(_StoreBase):
 				connection.execute(
 					"""
 					INSERT INTO releases (
-						id, project_id, slug, title, overview, purpose, risks, status, position
+						id, project_id, slug, title, overview, status, position
 					)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+					VALUES (?, ?, ?, ?, ?, ?, ?)
 					""",
 					(
 						release_id,
@@ -119,8 +101,6 @@ class WriteStore(_StoreBase):
 						slug,
 						title,
 						overview,
-						purpose,
-						risks,
 						status,
 						release_position,
 					),
@@ -131,7 +111,6 @@ class WriteStore(_StoreBase):
 					{"slug": slug, "project_id": project.id},
 				) from error
 
-			_write_release_values(connection, release_id, out_of_scope_values)
 			row = connection.execute(
 				f"SELECT {_RELEASE_COLUMNS} FROM releases WHERE id = ?",
 				(release_id,),
@@ -209,89 +188,21 @@ class WriteStore(_StoreBase):
 		self,
 		release_id: str,
 		overview: str | None = None,
-		purpose: str | None = None,
-		risks: str | None = None,
-		out_of_scope: Sequence[str] | None = None,
-		clear_purpose: bool = False,
-		clear_risks: bool = False,
-		clear_out_of_scope: bool = False,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Change a current-project release's overview, purpose, risks or out-of-scope list.
+		"""Change a current-project release's overview.
 
-		Fields left as None keep their stored value. A clear flag empties purpose, risks or
-		the out-of-scope list, and a new out-of-scope list replaces the stored one.
+		An overview is required, and one that matches the stored overview is rejected.
 		"""
 		validate_object_id(release_id, RELEASE_PREFIX)
-
-		if clear_out_of_scope and out_of_scope is not None:
+		if overview is None:
 			raise ProgressError(
-				"release edit accepts either --out-of-scope or "
-				"--clear-out-of-scope, not both",
-				{"id": release_id, "field": "out_of_scope"},
-			)
-
-		out_of_scope_values: tuple[str, ...] | None = None
-		if out_of_scope is not None:
-			out_of_scope_values = _normalise_ordered_values(
-				out_of_scope, "release out-of-scope"
-			)
-		if clear_out_of_scope:
-			out_of_scope_values = ()
-
-		values = {
-			"overview": overview,
-			"purpose": purpose,
-			"risks": risks,
-		}
-		clear_fields = {
-			"purpose": clear_purpose,
-			"risks": clear_risks,
-		}
-		if (
-			not any(
-				value is not None or clear_fields.get(field, False)
-				for field, value in values.items()
-			)
-			and out_of_scope_values is None
-		):
-			raise ProgressError(
-				"release edit requires at least one field",
+				"release edit requires an overview",
 				{"id": release_id},
 			)
-
-		for field, value in values.items():
-			if clear_fields.get(field, False) and value is not None:
-				raise ProgressError(
-					f"release edit accepts either --{field.replace('_', '-')} or "
-					f"--clear-{field.replace('_', '-')}, not both",
-					{"id": release_id, "field": field},
-				)
-
-			if value is not None and not isinstance(value, str):
-				raise ProgressError(
-					f"release {field} must be text",
-					{"id": release_id, "field": field},
-				)
-			if value is not None:
-				_require_text(value, f"release {field}")
+		_require_text(overview, "release overview")
 
 		project = self.current_project(path)
-		updates = []
-		parameters: list[object] = []
-		for field, value in values.items():
-			if value is None and not clear_fields.get(field, False):
-				continue
-
-			if clear_fields.get(field, False):
-				value = None
-
-			updates.append(f"{field} = ?")
-			parameters.append(value)
-
-		only_overview_changes = (
-			updates == ["overview = ?"] and out_of_scope_values is None
-		)
 
 		with self.database.transaction() as connection:
 			release = connection.execute(
@@ -303,19 +214,16 @@ class WriteStore(_StoreBase):
 				raise NotFoundError(
 					f"release {release_id} was not found", {"id": release_id}
 				)
-			if only_overview_changes and release["overview"] == overview:
+			if release["overview"] == overview:
 				raise ProgressError(
 					f"release {release_id} overview is already unchanged",
 					{"id": release_id},
 				)
 
-			if updates:
-				connection.execute(
-					f"UPDATE releases SET {', '.join(updates)} WHERE id = ?",
-					(*parameters, release_id),
-				)
-			if out_of_scope_values is not None:
-				_write_release_values(connection, release_id, out_of_scope_values)
+			connection.execute(
+				"UPDATE releases SET overview = ? WHERE id = ?",
+				(overview, release_id),
+			)
 			return Release.from_row(
 				connection.execute(
 					f"SELECT {_RELEASE_COLUMNS} FROM releases WHERE id = ?",
@@ -1596,8 +1504,8 @@ def _remove_release(
 	"""Remove one release.
 
 	Without ``force`` the release must own no tasks or notes. With ``force`` every
-	task in the release is force-removed first, then release-owned notes and
-	out-of-scope entries, and the result lists what was deleted by type.
+	task in the release is force-removed first, then release-owned notes, and the
+	result lists what was deleted by type.
 	"""
 	validate_object_id(release_id, RELEASE_PREFIX)
 	release = connection.execute(
@@ -1637,14 +1545,13 @@ def _remove_release(
 
 		return {"id": release_id}
 
-	# Collect every row deleted by the forced removal, including release notes and
-	# out-of-scope entries added after the task loop.
+	# Collect every row deleted by the forced removal, including release notes added
+	# after the task loop.
 	deleted = {
 		"chunks": [],
 		"notes": [],
 		"dependencies": [],
 		"tasks": [],
-		"out_of_scope": [],
 	}
 
 	# Tasks made ready by removing the release's tasks, merged across all of them.
@@ -1674,17 +1581,6 @@ def _remove_release(
 	_delete_notes(connection, release_notes)
 	deleted["notes"].extend(note["id"] for note in release_notes)
 
-	out_of_scope = [
-		row["text"]
-		for row in connection.execute(
-			"SELECT text FROM release_out_of_scope WHERE release_id = ? ORDER BY position",
-			(release_id,),
-		).fetchall()
-	]
-	connection.execute(
-		"DELETE FROM release_out_of_scope WHERE release_id = ?", (release_id,)
-	)
-	deleted["out_of_scope"].extend(out_of_scope)
 	connection.execute("DELETE FROM releases WHERE id = ?", (release_id,))
 
 	return {
@@ -1790,14 +1686,12 @@ def _remove_task(
 
 		return {"id": task_id}
 
-	# Deleted records grouped by type; out_of_scope stays empty here so the
-	# release cascade can merge task results into one shape.
+	# Deleted records grouped by type so the release cascade can merge task results.
 	deleted = {
 		"chunks": chunk_ids,
 		"notes": note_ids,
 		"dependencies": dependency_edges,
 		"tasks": [task_id],
-		"out_of_scope": [],
 	}
 
 	# Read dependants before the edges are deleted; they are unblocked below.
@@ -2125,17 +2019,6 @@ def _write_task_values(
 	"""Replace one task's stored contract steps or files."""
 	_write_ordered_values(
 		connection, _TASK_LIST_TABLES[field], "task_id", task_id, values
-	)
-
-
-def _write_release_values(
-	connection: sqlite3.Connection,
-	release_id: str,
-	values: Sequence[str],
-) -> None:
-	"""Replace one release's stored out-of-scope items."""
-	_write_ordered_values(
-		connection, _RELEASE_OUT_OF_SCOPE_TABLE, "release_id", release_id, values
 	)
 
 
