@@ -9,6 +9,7 @@ _EXIT_CODES = {
     "usage": 2,
     "not-found": 1,
     "check-failed": 1,
+    "busy": 1,
     "manual": 1,
     "environment": 3,
     "internal": 3,

@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from agent_run.database import connect_database
@@ -27,6 +28,17 @@ def test_create_run_log_uses_private_directory_beside_database(
     assert log_path.name == f"{run_id}.log"
     assert os.stat(log_path.parent).st_mode & 0o777 == 0o700
     assert os.stat(log_path).st_mode & 0o777 == 0o600
+
+
+def test_create_run_log_uses_an_allocated_run_id(tmp_path: Path) -> None:
+    """A caller can use one allocated ID for both a lock and its log."""
+    database_path = tmp_path / "agent-run.db"
+    allocated_run_id = uuid4().hex
+
+    run_id, log_path = create_run_log(database_path, run_id=allocated_run_id)
+
+    assert run_id == allocated_run_id
+    assert log_path.name == f"{allocated_run_id}.log"
 
 
 def test_save_run_inserts_and_reads_all_record_fields(tmp_path: Path) -> None:

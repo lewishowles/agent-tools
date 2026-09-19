@@ -58,8 +58,17 @@ def resolve_log_directory(database_path: str | Path | None = None) -> Path:
     )
 
 
-def create_run_log(database_path: str | Path | None = None) -> tuple[str, Path]:
+def create_run_log(
+    database_path: str | Path | None = None,
+    *,
+    run_id: str | None = None,
+) -> tuple[str, Path]:
     """Create an empty log for a new run and return the run ID and log path.
+
+    Args:
+        database_path: Database whose sibling directory stores the log.
+        run_id: An ID chosen earlier so the run's lock and log share it. A new
+            ID is generated when this is omitted.
 
     The log folder and file are readable only by their owner. The folder's
     permissions are reset each time because mkdir ignores ``mode`` for a folder
@@ -69,7 +78,7 @@ def create_run_log(database_path: str | Path | None = None) -> tuple[str, Path]:
     log_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(log_directory, 0o700)
 
-    run_id = uuid4().hex
+    run_id = uuid4().hex if run_id is None else run_id
     log_path = log_directory / f"{run_id}.log"
     descriptor = os.open(log_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     os.close(descriptor)

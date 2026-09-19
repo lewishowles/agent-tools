@@ -8,11 +8,14 @@ import sys
 from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock
+from uuid import uuid4
 
 import pytest
 from agent_run.cli import main
 from agent_run.database import connect_database
+from agent_run.locking import acquire_run_lock
 from agent_run.output import render_error, render_success
+from agent_run.repository import identify_repository
 
 
 def _initialise_repository(path: Path) -> Path:
@@ -390,6 +393,59 @@ def test_cli_manual_named_run_reports_command_without_executing_or_resolving_tar
         assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
     finally:
         connection.close()
+
+
+def test_cli_named_run_refuses_when_the_same_command_is_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A named run reports its active holder without creating a log or record."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    command = [sys.executable, "-c", "print('ok')"]
+    assert main(["add", "build", "--", *command]) == 0
+    capsys.readouterr()
+
+    repository = identify_repository()
+    active_run_id = uuid4().hex
+    active_lock = acquire_run_lock(
+        database_path,
+        repository.id,
+        "build",
+        run_id=active_run_id,
+    )
+
+    try:
+        exit_code = main(["run", "build", "--json"])
+        output = capsys.readouterr()
+        result = json.loads(output.out)
+
+        assert exit_code == 1
+        assert result["error"] == {
+            "code": "busy",
+            "message": (
+                f'Command "build" is already running (run ID: {active_lock.run_id}).'
+            ),
+            "data": {"run_id": active_lock.run_id},
+        }
+        assert output.err == ""
+        assert not (database_path.parent / "agent-run-logs").exists()
+
+        connection = connect_database(database_path)
+        try:
+            assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+        finally:
+            connection.close()
+    finally:
+        active_lock.release()
+
+    assert main(["run", "build", "--json"]) == 0
+    released_output = capsys.readouterr()
+    assert json.loads(released_output.out)["ok"] is True
 
 
 @pytest.mark.parametrize(
@@ -1293,6 +1349,7 @@ def test_json_error_includes_optional_data() -> None:
         ("usage", 2),
         ("not-found", 1),
         ("check-failed", 1),
+        ("busy", 1),
         ("manual", 1),
         ("environment", 3),
         ("internal", 3),

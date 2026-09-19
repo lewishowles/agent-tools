@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
+from uuid import uuid4
 
 import questionary
 
@@ -37,6 +38,7 @@ from agent_run.failures import (
     Failure,
     FailureReport,
 )
+from agent_run.locking import RunBusyError, RunLock, acquire_run_lock
 from agent_run.output import render_error, render_success
 from agent_run.readers import read_failure_report
 from agent_run.repository import RepositoryError, identify_repository
@@ -702,6 +704,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         connection: sqlite3.Connection | None = None
         log_path: Path | None = None
+        run_lock: RunLock | None = None
 
         try:
             repository = identify_repository()
@@ -709,6 +712,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             connection = connect_database(database_path)
             timeout_seconds = parsed.timeout
             resolved_file_paths: tuple[str, ...] = ()
+            run_id = uuid4().hex
 
             if parsed.name is None:
                 relative_working_directory = normalise_working_directory(
@@ -734,6 +738,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                         cwd=repository.root / command.working_directory,
                         name=command.name,
                     )
+
+                run_lock = acquire_run_lock(
+                    database_path,
+                    repository.id,
+                    command.name,
+                    run_id=run_id,
+                )
 
                 relative_working_directory = normalise_working_directory(
                     repository, command.working_directory
@@ -761,7 +772,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             if timeout_seconds is None:
                 timeout_seconds = DEFAULT_TIMEOUT_SECONDS
 
-            run_id, log_path = create_run_log(database_path)
+            run_id, log_path = create_run_log(database_path, run_id=run_id)
+
             started_at = datetime.now(timezone.utc).isoformat()
             started_monotonic = time.monotonic()
             interrupted = False
@@ -799,6 +811,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 timed_out=result.timed_out,
                 log_path=result.log_path,
             )
+        except RunBusyError as error:
+            return _busy_command_error(
+                json_mode=parsed.json,
+                name=parsed.name,
+                run_id=error.run_id,
+            )
         except (RepositoryError, NewerSchemaError, OSError, sqlite3.Error) as error:
             if log_path is not None:
                 discard_run_log(log_path)
@@ -821,6 +839,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 message=str(error),
             )
         finally:
+            if run_lock is not None:
+                run_lock.release()
+
             if connection is not None:
                 connection.close()
 
@@ -1415,6 +1436,18 @@ def _manual_command_error(
             f"{command_label} is manual-only. Run it manually with: {command_line}"
         ),
         data={"argv": list(argv), "cwd": str(cwd)},
+    )
+
+
+def _busy_command_error(*, json_mode: bool, name: str, run_id: str) -> int:
+    """Render the refusal for a named command that is already running."""
+    message = f'Command "{name}" is already running (run ID: {run_id}).'
+
+    return render_error(
+        json_mode=json_mode,
+        code="busy",
+        message=message,
+        data={"run_id": run_id},
     )
 
 
