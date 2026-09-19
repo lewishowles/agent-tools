@@ -35,12 +35,14 @@ pass `--cwd` to choose another directory inside it and `--timeout` to set the
 timeout used by named runs. If you leave out `--timeout`, named runs use the
 120-second default. Set `--capability file-list` when the command accepts file
 paths appended with `--file` or `--glob`; commands use the `none` capability by
-default.
+default. Add `--manual` when a command needs a human to run it instead of
+agent-run.
 
 ```sh
 agent-run add test --timeout 30 -- pytest
 agent-run add lint --cwd tools --json -- ruff check
 agent-run add lint-changed --capability file-list -- ruff check
+agent-run add browser-check --manual -- npm run browser-check
 ```
 
 Change a command's working directory, arguments, or timeout. Anything you leave
@@ -51,6 +53,7 @@ agent-run edit lint --cwd scripts
 agent-run edit lint -- ruff check --fix
 agent-run edit lint --timeout 10
 agent-run edit lint-changed --capability none
+agent-run edit browser-check --no-manual
 ```
 
 Rename or remove a command:
@@ -110,6 +113,10 @@ foreground. For direct runs, `--cwd` selects a directory inside the current
 repository. Named runs use the saved command's working directory. The effective
 timeout is chosen in this order: `--timeout`, the saved command's timeout, then
 the 120-second default.
+
+A command marked `--manual` still appears in `list`, but `run` refuses to
+execute it and prints the exact command and working directory for a human to
+run instead.
 
 ```sh
 agent-run run test

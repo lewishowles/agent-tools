@@ -37,6 +37,7 @@ class Command:
         created_at: UTC timestamp recorded when the command was added.
         timeout_seconds: Optional timeout override, or `None` to use the default.
         capability: Inputs that a named run may append to the command.
+        manual: Whether the command must be run manually instead of automatically.
     """
 
     name: str
@@ -45,6 +46,7 @@ class Command:
     created_at: str
     timeout_seconds: float | None = None
     capability: str = DEFAULT_CAPABILITY
+    manual: bool = False
 
 
 def normalise_working_directory(
@@ -113,7 +115,15 @@ def _validate_capability(capability: str) -> str:
 
 def _command_from_row(row: sqlite3.Row | tuple[object, ...]) -> Command:
     """Decode one database row into a stored command."""
-    name, argv, working_directory, created_at, timeout_seconds, capability = row
+    (
+        name,
+        argv,
+        working_directory,
+        created_at,
+        timeout_seconds,
+        capability,
+        manual,
+    ) = row
     return Command(
         name=str(name),
         argv=tuple(json.loads(str(argv))),
@@ -121,6 +131,7 @@ def _command_from_row(row: sqlite3.Row | tuple[object, ...]) -> Command:
         created_at=str(created_at),
         timeout_seconds=(None if timeout_seconds is None else float(timeout_seconds)),
         capability=str(capability),
+        manual=bool(manual),
     )
 
 
@@ -139,7 +150,8 @@ def find_command(
     """
     row = connection.execute(
         """
-        SELECT name, argv, working_directory, created_at, timeout_seconds, capability
+        SELECT name, argv, working_directory, created_at, timeout_seconds, capability,
+               manual
         FROM commands
         WHERE repository_id = ? AND name = ?
         """,
@@ -160,6 +172,7 @@ def add_command(
     cwd: str | Path | None = None,
     timeout_seconds: float | None = None,
     capability: str = DEFAULT_CAPABILITY,
+    manual: bool = False,
 ) -> Command:
     """Add a named command for a repository and return the stored command.
 
@@ -171,6 +184,7 @@ def add_command(
         cwd: Optional directory relative to the repository root.
         timeout_seconds: Optional positive timeout override for the command.
         capability: Inputs that a named run may append to the command.
+        manual: Whether the command must be run manually instead of automatically.
 
     Raises:
         CommandError: If the arguments, directory, or name are invalid.
@@ -194,8 +208,9 @@ def add_command(
                 working_directory,
                 created_at,
                 timeout_seconds,
-                capability
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                capability,
+                manual
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 repository.id,
@@ -205,6 +220,7 @@ def add_command(
                 created_at,
                 timeout_seconds,
                 capability,
+                manual,
             ),
         )
     except sqlite3.IntegrityError as error:
@@ -219,6 +235,7 @@ def add_command(
         created_at=created_at,
         timeout_seconds=timeout_seconds,
         capability=capability,
+        manual=manual,
     )
 
 
@@ -233,7 +250,8 @@ def list_commands(
     """
     rows = connection.execute(
         """
-        SELECT name, argv, working_directory, created_at, timeout_seconds, capability
+        SELECT name, argv, working_directory, created_at, timeout_seconds, capability,
+               manual
         FROM commands
         WHERE repository_id = ?
         ORDER BY name
@@ -252,8 +270,9 @@ def edit_command(
     cwd: str | Path | None = None,
     timeout_seconds: float | None = None,
     capability: str | None = None,
+    manual: bool | None = None,
 ) -> Command:
-    """Change a named command's arguments, working directory, timeout, or capability.
+    """Change the stored settings of a named command.
 
     Args:
         connection: Open agent-run database connection.
@@ -263,6 +282,7 @@ def edit_command(
         cwd: Optional replacement directory relative to the repository root.
         timeout_seconds: Optional positive replacement timeout override.
         capability: Optional replacement for the command's run input capability.
+        manual: Optional replacement for the command's manual-only mark.
 
     Raises:
         CommandNotFoundError: If the command is not registered for the repository.
@@ -272,9 +292,16 @@ def edit_command(
 
     timeout_seconds = _validate_timeout(timeout_seconds)
 
-    if argv is None and cwd is None and timeout_seconds is None and capability is None:
+    if (
+        argv is None
+        and cwd is None
+        and timeout_seconds is None
+        and capability is None
+        and manual is None
+    ):
         raise CommandError(
-            "Edit must change arguments, working directory, timeout, or capability."
+            "Edit must change arguments, working directory, timeout, capability, or "
+            "manual mark."
         )
 
     command_arguments = (
@@ -293,11 +320,12 @@ def edit_command(
     command_capability = (
         command.capability if capability is None else _validate_capability(capability)
     )
+    command_manual = command.manual if manual is None else manual
 
     connection.execute(
         """
         UPDATE commands
-        SET argv = ?, working_directory = ?, timeout_seconds = ?, capability = ?
+        SET argv = ?, working_directory = ?, timeout_seconds = ?, capability = ?, manual = ?
         WHERE repository_id = ? AND name = ?
         """,
         (
@@ -305,6 +333,7 @@ def edit_command(
             relative_working_directory,
             command_timeout_seconds,
             command_capability,
+            command_manual,
             repository.id,
             name,
         ),
@@ -317,6 +346,7 @@ def edit_command(
         created_at=command.created_at,
         timeout_seconds=command_timeout_seconds,
         capability=command_capability,
+        manual=command_manual,
     )
 
 
@@ -364,6 +394,7 @@ def rename_command(
         created_at=command.created_at,
         timeout_seconds=command.timeout_seconds,
         capability=command.capability,
+        manual=command.manual,
     )
 
 

@@ -54,7 +54,7 @@ def test_add_command_stores_repository_relative_directory(tmp_path: Path) -> Non
         )
         rows = connection.execute(
             "SELECT repository_id, name, argv, working_directory, timeout_seconds, "
-            "capability "
+            "capability, manual "
             "FROM commands"
         ).fetchall()
     finally:
@@ -65,7 +65,15 @@ def test_add_command_stores_repository_relative_directory(tmp_path: Path) -> Non
     assert command.working_directory == "tools"
     assert command.capability == "file-list"
     assert rows == [
-        ("repository-id", "format", '["ruff", "check"]', "tools", None, "file-list")
+        (
+            "repository-id",
+            "format",
+            '["ruff", "check"]',
+            "tools",
+            None,
+            "file-list",
+            0,
+        )
     ]
 
 
@@ -227,6 +235,27 @@ def test_add_and_edit_command_store_capability(tmp_path: Path) -> None:
     assert edited.capability == "none"
 
 
+def test_add_and_edit_command_store_manual_mark(tmp_path: Path) -> None:
+    """Adding and editing stores whether a command must be run manually."""
+    root = _initialise_repository(tmp_path / "repository")
+    repository = _repository(root)
+    connection = connect_database(tmp_path / "agent-run.db")
+    try:
+        added = add_command(
+            connection,
+            repository,
+            "browser",
+            ["npm", "run", "test"],
+            manual=True,
+        )
+        edited = edit_command(connection, repository, "browser", manual=False)
+    finally:
+        connection.close()
+
+    assert added.manual is True
+    assert edited.manual is False
+
+
 def test_edit_command_rejects_unknown_name(tmp_path: Path) -> None:
     """Editing an unknown name raises the command-specific not-found error."""
     root = _initialise_repository(tmp_path / "repository")
@@ -328,12 +357,15 @@ def test_cli_add_and_list_support_text_and_json(
     monkeypatch.chdir(root)
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
 
-    add_exit_code = main(["add", "build", "--cwd", "scripts", "--", "make", "all"])
+    add_exit_code = main(
+        ["add", "build", "--cwd", "scripts", "--manual", "--", "make", "all"]
+    )
     add_output = capsys.readouterr()
 
     assert add_exit_code == 0
     assert "name: build" in add_output.out
     assert "working directory: scripts" in add_output.out
+    assert "manual: true" in add_output.out
     assert 'argv: ["make", "all"]' in add_output.out
     assert add_output.err == ""
 
@@ -350,6 +382,7 @@ def test_cli_add_and_list_support_text_and_json(
                     "name": "build",
                     "working_directory": "scripts",
                     "capability": "none",
+                    "manual": True,
                     "timeout_seconds": None,
                     "argv": ["make", "all"],
                 }
@@ -433,7 +466,7 @@ def test_cli_edit_rename_and_remove_support_text_and_json(
     monkeypatch.chdir(root)
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
 
-    main(["add", "build", "--", "make"])
+    main(["add", "build", "--manual", "--", "make"])
     capsys.readouterr()
 
     edit_exit_code = main(
@@ -444,6 +477,7 @@ def test_cli_edit_rename_and_remove_support_text_and_json(
             "scripts",
             "--timeout",
             "3",
+            "--no-manual",
             "--json",
             "--",
             "make",
@@ -460,6 +494,7 @@ def test_cli_edit_rename_and_remove_support_text_and_json(
             "name": "build",
             "working_directory": "scripts",
             "capability": "none",
+            "manual": False,
             "timeout_seconds": 3.0,
             "argv": ["make", "all"],
         },
@@ -521,7 +556,7 @@ def test_cli_mutations_report_unknown_names_as_not_found(
         (
             ["edit", "build", "--json"],
             ["build"],
-            "Edit must change arguments, working directory, timeout, or capability.",
+            "Edit must change arguments, working directory, timeout, capability, or manual mark.",
             False,
         ),
         (

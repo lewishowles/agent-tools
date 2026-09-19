@@ -72,6 +72,13 @@ def _add_command_capability(connection: sqlite3.Connection) -> None:
     )
 
 
+def _add_command_manual(connection: sqlite3.Connection) -> None:
+    """Add the manual-only mark that keeps a named command out of automatic runs."""
+    connection.execute(
+        "ALTER TABLE commands ADD COLUMN manual INTEGER NOT NULL DEFAULT 0"
+    )
+
+
 # Migrations in the order they run. A migration's version is its position,
 # starting at 1, so add new migrations to the end and never reorder them.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -80,6 +87,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _create_runs,
     _add_command_timeout,
     _add_command_capability,
+    _add_command_manual,
 )
 # Newest schema version this release understands.
 LATEST_SCHEMA_VERSION = len(MIGRATIONS)

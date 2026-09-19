@@ -151,7 +151,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "add",
         help="Register a named project command.",
         description="Register a named project command.",
-        usage="agent-run add NAME [--cwd DIR] [--timeout SECONDS] [--capability CAPABILITY] [--json] -- ARGV...",
+        usage="agent-run add NAME [--cwd DIR] [--timeout SECONDS] [--capability CAPABILITY] [--manual] [--json] -- ARGV...",
         add_help=False,
         json_mode=json_mode,
     )
@@ -193,13 +193,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_CAPABILITY,
         help="Allow named runs to append file paths with `--file` or `--glob`.",
     )
+    add_parser.add_argument(
+        "--manual",
+        action="store_true",
+        help="Mark this command as manual-only; named runs will not execute it.",
+    )
     add_parser.add_argument("name", nargs="?", help="Name used to run the command.")
 
     edit_parser = subparsers.add_parser(
         "edit",
         help="Change a named project command.",
         description="Change a named project command.",
-        usage="agent-run edit NAME [--cwd DIR] [--timeout SECONDS] [--capability CAPABILITY] [--json] [-- ARGV...]",
+        usage="agent-run edit NAME [--cwd DIR] [--timeout SECONDS] [--capability CAPABILITY] [--manual | --no-manual] [--json] [-- ARGV...]",
         add_help=False,
         json_mode=json_mode,
     )
@@ -237,6 +242,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=COMMAND_CAPABILITIES,
         default=None,
         help="Change whether named runs may append file paths with `--file` or `--glob`.",
+    )
+    edit_parser.add_argument(
+        "--manual",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Mark or unmark the command as manual-only.",
     )
     edit_parser.add_argument("name", nargs="?", help="Name of the command to change.")
 
@@ -705,6 +716,29 @@ def main(argv: Sequence[str] | None = None) -> int:
                 command_arguments = tuple(direct_arguments)
             else:
                 command = find_command(connection, repository, parsed.name)
+
+                # A manual-only command stops here, before file targets are resolved
+                # or a log is opened, so nothing runs and no run record is saved.
+                if command.manual:
+                    command_cwd = repository.root / command.working_directory
+                    command_line = (
+                        f"cd {shlex.quote(str(command_cwd))} && "
+                        f"{shlex.join(command.argv)}"
+                    )
+                    manual_message = (
+                        f'Command "{command.name}" is manual-only. '
+                        f"Run it manually with: {command_line}"
+                    )
+                    return render_error(
+                        json_mode=parsed.json,
+                        code="manual",
+                        message=manual_message,
+                        data={
+                            "argv": list(command.argv),
+                            "cwd": str(command_cwd),
+                        },
+                    )
+
                 relative_working_directory = normalise_working_directory(
                     repository, command.working_directory
                 )
@@ -875,6 +909,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     parsed.cwd,
                     parsed.timeout,
                     parsed.capability,
+                    parsed.manual,
                 )
             finally:
                 connection.close()
@@ -921,6 +956,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     parsed.cwd,
                     parsed.timeout,
                     parsed.capability,
+                    parsed.manual,
                 )
             finally:
                 connection.close()
@@ -1371,6 +1407,7 @@ def _format_command(command: Command) -> str:
             f"name: {command.name}",
             f"working directory: {command.working_directory}",
             f"capability: {command.capability}",
+            f"manual: {str(command.manual).lower()}",
             (
                 "timeout: default"
                 if command.timeout_seconds is None
@@ -1610,6 +1647,7 @@ def _command_record(command: Command) -> dict[str, object]:
         "name": command.name,
         "working_directory": command.working_directory,
         "capability": command.capability,
+        "manual": command.manual,
         "timeout_seconds": command.timeout_seconds,
         "argv": list(command.argv),
     }

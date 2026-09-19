@@ -76,6 +76,7 @@ def test_commands_table_is_created_by_second_migration(tmp_path: Path) -> None:
         "created_at",
         "timeout_seconds",
         "capability",
+        "manual",
     ]
 
 
@@ -111,13 +112,14 @@ def test_existing_commands_gain_an_optional_timeout_column(tmp_path: Path) -> No
 
     connection = connect_database(database_path)
     try:
-        timeout = connection.execute(
-            "SELECT timeout_seconds FROM commands WHERE name = 'test'"
-        ).fetchone()[0]
+        timeout, manual = connection.execute(
+            "SELECT timeout_seconds, manual FROM commands WHERE name = 'test'"
+        ).fetchone()
     finally:
         connection.close()
 
     assert timeout is None
+    assert manual == 0
 
 
 def test_runs_table_is_created_by_third_migration(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 """Tests for the agent-run entry point and result output."""
 
 import json
+import shlex
 import signal
 import subprocess
 import sys
@@ -330,6 +331,65 @@ def test_cli_named_run_uses_saved_directory_and_timeout_precedence(
         connection.close()
 
     assert timeouts == [120.0, 5.0, 2.0]
+
+
+def test_cli_manual_named_run_reports_command_without_executing_or_resolving_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A manual command prints the command to run and stops before it runs or
+    resolves file targets.
+    """
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    command = [sys.executable, "-c", "raise SystemExit(9)"]
+    assert (
+        main(
+            [
+                "add",
+                "browser",
+                "--capability",
+                "file-list",
+                "--manual",
+                "--",
+                *command,
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    text_exit_code = main(["run", "browser", "--file", "missing.py"])
+    text_output = capsys.readouterr()
+
+    assert text_exit_code == 1
+    assert text_output.out == ""
+    assert "manual-only" in text_output.err
+    assert str(root) in text_output.err
+    assert sys.executable in text_output.err
+
+    json_exit_code = main(["run", "browser", "--file", "missing.py", "--json"])
+    json_output = capsys.readouterr()
+    result = json.loads(json_output.out)
+
+    assert json_exit_code == 1
+    assert result["ok"] is False
+    assert result["error"]["code"] == "manual"
+    assert result["error"]["data"] == {"argv": command, "cwd": str(root)}
+    assert "manual-only" in result["error"]["message"]
+    assert f"cd {shlex.quote(str(root))}" in result["error"]["message"]
+    assert sys.executable in result["error"]["message"]
+    assert json_output.err == ""
+
+    connection = connect_database(database_path)
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+    finally:
+        connection.close()
 
 
 def test_cli_named_file_list_run_appends_relative_files(
@@ -1084,6 +1144,7 @@ def test_json_error_includes_optional_data() -> None:
         ("usage", 2),
         ("not-found", 1),
         ("check-failed", 1),
+        ("manual", 1),
         ("environment", 3),
         ("internal", 3),
     ],
