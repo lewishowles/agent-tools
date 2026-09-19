@@ -10,6 +10,7 @@ from agent_run.cli import main
 from agent_run.commands import add_command, list_commands
 from agent_run.database import connect_database
 from agent_run.detectors import Candidate, CandidateCollection, collect_candidates
+from agent_run.detectors.package_json import detect_package_json_scripts
 from agent_run.repository import Repository, identify_repository
 
 
@@ -55,6 +56,70 @@ def test_collect_candidates_keeps_the_first_duplicate_name(
 
     assert collection.candidates == (first,)
     assert collection.skipped == (duplicate,)
+
+
+@pytest.mark.parametrize(
+    ("lockfile", "runner"),
+    [
+        ("package-lock.json", ("npm", "run")),
+        ("pnpm-lock.yaml", ("pnpm", "run")),
+        ("yarn.lock", ("yarn",)),
+        ("bun.lock", ("bun", "run")),
+        ("bun.lockb", ("bun", "run")),
+        (None, ("npm", "run")),
+    ],
+)
+def test_package_json_detector_returns_every_root_script(
+    tmp_path: Path,
+    lockfile: str | None,
+    runner: tuple[str, ...],
+) -> None:
+    """Root scripts use the runner implied by each supported lockfile."""
+    root = _initialise_repository(tmp_path / "repository")
+    (root / "package.json").write_text(
+        json.dumps(
+            {
+                "scripts": {
+                    "deploy": "release",
+                    "prepare": "generate",
+                    "lint:fix": "lint --fix",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "components").mkdir()
+    (root / "components" / "package.json").write_text(
+        json.dumps({"scripts": {"nested": "ignored"}}),
+        encoding="utf-8",
+    )
+    if lockfile is not None:
+        (root / lockfile).touch()
+
+    candidates = detect_package_json_scripts(_repository(root))
+
+    assert candidates == (
+        Candidate("deploy", (*runner, "deploy"), ".", "package.json"),
+        Candidate("prepare", (*runner, "prepare"), ".", "package.json"),
+        Candidate("lint:fix", (*runner, "lint:fix"), ".", "package.json"),
+    )
+
+
+def test_package_json_detector_ignores_missing_or_malformed_manifests(
+    tmp_path: Path,
+) -> None:
+    """Repositories without a usable root manifest produce no candidates."""
+    root = _initialise_repository(tmp_path / "repository")
+
+    assert detect_package_json_scripts(_repository(root)) == ()
+
+    (root / "package.json").write_text("not json", encoding="utf-8")
+
+    assert detect_package_json_scripts(_repository(root)) == ()
+
+    (root / "package.json").write_text('{"scripts": ["test"]}', encoding="utf-8")
+
+    assert detect_package_json_scripts(_repository(root)) == ()
 
 
 def test_detect_reports_no_commands_in_text_mode(

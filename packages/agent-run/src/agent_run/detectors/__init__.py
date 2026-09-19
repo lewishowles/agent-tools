@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from agent_run.detectors.package_json import detect_package_json_scripts
 from agent_run.repository import Repository
 
 
@@ -46,7 +47,7 @@ class CandidateCollection:
 
 # Built-in detectors, run in this order. Each one is listed here by hand; agent-run
 # never loads detectors from other packages.
-DETECTORS: tuple[Detector, ...] = ()
+DETECTORS: tuple[Detector, ...] = (detect_package_json_scripts,)
 
 
 def collect_candidates(

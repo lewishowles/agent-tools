@@ -74,9 +74,10 @@ agent-run detect
 agent-run detect --json
 ```
 
-On its own, `detect` only lists what it finds and saves nothing. agent-run has
-no built-in detectors yet, so it currently reports that no commands were
-detected.
+On its own, `detect` only lists what it finds and saves nothing. It reads the
+scripts in the repository's root `package.json` and suggests a command
+for each one that uses the package manager matching the root lockfile, or npm
+when there is no lockfile.
 
 Save detected commands by name, or save every one that is not saved yet:
 
