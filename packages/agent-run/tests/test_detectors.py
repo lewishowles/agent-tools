@@ -11,6 +11,7 @@ from agent_run.commands import add_command, list_commands
 from agent_run.database import connect_database
 from agent_run.detectors import Candidate, CandidateCollection, collect_candidates
 from agent_run.detectors.package_json import detect_package_json_scripts
+from agent_run.detectors.pyproject import detect_pyproject_checks
 from agent_run.repository import Repository, identify_repository
 
 
@@ -120,6 +121,70 @@ def test_package_json_detector_ignores_missing_or_malformed_manifests(
     (root / "package.json").write_text('{"scripts": ["test"]}', encoding="utf-8")
 
     assert detect_package_json_scripts(_repository(root)) == ()
+
+
+@pytest.mark.parametrize(
+    ("uv_lock", "runner"),
+    [
+        (True, ("uv", "run")),
+        (False, ()),
+    ],
+)
+def test_pyproject_detector_returns_configured_checks(
+    tmp_path: Path,
+    uv_lock: bool,
+    runner: tuple[str, ...],
+) -> None:
+    """Configured Python checks use uv only when the root has uv.lock."""
+    root = _initialise_repository(tmp_path / "repository")
+    (root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\naddopts = '-q'\n\n[tool.ruff]\nline-length = 88\n",
+        encoding="utf-8",
+    )
+    if uv_lock:
+        (root / "uv.lock").touch()
+
+    candidates = detect_pyproject_checks(_repository(root))
+
+    assert candidates == (
+        Candidate("pytest", (*runner, "pytest"), ".", "pyproject.toml"),
+        Candidate("ruff", (*runner, "ruff", "check"), ".", "pyproject.toml"),
+    )
+
+
+def test_pyproject_detector_only_reads_the_root_file(tmp_path: Path) -> None:
+    """Nested Python configuration does not create root candidates."""
+    root = _initialise_repository(tmp_path / "repository")
+    nested = root / "packages" / "python"
+    nested.mkdir(parents=True)
+    (nested / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\n\n[tool.ruff]\n", encoding="utf-8"
+    )
+
+    assert detect_pyproject_checks(_repository(root)) == ()
+
+
+@pytest.mark.parametrize(
+    "pyproject",
+    [
+        "",
+        "[tool.pytest]\n",
+        "[tool.ruff\n",
+        "not toml",
+    ],
+)
+def test_pyproject_detector_ignores_missing_or_unusable_configuration(
+    tmp_path: Path,
+    pyproject: str,
+) -> None:
+    """Only the supported configuration tables produce candidates."""
+    root = _initialise_repository(tmp_path / "repository")
+    if pyproject:
+        (root / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+
+    candidates = detect_pyproject_checks(_repository(root))
+
+    assert candidates == ()
 
 
 def test_detect_reports_no_commands_in_text_mode(

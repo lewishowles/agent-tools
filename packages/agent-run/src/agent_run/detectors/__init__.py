@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from agent_run.detectors.package_json import detect_package_json_scripts
+from agent_run.detectors.pyproject import detect_pyproject_checks
 from agent_run.repository import Repository
 
 
@@ -47,7 +48,10 @@ class CandidateCollection:
 
 # Built-in detectors, run in this order. Each one is listed here by hand; agent-run
 # never loads detectors from other packages.
-DETECTORS: tuple[Detector, ...] = (detect_package_json_scripts,)
+DETECTORS: tuple[Detector, ...] = (
+    detect_package_json_scripts,
+    detect_pyproject_checks,
+)
 
 
 def collect_candidates(
