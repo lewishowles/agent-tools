@@ -74,10 +74,17 @@ agent-run detect
 agent-run detect --json
 ```
 
-On its own, `detect` only lists what it finds and saves nothing. It reads the
-scripts in the repository's root `package.json` and suggests a command
-for each one that uses the package manager matching the root lockfile, or npm
-when there is no lockfile.
+On its own, `detect` only lists what it finds and saves nothing. It looks only
+at files in the repository root:
+
+- `package.json`: a command for each script, run with the package manager that
+  matches the root lockfile, or npm when there is no lockfile.
+- `pyproject.toml`: pytest and ruff checks, for each tool the file configures.
+- `Package.swift`: `swift build` and `swift test`.
+- `.swift-format`: `swift-format lint --recursive .`.
+
+Xcode projects and packages below the root are not detected; add those with
+`agent-run add`.
 
 Save detected commands by name, or save every one that is not saved yet:
 

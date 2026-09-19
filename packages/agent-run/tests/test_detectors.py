@@ -12,6 +12,7 @@ from agent_run.database import connect_database
 from agent_run.detectors import Candidate, CandidateCollection, collect_candidates
 from agent_run.detectors.package_json import detect_package_json_scripts
 from agent_run.detectors.pyproject import detect_pyproject_checks
+from agent_run.detectors.swift import detect_swift_checks
 from agent_run.repository import Repository, identify_repository
 
 
@@ -185,6 +186,71 @@ def test_pyproject_detector_ignores_missing_or_unusable_configuration(
     candidates = detect_pyproject_checks(_repository(root))
 
     assert candidates == ()
+
+
+@pytest.mark.parametrize(
+    ("package", "swift_format", "expected"),
+    [
+        (
+            True,
+            False,
+            (
+                Candidate("swift-build", ("swift", "build"), ".", "Package.swift"),
+                Candidate("swift-test", ("swift", "test"), ".", "Package.swift"),
+            ),
+        ),
+        (
+            False,
+            True,
+            (
+                Candidate(
+                    "swift-format",
+                    ("swift-format", "lint", "--recursive", "."),
+                    ".",
+                    ".swift-format",
+                ),
+            ),
+        ),
+        (
+            True,
+            True,
+            (
+                Candidate("swift-build", ("swift", "build"), ".", "Package.swift"),
+                Candidate("swift-test", ("swift", "test"), ".", "Package.swift"),
+                Candidate(
+                    "swift-format",
+                    ("swift-format", "lint", "--recursive", "."),
+                    ".",
+                    ".swift-format",
+                ),
+            ),
+        ),
+        (False, False, ()),
+    ],
+)
+def test_swift_detector_returns_supported_root_checks(
+    tmp_path: Path,
+    package: bool,
+    swift_format: bool,
+    expected: tuple[Candidate, ...],
+) -> None:
+    """Root Swift files produce only their supported check candidates."""
+    root = _initialise_repository(tmp_path / "repository")
+    nested = root / "nested"
+    nested.mkdir()
+    (nested / "Package.swift").touch()
+    (nested / ".swift-format").touch()
+
+    if package:
+        (root / "Package.swift").write_text(
+            "// swift-tools-version: 5.9\n", encoding="utf-8"
+        )
+    if swift_format:
+        (root / ".swift-format").write_text("{}\n", encoding="utf-8")
+
+    candidates = detect_swift_checks(_repository(root))
+
+    assert candidates == expected
 
 
 def test_detect_reports_no_commands_in_text_mode(
