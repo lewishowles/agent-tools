@@ -9,10 +9,18 @@ from agent_run.cli import main
 from agent_run.database import connect_database
 from agent_run.retention import (
     MAX_LOG_BYTES,
+    PruneCandidate,
+    delete_prune_candidates,
     measure_log_sizes,
     select_prune_candidates,
 )
-from agent_run.runs import RunRecord, create_run_log, resolve_log_directory, save_run
+from agent_run.runs import (
+    RunRecord,
+    create_run_log,
+    get_run,
+    resolve_log_directory,
+    save_run,
+)
 
 
 def _record(run_id: str, started_at: datetime, log_path: Path) -> RunRecord:
@@ -222,3 +230,333 @@ def test_prune_previews_all_repositories_and_reports_shared_log_totals(
     assert f"run ID: {old_id}; reason: age" in text_output.out
     assert recent_id not in text_output.out
     assert "orphan" not in text_output.out
+
+
+def test_prune_apply_removes_the_runs_selected_by_preview(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """Applying retention removes exactly the runs shown by its preview."""
+    database_path = tmp_path / "agent-run.db"
+    now = datetime.now(timezone.utc)
+    connection = connect_database(database_path)
+
+    try:
+        old_id = _save_run(
+            connection,
+            database_path,
+            repository_id="repository",
+            started_at=now - timedelta(days=8),
+            size=10,
+        )
+        recent_id = _save_run(
+            connection,
+            database_path,
+            repository_id="repository",
+            started_at=now - timedelta(days=1),
+            size=20,
+        )
+    finally:
+        connection.close()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    preview_exit_code = main(["prune", "--json"])
+    preview_output = capsys.readouterr()
+    preview = json.loads(preview_output.out)
+
+    apply_exit_code = main(["prune", "--apply", "--json"])
+    apply_output = capsys.readouterr()
+    applied = json.loads(apply_output.out)
+
+    assert preview_exit_code == 0
+    assert apply_exit_code == 0
+    assert preview["data"]["applied"] is False
+    assert applied["data"]["applied"] is True
+    assert applied["data"]["runs"] == preview["data"]["runs"]
+    assert applied["data"]["space_freed_bytes"] == preview["data"]["space_freed_bytes"]
+    assert preview["data"]["total_log_bytes"] == 30
+    assert applied["data"]["total_log_bytes"] == 20
+    assert not (resolve_log_directory(database_path) / f"{old_id}.log").exists()
+    assert (resolve_log_directory(database_path) / f"{recent_id}.log").exists()
+
+    connection = connect_database(database_path)
+    try:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE run_id = ?", (old_id,)
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE run_id = ?", (recent_id,)
+            ).fetchone()[0]
+            == 1
+        )
+    finally:
+        connection.close()
+
+
+def test_prune_apply_reports_removed_runs_in_text(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """Text output identifies runs that retention removed."""
+    database_path = tmp_path / "agent-run.db"
+    connection = connect_database(database_path)
+
+    try:
+        old_id = _save_run(
+            connection,
+            database_path,
+            repository_id="repository",
+            started_at=datetime.now(timezone.utc) - timedelta(days=8),
+            size=10,
+        )
+    finally:
+        connection.close()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    exit_code = main(["prune", "--apply"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "total log size: 0 bytes" in captured.out
+    assert "Runs removed:" in captured.out
+    assert f"run ID: {old_id}; reason: age; space freed: 10 bytes" in captured.out
+    assert captured.err == ""
+
+
+def test_prune_apply_tolerates_a_missing_log(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """Applying retention removes a saved run even when its log is missing."""
+    database_path = tmp_path / "agent-run.db"
+    connection = connect_database(database_path)
+
+    try:
+        run_id = _save_run(
+            connection,
+            database_path,
+            repository_id="repository",
+            started_at=datetime.now(timezone.utc) - timedelta(days=8),
+            size=10,
+        )
+    finally:
+        connection.close()
+
+    log_path = resolve_log_directory(database_path) / f"{run_id}.log"
+    log_path.unlink()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    exit_code = main(["prune", "--apply", "--json"])
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert result["data"]["applied"] is True
+    assert result["data"]["runs"] == [
+        {"run_id": run_id, "reason": "age", "space_freed_bytes": 0}
+    ]
+
+    connection = connect_database(database_path)
+    try:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        connection.close()
+
+
+def test_prune_apply_leaves_an_active_run_log_without_a_saved_record(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """Applying retention leaves an active run log that has no saved record."""
+    database_path = tmp_path / "agent-run.db"
+    _, active_log_path = create_run_log(database_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    exit_code = main(["prune", "--apply", "--json"])
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert result["data"]["applied"] is True
+    assert result["data"]["runs"] == []
+    assert active_log_path.exists()
+
+
+def test_prune_apply_keeps_the_record_when_unlink_fails(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """A failed log deletion reports its run and keeps the saved record."""
+    database_path = tmp_path / "agent-run.db"
+    connection = connect_database(database_path)
+
+    try:
+        run_id = _save_run(
+            connection,
+            database_path,
+            repository_id="repository",
+            started_at=datetime.now(timezone.utc) - timedelta(days=8),
+            size=10,
+        )
+    finally:
+        connection.close()
+
+    log_path = resolve_log_directory(database_path) / f"{run_id}.log"
+    original_unlink = Path.unlink
+
+    def fail_for_selected_log(path: Path, *args, **kwargs) -> None:
+        """Refuse to delete the pruned run's log and delete any other path normally."""
+        if path == log_path:
+            raise PermissionError("log is locked")
+
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_for_selected_log)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    exit_code = main(["prune", "--apply", "--json"])
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 3
+    assert result["error"]["code"] == "environment"
+    assert run_id in result["error"]["message"]
+    assert "log is locked" in result["error"]["message"]
+    assert log_path.exists()
+
+    connection = connect_database(database_path)
+    try:
+        assert get_run(connection, run_id).run_id == run_id
+    finally:
+        connection.close()
+
+
+def test_prune_apply_reports_runs_removed_before_a_later_failure(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """A failed later deletion reports runs removed earlier in the same apply."""
+    database_path = tmp_path / "agent-run.db"
+    now = datetime.now(timezone.utc)
+    connection = connect_database(database_path)
+
+    try:
+        first_id = _save_run(
+            connection,
+            database_path,
+            repository_id="repository",
+            started_at=now - timedelta(days=10),
+            size=10,
+        )
+        second_id = _save_run(
+            connection,
+            database_path,
+            repository_id="repository",
+            started_at=now - timedelta(days=9),
+            size=20,
+        )
+        third_id = _save_run(
+            connection,
+            database_path,
+            repository_id="repository",
+            started_at=now - timedelta(days=8),
+            size=30,
+        )
+    finally:
+        connection.close()
+
+    second_log_path = resolve_log_directory(database_path) / f"{second_id}.log"
+    original_unlink = Path.unlink
+
+    def fail_on_second_log(path: Path, *args, **kwargs) -> None:
+        """Refuse to delete the second log while allowing other deletions."""
+        if path == second_log_path:
+            raise PermissionError("second log is locked")
+
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_on_second_log)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    exit_code = main(["prune", "--apply", "--json"])
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 3
+    assert result["error"]["data"]["removed_runs"] == [first_id]
+    assert first_id in result["error"]["message"]
+    assert second_id in result["error"]["message"]
+    assert third_id not in result["error"]["data"]["removed_runs"]
+
+    connection = connect_database(database_path)
+    try:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE run_id = ?", (first_id,)
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE run_id = ?", (second_id,)
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE run_id = ?", (third_id,)
+            ).fetchone()[0]
+            == 1
+        )
+    finally:
+        connection.close()
+
+
+def test_prune_apply_skips_a_record_removed_since_preview(tmp_path: Path) -> None:
+    """A run record removed after preview is treated as already removed."""
+    database_path = tmp_path / "agent-run.db"
+    connection = connect_database(database_path)
+
+    try:
+        run_id = _save_run(
+            connection,
+            database_path,
+            repository_id="repository",
+            started_at=datetime.now(timezone.utc) - timedelta(days=8),
+            size=10,
+        )
+        record = get_run(connection, run_id)
+        connection.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+
+        removed = delete_prune_candidates(
+            connection,
+            [PruneCandidate(record=record, reason="age", size_bytes=10)],
+        )
+    finally:
+        connection.close()
+
+    assert removed == ()
+    assert record.log_path.exists()

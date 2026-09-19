@@ -43,7 +43,9 @@ from agent_run.output import render_error, render_success
 from agent_run.readers import read_failure_report
 from agent_run.repository import RepositoryError, identify_repository
 from agent_run.retention import (
+    PruneError,
     RetentionPlan,
+    delete_prune_candidates,
     measure_log_sizes,
     select_prune_candidates,
 )
@@ -460,8 +462,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     prune_parser = subparsers.add_parser(
         "prune",
         help="Preview saved runs selected by log retention.",
-        description="Preview saved runs selected by log retention without deleting them.",
-        usage="agent-run prune [--json]",
+        description=(
+            "Preview saved runs selected by log retention; use --apply to delete them."
+        ),
+        usage="agent-run prune [--apply] [--json]",
         add_help=False,
         json_mode=json_mode,
     )
@@ -477,6 +481,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         default=argparse.SUPPRESS,
         help="Write one structured JSON result to standard output.",
+    )
+    prune_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Delete the selected runs and their logs.",
     )
 
     show_parser = subparsers.add_parser(
@@ -1290,27 +1299,66 @@ def main(argv: Sequence[str] | None = None) -> int:
             connection = connect_database(database_path)
             try:
                 records = list_all_runs(connection)
+                total_bytes, sizes = measure_log_sizes(
+                    resolve_log_directory(database_path), records
+                )
+                plan = select_prune_candidates(
+                    records,
+                    now=datetime.now(timezone.utc),
+                    sizes=sizes,
+                    total_bytes=total_bytes,
+                )
+
+                if parsed.apply:
+                    removed_candidates = delete_prune_candidates(
+                        connection, plan.candidates
+                    )
+                    remaining_records = list_all_runs(connection)
+                    remaining_total_bytes, _ = measure_log_sizes(
+                        resolve_log_directory(database_path), remaining_records
+                    )
+                    plan = RetentionPlan(
+                        candidates=removed_candidates,
+                        total_bytes=remaining_total_bytes,
+                        freed_bytes=sum(
+                            candidate.size_bytes for candidate in removed_candidates
+                        ),
+                    )
             finally:
                 connection.close()
+        except PruneError as error:
+            removed_run_ids = [candidate.record.run_id for candidate in error.removed]
+            message = str(error)
 
-            total_bytes, sizes = measure_log_sizes(
-                resolve_log_directory(database_path), records
+            if removed_run_ids:
+                message += (
+                    f" Runs removed before failure: {', '.join(removed_run_ids)}."
+                )
+
+            return render_error(
+                json_mode=parsed.json,
+                code="environment",
+                message=message,
+                data={
+                    "run_id": error.run_id,
+                    "reason": error.reason,
+                    "removed_runs": removed_run_ids,
+                },
             )
-            plan = select_prune_candidates(
-                records,
-                now=datetime.now(timezone.utc),
-                sizes=sizes,
-                total_bytes=total_bytes,
-            )
-        except (NewerSchemaError, OSError, sqlite3.Error, ValueError) as error:
+        except (
+            NewerSchemaError,
+            OSError,
+            sqlite3.Error,
+            ValueError,
+        ) as error:
             return render_error(
                 json_mode=parsed.json,
                 code="environment",
                 message=str(error),
             )
 
-        data = _retention_plan_record(plan)
-        text = _format_retention_plan(plan)
+        data = _retention_plan_record(plan, applied=parsed.apply)
+        text = _format_retention_plan(plan, applied=parsed.apply)
 
         if parsed.json:
             return render_success(json_mode=True, data=data)
@@ -1762,9 +1810,14 @@ def _format_runs(records: Sequence[RunRecord]) -> str:
     return "\n\n".join(_format_saved_run(record) for record in records)
 
 
-def _retention_plan_record(plan: RetentionPlan) -> dict[str, object]:
-    """Return the public fields for a retention preview."""
+def _retention_plan_record(
+    plan: RetentionPlan,
+    *,
+    applied: bool = False,
+) -> dict[str, object]:
+    """Return the public fields for a retention preview or applied deletion."""
     return {
+        "applied": applied,
         "runs": [
             {
                 "run_id": candidate.record.run_id,
@@ -1778,17 +1831,17 @@ def _retention_plan_record(plan: RetentionPlan) -> dict[str, object]:
     }
 
 
-def _format_retention_plan(plan: RetentionPlan) -> str:
-    """Format a retention preview for human-readable output."""
+def _format_retention_plan(plan: RetentionPlan, *, applied: bool = False) -> str:
+    """Format a retention preview or applied deletion for human-readable output."""
     lines = [
         f"total log size: {plan.total_bytes} bytes",
         f"space freed: {plan.freed_bytes} bytes",
     ]
 
     if not plan.candidates:
-        lines.append("No runs need pruning.")
+        lines.append("No runs were removed." if applied else "No runs need pruning.")
     else:
-        lines.append("Runs to remove:")
+        lines.append("Runs removed:" if applied else "Runs to remove:")
         lines.extend(
             "run ID: "
             f"{candidate.record.run_id}; reason: {candidate.reason}; "

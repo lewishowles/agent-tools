@@ -1,5 +1,6 @@
 """Choose which saved runs the log retention policy would remove."""
 
+import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,22 @@ class RetentionPlan:
     candidates: tuple[PruneCandidate, ...]
     total_bytes: int
     freed_bytes: int
+
+
+class PruneError(RuntimeError):
+    """Report a run that could not be removed during retention pruning."""
+
+    def __init__(
+        self,
+        run_id: str,
+        reason: str,
+        removed: Sequence[PruneCandidate],
+    ) -> None:
+        """Store the failed run, its reason, and runs removed before it."""
+        self.run_id = run_id
+        self.reason = reason
+        self.removed = tuple(removed)
+        super().__init__(f'Could not prune run "{run_id}": {reason}')
 
 
 def measure_log_sizes(
@@ -125,6 +142,61 @@ def select_prune_candidates(
         total_bytes=total_bytes,
         freed_bytes=freed_bytes,
     )
+
+
+def delete_prune_candidates(
+    connection: sqlite3.Connection,
+    candidates: Sequence[PruneCandidate],
+) -> tuple[PruneCandidate, ...]:
+    """Delete each chosen run's saved record and log, stopping at the first failure.
+
+    Each run is deleted in its own transaction. The record is only committed as
+    deleted once its log file is gone, so a log that cannot be removed keeps its
+    record and the next prune can try again. A log or record that is already
+    missing does not count as a failure.
+
+    Args:
+        connection: Open database connection used to remove run records.
+        candidates: Runs selected by ``select_prune_candidates``.
+
+    Returns:
+        The runs removed during this call, in selection order.
+
+    Raises:
+        PruneError: If a run record or log cannot be removed. The error keeps
+            the runs removed before the failure.
+    """
+    removed: list[PruneCandidate] = []
+
+    for candidate in candidates:
+        run_id = candidate.record.run_id
+
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            deleted = connection.execute(
+                "DELETE FROM runs WHERE run_id = ?",
+                (run_id,),
+            ).rowcount
+
+            if deleted == 0:
+                connection.commit()
+                continue
+
+            try:
+                candidate.record.log_path.unlink()
+            except FileNotFoundError:
+                pass
+
+            connection.commit()
+        except (OSError, sqlite3.Error) as error:
+            if connection.in_transaction:
+                connection.rollback()
+
+            raise PruneError(run_id, str(error), removed) from error
+
+        removed.append(candidate)
+
+    return tuple(removed)
 
 
 def _as_utc(value: datetime) -> datetime:

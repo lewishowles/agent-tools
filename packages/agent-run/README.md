@@ -197,11 +197,14 @@ database, logs are written to `~/.agents/agent-run-logs`; setting
 ## Preview log retention
 
 `prune` previews the saved runs that the fixed retention policy would remove.
-It does not delete anything yet.
+Plain `prune` never deletes anything. Add `--apply` to remove the selected
+runs and their logs.
 
 ```sh
 agent-run prune
 agent-run prune --json
+agent-run prune --apply
+agent-run prune --apply --json
 ```
 
 The policy selects saved runs older than 7 days. If saved-run logs add up to
@@ -213,6 +216,8 @@ saved run record remain visible in that total but never trigger size selection
 or appear as removable runs. The limits are fixed module constants, and there
 are no settings for changing them.
 
-Both output modes report the total log size, each selected run's reason and
-space freed, and the total space that would be freed. The next retention step
-will add deletion behind an explicit flag.
+Both output modes report whether deletion was applied, the total log size after
+deletion, each selected run's reason and space freed, and the total space
+freed. If a run cannot be removed, `--apply` stops at that run. Runs removed
+before the failure stay removed and are named in the error. A run record that
+has already gone is skipped, so applying the command again is safe.
