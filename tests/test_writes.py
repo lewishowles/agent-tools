@@ -50,7 +50,6 @@ def _seed_store(tmp_path: Path) -> WriteStore:
 def _add_task(store: WriteStore, slug: str, title: str, **arguments):
 	"""Create a valid test task with default planning text."""
 	arguments.setdefault("overview", f"{title} overview")
-	arguments.setdefault("purpose", f"{title} purpose")
 	arguments.setdefault("contract", [f"{title} contract"])
 	return store.task_add(slug, title, **arguments)
 
@@ -100,23 +99,20 @@ def test_task_add_requires_an_overview_argument(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
 	"arguments",
 	[
-		pytest.param({"purpose": ""}, id="empty-purpose"),
-		pytest.param({"purpose": " \t"}, id="whitespace-purpose"),
 		pytest.param({"contract": [""]}, id="empty-contract"),
 		pytest.param({"contract": [" \t"]}, id="whitespace-contract"),
 	],
 )
-def test_task_add_rejects_blank_purpose_and_contract(
+def test_task_add_rejects_blank_contract(
 	tmp_path: Path, arguments: dict[str, object]
 ) -> None:
 	store = _seed_store(tmp_path)
 
-	with pytest.raises(ProgressError, match="task (purpose|contract)"):
+	with pytest.raises(ProgressError, match="task contract"):
 		store.task_add(
 			"task",
 			"Task",
 			overview="Task overview",
-			purpose=arguments.get("purpose", "Task purpose"),
 			contract=arguments.get("contract", ["Task contract"]),
 		)
 
@@ -136,7 +132,6 @@ def test_task_add_rejects_scalar_task_values(tmp_path: Path, field: str) -> None
 			"task",
 			"Task",
 			overview="Task overview",
-			purpose="Task purpose",
 			**arguments,
 		)
 
@@ -581,7 +576,6 @@ def test_creation_and_chunk_lifecycle_are_atomic(tmp_path: Path) -> None:
 		"lifecycle",
 		"Lifecycle",
 		release_id=release["id"],
-		purpose="Run lifecycle.",
 	)
 	first_chunk = _add_chunk(store, task["id"], "First", "First chunk.")
 	second_chunk = _add_chunk(store, task["id"], "Second", "Second chunk.")
@@ -1697,12 +1691,9 @@ def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
 		"task",
 		"Task",
 		overview="Original overview",
-		purpose="Original purpose",
 		contract=["Original contract"],
 		files=["original.py"],
-		acceptance_criteria="Original criteria",
 		verification="Original verification",
-		risks="Original risks",
 		release_id=release["id"],
 		position=3,
 	)
@@ -1719,12 +1710,9 @@ def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
 	assert updated["release_id"] == task["release_id"]
 	assert updated["title"] == task["title"]
 	assert updated["overview"] == "Updated overview"
-	assert updated["purpose"] == task["purpose"]
 	assert updated["contract"] == task["contract"]
 	assert updated["files"] == ["updated.py"]
-	assert updated["acceptance_criteria"] == task["acceptance_criteria"]
 	assert updated["verification"] == task["verification"]
-	assert updated["risks"] == task["risks"]
 	assert updated["status"] == task["status"]
 	assert updated["status_reason"] == task["status_reason"]
 	assert updated["position"] == task["position"]
@@ -1854,10 +1842,10 @@ def test_task_remove_deletes_contract_and_file_rows(tmp_path: Path) -> None:
 
 def test_task_edit_validates_all_values_before_writing(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
-	task = _add_task(store, "task", "Task", purpose="Original purpose")
+	task = _add_task(store, "task", "Task")
 
 	with pytest.raises(ProgressError, match="must be text"):
-		store.task_edit(task["id"], overview="Updated overview", purpose=object())  # type: ignore[arg-type]
+		store.task_edit(task["id"], overview=object())  # type: ignore[arg-type]
 
 	current = ReadStore(store.database, _ProjectStore(store.database)).task_get(
 		task["id"]
@@ -1878,7 +1866,6 @@ def test_task_edit_requires_at_least_one_field(tmp_path: Path) -> None:
 	("field", "value"),
 	[
 		("overview", ""),
-		("purpose", " \t"),
 		("contract", [""]),
 	],
 )

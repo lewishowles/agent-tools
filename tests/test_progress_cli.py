@@ -314,11 +314,11 @@ def test_commands_json_lists_the_registry_with_required_flags(
 		"names": ["body"],
 		"required": True,
 	}
-	assert commands["task add"]["flags"][4] == {
+	assert commands["task add"]["flags"][3] == {
 		"names": ["--contract-step"],
 		"required": True,
 	}
-	assert commands["task add"]["flags"][10] == {
+	assert commands["task add"]["flags"][7] == {
 		"names": ["--release", "--release-id"],
 		"required": False,
 	}
@@ -384,6 +384,20 @@ def test_json_success_uses_the_stable_envelope(
 				"ok": False,
 			},
 			"- release.overview: Blank release (rel_test)",
+		),
+		(
+			{
+				"findings": [
+					{
+						"field": "task.split_rationale",
+						"id": "tsk_test",
+						"noun": "task",
+						"title": "Task without a split rationale",
+					}
+				],
+				"ok": False,
+			},
+			"- task.split_rationale: Task without a split rationale (tsk_test)",
 		),
 	],
 )
@@ -519,8 +533,6 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 				"Task",
 				"--overview",
 				"Task overview",
-				"--purpose",
-				"Task purpose",
 				"--contract-step",
 				"Task contract",
 			],
@@ -808,6 +820,97 @@ def test_release_removed_flags_are_rejected(tmp_path: Path, capsys, flag: str) -
 
 
 @pytest.mark.parametrize(
+	("command_arguments", "flag"),
+	[
+		pytest.param(
+			[
+				"task",
+				"add",
+				"--slug",
+				"task",
+				"--title",
+				"Task",
+				"--overview",
+				"Overview",
+				"--contract-step",
+				"Contract",
+				"--purpose",
+				"Removed",
+			],
+			"--purpose",
+			id="task-add-purpose",
+		),
+		pytest.param(
+			[
+				"task",
+				"add",
+				"--slug",
+				"task",
+				"--title",
+				"Task",
+				"--overview",
+				"Overview",
+				"--contract-step",
+				"Contract",
+				"--acceptance-criteria",
+				"Removed",
+			],
+			"--acceptance-criteria",
+			id="task-add-acceptance-criteria",
+		),
+		pytest.param(
+			[
+				"task",
+				"add",
+				"--slug",
+				"task",
+				"--title",
+				"Task",
+				"--overview",
+				"Overview",
+				"--contract-step",
+				"Contract",
+				"--risks",
+				"Removed",
+			],
+			"--risks",
+			id="task-add-risks",
+		),
+		pytest.param(
+			["task", "edit", "tsk_test", "--clear-purpose"],
+			"--clear-purpose",
+			id="task-edit-purpose",
+		),
+		pytest.param(
+			["task", "edit", "tsk_test", "--clear-acceptance-criteria"],
+			"--clear-acceptance-criteria",
+			id="task-edit-acceptance-criteria",
+		),
+		pytest.param(
+			["task", "edit", "tsk_test", "--clear-risks"],
+			"--clear-risks",
+			id="task-edit-risks",
+		),
+	],
+)
+def test_task_removed_flags_are_rejected(
+	tmp_path: Path, capsys, command_arguments: list[str], flag: str
+) -> None:
+	arguments = [
+		*command_arguments,
+		"--database",
+		str(tmp_path / "db"),
+		"--json",
+	]
+
+	assert cli.main(arguments) == 2
+	output = capsys.readouterr().out
+
+	assert "unrecognized arguments" in output
+	assert flag in output
+
+
+@pytest.mark.parametrize(
 	("arguments", "method_name"),
 	[
 		(
@@ -926,17 +1029,8 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 			"task-slug",
 			"Task title",
 			"Task overview",
-			"Task purpose",
 			"Task contract step",
-			"",
-			"",
-			"",
-			"",
-			"",
-			"",
-			"",
-			"",
-			"",
+			*([""] * 7),
 		]
 	)
 	prompts: list[str] = []
@@ -968,13 +1062,10 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 		"slug": "task-slug",
 		"title": "Task title",
 		"overview": "Task overview",
-		"purpose": "Task purpose",
 		"contract": ["Task contract step"],
 		"files": None,
 		"split_rationale": None,
-		"acceptance_criteria": "",
 		"verification": "",
-		"risks": "",
 		"release_id": None,
 		"depends_on": [],
 		"position": None,
@@ -983,14 +1074,11 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 		"slug: ",
 		"title: ",
 		"overview: ",
-		"purpose: ",
 		"contract-step: ",
 		"contract-step: ",
 		"file: ",
 		"split-rationale: ",
-		"acceptance-criteria: ",
 		"verification: ",
-		"risks: ",
 		"release: ",
 		"depends-on: ",
 		"position: ",
@@ -1004,13 +1092,11 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 			"Short identifier stored on the task",
 			"Display title",
 			"Non-empty task summary",
-			"Non-empty task purpose",
 			"Non-empty task contract step",
 			"Optional file covered by the task; press Enter to skip",
-			"Optional reason for splitting the task; press Enter to skip",
-			"Optional completion conditions; press Enter to skip",
+			"Reason for splitting the task; doctor expects every task "
+			"to have one; press Enter to skip",
 			"Optional verification instructions; press Enter to skip",
-			"Optional risks; press Enter to skip",
 			"Associate the task with a release; press Enter to skip",
 			"Task ID dependency; press Enter to skip",
 			"Optional ordering position; press Enter to skip",
@@ -1022,19 +1108,16 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 			"--slug",
 			"--title",
 			"--overview",
-			"--purpose",
 			"--contract-step",
 			"--file",
 			"--split-rationale",
-			"--acceptance-criteria",
 			"--verification",
-			"--risks",
 			"--release/--release-id",
 			"--depends-on/--dependency",
 			"--position",
 		)
 	)
-	assert output.out.count("press Enter to skip") == 8
+	assert output.out.count("press Enter to skip") == 6
 	# render is stubbed empty here, so main() adds only its blank-line frame and
 	# the Next hint after the guided prompts. Check spacing on the prompt section.
 	prompt_section, _, next_hint = output.out.partition("\n\n\n\nNext: ")
@@ -1152,9 +1235,8 @@ def test_add_prompt_skips_arguments_already_supplied(
 		[
 			"Task title",
 			"Task overview",
-			"Task purpose",
 			"Task contract step",
-			*([""] * 9),
+			*([""] * 7),
 		]
 	)
 
@@ -1246,7 +1328,7 @@ def test_json_mode_keeps_missing_add_arguments_non_interactive(
 			"code": "usage",
 			"message": (
 				"the following arguments are required: "
-				"--slug, --title, --overview, --purpose, --contract-step"
+				"--slug, --title, --overview, --contract-step"
 			),
 			"details": {},
 		},
@@ -2058,7 +2140,6 @@ def test_task_list_uses_release_priority_for_json_and_table_output(
 		"project-review-context",
 		"Project review context",
 		overview="Review context.",
-		purpose="Review project context.",
 		contract=["Review context contract."],
 		release_id=later_release["id"],
 		position=1,
@@ -2067,7 +2148,6 @@ def test_task_list_uses_release_priority_for_json_and_table_output(
 		"progress-cli-read-parity",
 		"Progress CLI read parity",
 		overview="Keep read commands aligned.",
-		purpose="Keep CLI reads aligned.",
 		contract=["Keep read ordering aligned."],
 		release_id=active_release["id"],
 		position=1,
@@ -2076,7 +2156,6 @@ def test_task_list_uses_release_priority_for_json_and_table_output(
 		"unassigned-task",
 		"Unassigned task",
 		overview="An unassigned task.",
-		purpose="Check unassigned ordering.",
 		contract=["Unassigned tasks use the final queue bucket."],
 		position=1,
 	)
@@ -2562,7 +2641,6 @@ def test_task_get_uses_one_readable_task_view() -> None:
 		"status": "needs-decision",
 		"status_reason": "Waiting for product input.",
 		"overview": "The task overview.",
-		"purpose": "The task purpose.",
 		"chunks": [
 			{
 				"id": "chk_first",
@@ -2580,9 +2658,7 @@ def test_task_get_uses_one_readable_task_view() -> None:
 		"split_rationale": "Keep the two chunks independently reviewable.",
 		"contract": ["First contract step.", "Second contract step."],
 		"files": ["src/task.py", "tests/test_task.py"],
-		"acceptance_criteria": "The task view is complete.",
 		"verification": "Run the task tests.",
-		"risks": "The output may be long.",
 		"position": 99,
 		"created_at": "hidden-created-at",
 		"started_at": "hidden-started-at",
@@ -2598,7 +2674,6 @@ def test_task_get_uses_one_readable_task_view() -> None:
 	assert "ID" in plain_output and "tsk_task_view" in plain_output
 	assert "Waiting for product input." in plain_output
 	assert "Overview" in plain_output and "The task overview." in plain_output
-	assert "Purpose" in plain_output and "The task purpose." in plain_output
 	assert "Chunks" in plain_output
 	assert "First chunk" in plain_output and "Second chunk" in plain_output
 	assert "First chunk description." not in plain_output
@@ -2609,9 +2684,7 @@ def test_task_get_uses_one_readable_task_view() -> None:
 	assert "First contract step." in plain_output
 	assert "Second contract step." in plain_output
 	assert "src/task.py" in plain_output and "tests/test_task.py" in plain_output
-	assert "Acceptance criteria" in plain_output
 	assert "Verification" in plain_output
-	assert "Risks" in plain_output
 	assert "Project ID" in plain_output and "prj_task_view" in plain_output
 	assert "Release ID" in plain_output and "rel_task_view" in plain_output
 	assert "hidden-task-slug" not in plain_output
@@ -2622,9 +2695,12 @@ def test_task_get_uses_one_readable_task_view() -> None:
 	assert "position" not in plain_output.lower()
 	assert plain_output.index("Readable task") < plain_output.index("Status")
 	assert plain_output.index("Status") < plain_output.index("Overview")
-	assert plain_output.index("Overview") < plain_output.index("Purpose")
-	assert plain_output.index("Purpose") < plain_output.index("Chunks")
-	assert plain_output.index("Risks") < plain_output.index("Project ID")
+	assert plain_output.index("Overview") < plain_output.index("Chunks")
+	assert plain_output.index("Chunks") < plain_output.index("Split rationale")
+	assert plain_output.index("Split rationale") < plain_output.index("Contract")
+	assert plain_output.index("Contract") < plain_output.index("Files")
+	assert plain_output.index("Files") < plain_output.index("Verification")
+	assert plain_output.index("Verification") < plain_output.index("Project ID")
 
 
 def test_release_get_uses_one_readable_release_view() -> None:
@@ -3496,8 +3572,6 @@ def test_json_write_success_uses_the_changed_object_shape(
 				"Write surface",
 				"--overview",
 				"Write surface overview",
-				"--purpose",
-				"Write surface purpose",
 				"--contract-step",
 				"Write surface contract",
 				"--database",
@@ -3529,24 +3603,6 @@ def test_json_write_success_uses_the_changed_object_shape(
 				"Task",
 				"--overview",
 				"Task overview",
-				"--contract-step",
-				"Task contract",
-			],
-			"--purpose",
-			id="task-purpose",
-		),
-		pytest.param(
-			[
-				"task",
-				"add",
-				"--slug",
-				"task",
-				"--title",
-				"Task",
-				"--overview",
-				"Task overview",
-				"--purpose",
-				"Task purpose",
 			],
 			"--contract-step",
 			id="task-contract",
@@ -3618,26 +3674,6 @@ def test_add_rejects_an_omitted_planning_field(
 				"Task",
 				"--overview",
 				"Task overview",
-				"--purpose",
-				" \t",
-				"--contract-step",
-				"Task contract",
-			],
-			"--purpose",
-			id="task-purpose",
-		),
-		pytest.param(
-			[
-				"task",
-				"add",
-				"--slug",
-				"task",
-				"--title",
-				"Task",
-				"--overview",
-				"Task overview",
-				"--purpose",
-				"Task purpose",
 				"--contract-step",
 				" \t",
 			],
@@ -3711,11 +3747,6 @@ def test_add_rejects_a_whitespace_only_planning_field(
 			id="task-overview",
 		),
 		pytest.param(
-			["task", "edit", "tsk_test", "--clear-purpose"],
-			"--clear-purpose",
-			id="task-purpose",
-		),
-		pytest.param(
 			["task", "edit", "tsk_test", "--clear-contract"],
 			"--clear-contract",
 			id="task-contract",
@@ -3767,11 +3798,6 @@ def test_edit_rejects_removed_clear_flags(
 			["task", "edit", "tsk_test", "--overview", ""],
 			"--overview",
 			id="task-overview-empty",
-		),
-		pytest.param(
-			["task", "edit", "tsk_test", "--purpose", " \t"],
-			"--purpose",
-			id="task-purpose-whitespace",
 		),
 		pytest.param(
 			["task", "edit", "tsk_test", "--contract-step", ""],
@@ -3859,18 +3885,13 @@ def test_task_edit_dispatches_values_and_optional_clear_flags(
 	assert arguments_seen == {
 		"task_id": "tsk_test",
 		"overview": "Updated",
-		"purpose": None,
 		"contract": None,
 		"files": None,
 		"split_rationale": None,
-		"acceptance_criteria": None,
 		"verification": None,
-		"risks": None,
 		"clear_files": False,
 		"clear_split_rationale": False,
-		"clear_acceptance_criteria": False,
 		"clear_verification": False,
-		"clear_risks": False,
 	}
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
@@ -3902,8 +3923,6 @@ def test_task_add_dispatches_repeatable_contract_steps_and_files(
 				"Task",
 				"--overview",
 				"Task overview",
-				"--purpose",
-				"Task purpose",
 				"--contract-step",
 				"First step",
 				"--contract-step",
@@ -3970,18 +3989,13 @@ def test_task_edit_dispatches_repeatable_contract_steps_and_files(
 	assert arguments_seen == {
 		"task_id": "tsk_test",
 		"overview": None,
-		"purpose": None,
 		"contract": ["Updated first", "Updated second"],
 		"files": ["src/updated.py"],
 		"split_rationale": "The chunks have separate review questions",
-		"acceptance_criteria": None,
 		"verification": None,
-		"risks": None,
 		"clear_files": False,
 		"clear_split_rationale": False,
-		"clear_acceptance_criteria": False,
 		"clear_verification": False,
-		"clear_risks": False,
 	}
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
@@ -4038,8 +4052,6 @@ def test_removed_task_contract_and_files_flags_are_rejected(capsys) -> None:
 				"Task",
 				"--overview",
 				"Task overview",
-				"--purpose",
-				"Task purpose",
 				"--contract-step",
 				"Current step",
 				"--contract",

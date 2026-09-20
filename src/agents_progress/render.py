@@ -425,13 +425,11 @@ def _render_task(task: dict[str, object]) -> str:
 		)
 	blocks.append(render_row_group(task_rows))
 
-	for label, key in (("Overview", "overview"), ("Purpose", "purpose")):
-		value = task.get(key)
-		if not value:
-			continue
+	value = task.get("overview")
+	if value:
 		blocks.extend(
 			[
-				render_span(label),
+				render_span("Overview"),
 				render_span(
 					textwrap.fill(str(value), _ROW_WRAP_WIDTH),
 					"muted",
@@ -471,17 +469,11 @@ def _render_task(task: dict[str, object]) -> str:
 			render_span(f"- {item}", "muted", weight="normal") for item in values
 		)
 
-	for label, key in (
-		("Acceptance criteria", "acceptance_criteria"),
-		("Verification", "verification"),
-		("Risks", "risks"),
-	):
-		value = task.get(key)
-		if not value:
-			continue
+	value = task.get("verification")
+	if value:
 		blocks.extend(
 			[
-				render_span(label),
+				render_span("Verification"),
 				render_span(
 					textwrap.fill(str(value), _ROW_WRAP_WIDTH),
 					"muted",

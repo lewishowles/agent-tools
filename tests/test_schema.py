@@ -21,7 +21,7 @@ def _insert_project(connection: sqlite3.Connection, project_id: str) -> None:
 	)
 
 
-def _insert_task(
+def _insert_version_four_task(
 	connection: sqlite3.Connection,
 	project_id: str,
 	task_id: str,
@@ -46,6 +46,36 @@ def _insert_task(
 			"Acceptance",
 			"Verification",
 			"Risks",
+			status,
+			1,
+			"2026-01-01T00:00:00+00:00",
+			"2026-01-01T00:00:00+00:00",
+		),
+	)
+
+
+def _insert_current_task(
+	connection: sqlite3.Connection,
+	project_id: str,
+	task_id: str,
+	slug: str,
+	status: str = "ready",
+) -> None:
+	connection.execute(
+		"""
+		INSERT INTO tasks (
+			id, project_id, slug, title, overview, verification, split_rationale,
+			status, position, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		""",
+		(
+			task_id,
+			project_id,
+			slug,
+			"Task",
+			"Overview",
+			"Verification",
+			"Split rationale",
 			status,
 			1,
 			"2026-01-01T00:00:00+00:00",
@@ -79,7 +109,7 @@ def _insert_legacy_task(
 			"Purpose",
 			contract,
 			files,
-			"Acceptance",
+			"",
 			"Verification",
 			"Risks",
 			"ready",
@@ -113,7 +143,7 @@ def _create_version_two_database(database_path) -> tuple[str, str, str, str]:
 		first_note_id = generate_object_id(NOTE_PREFIX)
 		second_note_id = generate_object_id(NOTE_PREFIX)
 		_insert_project(connection, project_id)
-		_insert_task(connection, project_id, task_id, "task")
+		_insert_version_four_task(connection, project_id, task_id, "task")
 		connection.executemany(
 			"""
 			INSERT INTO notes (id, project_id, task_id, type, body, supersedes_id, created_at)
@@ -175,7 +205,7 @@ def test_first_connection_creates_the_schema_and_sqlite_safety_settings(
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 4
+			== 5
 		)
 		release_columns = {
 			row[1] for row in connection.execute("PRAGMA table_info(releases)")
@@ -208,7 +238,7 @@ def test_an_older_schema_version_migrates_forward(tmp_path) -> None:
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 4
+			== 5
 		)
 		assert connection.execute("SELECT 1 FROM projects").fetchone() is None
 		assert (
@@ -300,7 +330,7 @@ def test_schema_version_two_migrates_task_notes_without_loss(tmp_path) -> None:
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 4
+			== 5
 		)
 		assert [
 			tuple(row)
@@ -383,7 +413,9 @@ def test_schema_version_three_moves_release_fields_and_drops_legacy_model_tier(
 			],
 		)
 		connection.execute("ALTER TABLE tasks ADD COLUMN model_tier TEXT")
-		_insert_task(connection, project_id, generate_object_id(TASK_PREFIX), "task")
+		_insert_version_four_task(
+			connection, project_id, generate_object_id(TASK_PREFIX), "task"
+		)
 		connection.execute(
 			"UPDATE tasks SET model_tier = ? WHERE project_id = ?",
 			("legacy", project_id),
@@ -394,7 +426,7 @@ def test_schema_version_three_moves_release_fields_and_drops_legacy_model_tier(
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 4
+			== schema.SCHEMA_VERSION
 		)
 		assert connection.execute(
 			"SELECT overview FROM releases WHERE id = ?", (release_id,)
@@ -425,13 +457,101 @@ def test_schema_version_three_moves_release_fields_and_drops_legacy_model_tier(
 		)
 
 
+def test_schema_version_four_moves_task_fields_into_existing_columns(tmp_path) -> None:
+	database_path = tmp_path / "progress.db"
+	with sqlite3.connect(database_path) as connection:
+		schema._create_schema(connection)
+		schema._migrate_to_version_2(connection)
+		schema._migrate_to_version_3(connection)
+		schema._migrate_to_version_4(connection)
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.executemany(
+			"INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+			[
+				(1, "2026-01-01T00:00:00+00:00"),
+				(2, "2026-01-01T00:00:00+00:00"),
+				(3, "2026-01-01T00:00:00+00:00"),
+				(4, "2026-01-01T00:00:00+00:00"),
+			],
+		)
+		project_id = generate_object_id(PROJECT_PREFIX)
+		task_id = generate_object_id(TASK_PREFIX)
+		unchanged_task_id = generate_object_id(TASK_PREFIX)
+		_insert_project(connection, project_id)
+		_insert_version_four_task(connection, project_id, task_id, "task")
+		_insert_version_four_task(
+			connection, project_id, unchanged_task_id, "unchanged"
+		)
+		connection.execute(
+			"UPDATE tasks SET overview = ?, purpose = ?, acceptance_criteria = ? WHERE id = ?",
+			(
+				"Task overview.",
+				"Task purpose.",
+				"First criterion.\n\nSecond criterion.\n",
+				task_id,
+			),
+		)
+		connection.execute(
+			"UPDATE tasks SET purpose = ?, acceptance_criteria = ? WHERE id = ?",
+			("", " \n\t", unchanged_task_id),
+		)
+		connection.execute(
+			"INSERT INTO task_contract_steps (task_id, position, text) VALUES (?, ?, ?)",
+			(task_id, 1, "Existing contract step."),
+		)
+
+	with Database(database_path).connection() as connection:
+		assert (
+			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
+				0
+			]
+			== 5
+		)
+		assert (
+			connection.execute(
+				"SELECT overview FROM tasks WHERE id = ?", (task_id,)
+			).fetchone()[0]
+			== "Task overview.\n\nTask purpose."
+		)
+		assert [
+			tuple(row)
+			for row in connection.execute(
+				"SELECT position, text FROM task_contract_steps WHERE task_id = ? ORDER BY position",
+				(task_id,),
+			).fetchall()
+		] == [
+			(1, "Existing contract step."),
+			(2, "First criterion."),
+			(3, "Second criterion."),
+		]
+		assert (
+			connection.execute(
+				"SELECT overview FROM tasks WHERE id = ?", (unchanged_task_id,)
+			).fetchone()[0]
+			== "Overview"
+		)
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_contract_steps WHERE task_id = ?",
+				(unchanged_task_id,),
+			).fetchone()
+			is None
+		)
+		task_columns = {
+			row[1] for row in connection.execute("PRAGMA table_info(tasks)")
+		}
+		assert {"purpose", "acceptance_criteria", "risks"}.isdisjoint(task_columns)
+
+
 def test_notes_require_exactly_one_owner(tmp_path) -> None:
 	with Database(tmp_path / "progress.db").connection() as connection:
 		project_id = generate_object_id(PROJECT_PREFIX)
 		task_id = generate_object_id(TASK_PREFIX)
 		release_id = generate_object_id(RELEASE_PREFIX)
 		_insert_project(connection, project_id)
-		_insert_task(connection, project_id, task_id, "task")
+		_insert_current_task(connection, project_id, task_id, "task")
 		connection.execute(
 			"""
 			INSERT INTO releases (id, project_id, slug, title, overview, status, position)
@@ -583,9 +703,9 @@ def test_foreign_keys_and_uniqueness_constraints_protect_records(tmp_path) -> No
 				),
 			)
 
-		_insert_task(connection, project_id, task_id, "task", "in-progress")
+		_insert_current_task(connection, project_id, task_id, "task", "in-progress")
 		with pytest.raises(sqlite3.IntegrityError):
-			_insert_task(
+			_insert_current_task(
 				connection, project_id, second_task_id, "second", "in-progress"
 			)
 

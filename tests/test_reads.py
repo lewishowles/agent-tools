@@ -56,10 +56,10 @@ def _seed_store(tmp_path: Path) -> ReadStore:
 		):
 			connection.execute(
 				"INSERT INTO tasks ("
-				"id, project_id, slug, release_id, title, overview, purpose, "
-				"acceptance_criteria, verification, risks, status, "
+				"id, project_id, slug, release_id, title, overview, verification, "
+				"split_rationale, status, "
 				"status_reason, position, created_at, started_at, completed_at, updated_at"
-				") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				(
 					task_id,
 					PROJECT_ID,
@@ -67,10 +67,8 @@ def _seed_store(tmp_path: Path) -> ReadStore:
 					RELEASE_A,
 					title,
 					f"Overview for {slug}.",
-					f"Purpose for {slug}.",
-					"Acceptance criteria.",
 					"Verification.",
-					"Risks.",
+					f"Split rationale for {slug}.",
 					status,
 					None,
 					position,
@@ -155,7 +153,6 @@ def test_next_uses_live_totals_and_ranks_after_sibling_removals(
 		"third",
 		"Third task",
 		overview="Third task overview",
-		purpose="Third task purpose",
 		contract=["Third task contract"],
 		release_id=RELEASE_A,
 		position=3,
@@ -204,7 +201,6 @@ def test_next_returns_the_earliest_ready_task_when_nothing_is_in_progress(
 		"first-ready",
 		"First ready",
 		overview="First ready overview",
-		purpose="First ready purpose",
 		contract=["First ready contract"],
 		release_id=RELEASE_A,
 		position=0,
@@ -237,7 +233,6 @@ def test_next_prefers_active_release_over_lower_position_planned_release(
 		"planned-task",
 		"Planned task",
 		overview="Planned task overview",
-		purpose="Planned task purpose",
 		contract=["Planned task contract"],
 		release_id=planned_release["id"],
 		position=0,
@@ -261,7 +256,6 @@ def test_next_reports_the_earliest_blocked_task_without_changing_it(
 		"blocked",
 		"Blocked",
 		overview="Blocked task overview",
-		purpose="Blocked task purpose",
 		contract=["Blocked task contract"],
 		release_id=RELEASE_A,
 		depends_on=[TASK_A],
@@ -533,7 +527,6 @@ def test_task_reads_return_contract_files_and_split_rationale_in_order(
 		"ordered",
 		"Ordered task",
 		overview="Ordered task overview",
-		purpose="Ordered task purpose",
 		contract=["First step", "Second step"],
 		files=["src/first.py", "src/second.py"],
 		split_rationale="Keep each step reviewable",
@@ -585,8 +578,8 @@ def test_doctor_reports_blank_required_fields_across_all_pages(
 					"id": "tsk_" + "c" * 22,
 					"title": "Blank task",
 					"overview": "  ",
-					"purpose": "",
 					"contract": [" \t"],
+					"split_rationale": "",
 				}
 			],
 			"limit": 1,
@@ -655,13 +648,13 @@ def test_doctor_reports_blank_required_fields_across_all_pages(
 				"title": "Blank task",
 			},
 			{
-				"field": "task.purpose",
+				"field": "task.contract",
 				"id": "tsk_" + "c" * 22,
 				"noun": "task",
 				"title": "Blank task",
 			},
 			{
-				"field": "task.contract",
+				"field": "task.split_rationale",
 				"id": "tsk_" + "c" * 22,
 				"noun": "task",
 				"title": "Blank task",

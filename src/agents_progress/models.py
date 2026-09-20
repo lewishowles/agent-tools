@@ -36,13 +36,10 @@ class Task:
 	release_id: str | None
 	title: str
 	overview: str
-	purpose: str
 	contract: list[str]
 	files: list[str]
 	split_rationale: str | None
-	acceptance_criteria: str
 	verification: str
-	risks: str
 	status: str
 	status_reason: str | None
 	position: int

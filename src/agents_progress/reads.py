@@ -33,8 +33,8 @@ _RELEASE_COLUMNS = "id, project_id, slug, title, overview, status, position"
 
 # Columns selected from tasks in list and single-row queries.
 _TASK_COLUMNS = (
-	"id, project_id, slug, release_id, title, overview, purpose, "
-	"acceptance_criteria, verification, risks, split_rationale, status, "
+	"id, project_id, slug, release_id, title, overview, verification, "
+	"split_rationale, status, "
 	"status_reason, position, created_at, started_at, completed_at, updated_at"
 )
 
@@ -86,7 +86,7 @@ NOTE_TYPES = frozenset({"discovery", "decision"})
 # Fields checked by the doctor command for each record type.
 REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
 	"release": ("overview",),
-	"task": ("overview", "purpose", "contract"),
+	"task": ("overview", "contract", "split_rationale"),
 	"chunk": ("description",),
 }
 
@@ -484,10 +484,7 @@ def _search_task_item(
 	task_values = {
 		"title": row["title"],
 		"overview": row["overview"],
-		"purpose": row["purpose"],
-		"acceptance-criteria": row["acceptance_criteria"],
 		"verification": row["verification"],
-		"risks": row["risks"],
 	}
 	matched: list[str] = []
 	snippets: dict[str, object] = {}
@@ -860,10 +857,7 @@ class ReadStore(_StoreBase):
 		task_fields = (
 			"title",
 			"overview",
-			"purpose",
-			"acceptance-criteria",
 			"verification",
-			"risks",
 			"contract",
 			"files",
 		)
@@ -883,10 +877,7 @@ class ReadStore(_StoreBase):
 			task_conditions = {
 				"title": "tasks.title LIKE ? ESCAPE '\\'",
 				"overview": "tasks.overview LIKE ? ESCAPE '\\'",
-				"purpose": "tasks.purpose LIKE ? ESCAPE '\\'",
-				"acceptance-criteria": "tasks.acceptance_criteria LIKE ? ESCAPE '\\'",
 				"verification": "tasks.verification LIKE ? ESCAPE '\\'",
-				"risks": "tasks.risks LIKE ? ESCAPE '\\'",
 				"contract": "EXISTS (SELECT 1 FROM task_contract_steps "
 				"WHERE task_id = tasks.id AND text LIKE ? ESCAPE '\\')",
 				"files": "EXISTS (SELECT 1 FROM task_files "
@@ -914,8 +905,7 @@ class ReadStore(_StoreBase):
 				)
 				task_rows = connection.execute(
 					"SELECT tasks.id, tasks.title, tasks.status, tasks.overview, "
-					"tasks.purpose, tasks.acceptance_criteria, tasks.verification, "
-					"tasks.risks, tasks.updated_at, tasks.position "
+					"tasks.verification, tasks.updated_at, tasks.position "
 					"FROM tasks WHERE "
 					+ task_where
 					+ " ORDER BY tasks.updated_at DESC, tasks.id",

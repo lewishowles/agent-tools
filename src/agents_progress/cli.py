@@ -278,10 +278,7 @@ _COMMAND_SPECS = (
 				choices=(
 					"title",
 					"overview",
-					"purpose",
-					"acceptance-criteria",
 					"verification",
-					"risks",
 					"contract",
 					"files",
 					"description",
@@ -411,11 +408,6 @@ _COMMAND_SPECS = (
 						type=_non_empty_text_argument("--overview"),
 					),
 					_argument(
-						"--purpose",
-						required=True,
-						type=_non_empty_text_argument("--purpose"),
-					),
-					_argument(
 						"--contract-step",
 						dest="contract",
 						required=True,
@@ -433,9 +425,7 @@ _COMMAND_SPECS = (
 						"--split-rationale",
 						type=_non_empty_text_argument("--split-rationale"),
 					),
-					_argument("--acceptance-criteria", default=""),
 					_argument("--verification", default=""),
-					_argument("--risks", default=""),
 					_argument("--release", "--release-id", dest="release_id"),
 					_argument(
 						"--depends-on",
@@ -516,11 +506,6 @@ _COMMAND_SPECS = (
 						type=_non_empty_text_argument("--overview"),
 					),
 					_argument(
-						"--purpose",
-						default=argparse.SUPPRESS,
-						type=_non_empty_text_argument("--purpose"),
-					),
-					_argument(
 						"--contract-step",
 						dest="contract",
 						default=argparse.SUPPRESS,
@@ -539,9 +524,7 @@ _COMMAND_SPECS = (
 						default=argparse.SUPPRESS,
 						type=_non_empty_text_argument("--split-rationale"),
 					),
-					_argument("--acceptance-criteria", default=argparse.SUPPRESS),
 					_argument("--verification", default=argparse.SUPPRESS),
-					_argument("--risks", default=argparse.SUPPRESS),
 					_argument(
 						"--clear-files",
 						action="store_true",
@@ -553,17 +536,7 @@ _COMMAND_SPECS = (
 						default=argparse.SUPPRESS,
 					),
 					_argument(
-						"--clear-acceptance-criteria",
-						action="store_true",
-						default=argparse.SUPPRESS,
-					),
-					_argument(
 						"--clear-verification",
-						action="store_true",
-						default=argparse.SUPPRESS,
-					),
-					_argument(
-						"--clear-risks",
 						action="store_true",
 						default=argparse.SUPPRESS,
 					),
@@ -813,7 +786,6 @@ _TASK_ADD_PROMPT_ARGUMENTS = (
 	_PromptArgument(("--slug",), "short identifier stored on the task", required=True),
 	_PromptArgument(("--title",), "display title", required=True),
 	_PromptArgument(("--overview",), "non-empty task summary", required=True),
-	_PromptArgument(("--purpose",), "non-empty task purpose", required=True),
 	_PromptArgument(
 		("--contract-step",),
 		"non-empty task contract step",
@@ -821,10 +793,11 @@ _TASK_ADD_PROMPT_ARGUMENTS = (
 		repeatable=True,
 	),
 	_PromptArgument(("--file",), "optional file covered by the task", repeatable=True),
-	_PromptArgument(("--split-rationale",), "optional reason for splitting the task"),
-	_PromptArgument(("--acceptance-criteria",), "optional completion conditions"),
+	_PromptArgument(
+		("--split-rationale",),
+		"reason for splitting the task; doctor expects every task to have one",
+	),
 	_PromptArgument(("--verification",), "optional verification instructions"),
-	_PromptArgument(("--risks",), "optional risks"),
 	_PromptArgument(("--release", "--release-id"), "associate the task with a release"),
 	_PromptArgument(
 		("--depends-on", "--dependency"),
@@ -1305,13 +1278,10 @@ def _run_command(
 				slug=args.slug,
 				title=args.title,
 				overview=args.overview,
-				purpose=args.purpose,
 				contract=args.contract,
 				files=args.files,
 				split_rationale=args.split_rationale,
-				acceptance_criteria=args.acceptance_criteria,
 				verification=args.verification,
-				risks=args.risks,
 				release_id=args.release_id,
 				depends_on=args.depends_on,
 				position=args.position,
@@ -1537,18 +1507,13 @@ def _run_task_edit(args: argparse.Namespace, database: Database) -> tuple[object
 		WriteStore(database).task_edit(
 			args.task_id,
 			overview=getattr(args, "overview", None),
-			purpose=getattr(args, "purpose", None),
 			contract=getattr(args, "contract", None),
 			files=getattr(args, "files", None),
 			split_rationale=getattr(args, "split_rationale", None),
-			acceptance_criteria=getattr(args, "acceptance_criteria", None),
 			verification=getattr(args, "verification", None),
-			risks=getattr(args, "risks", None),
 			clear_files=getattr(args, "clear_files", False),
 			clear_split_rationale=getattr(args, "clear_split_rationale", False),
-			clear_acceptance_criteria=getattr(args, "clear_acceptance_criteria", False),
 			clear_verification=getattr(args, "clear_verification", False),
-			clear_risks=getattr(args, "clear_risks", False),
 		),
 		"task edit",
 	)

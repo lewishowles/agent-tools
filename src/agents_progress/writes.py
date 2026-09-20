@@ -296,13 +296,10 @@ class WriteStore(_StoreBase):
 		slug: str,
 		title: str,
 		overview: str,
-		purpose: str = "",
 		contract: Sequence[str] = (),
 		files: Sequence[str] | None = None,
 		split_rationale: str | None = None,
-		acceptance_criteria: str = "",
 		verification: str = "",
-		risks: str = "",
 		release_id: str | None = None,
 		depends_on: Iterable[str] = (),
 		position: int | None = None,
@@ -312,7 +309,6 @@ class WriteStore(_StoreBase):
 		_require_text(slug, "task slug")
 		_require_text(title, "task title")
 		_require_text(overview, "task overview")
-		_require_text(purpose, "task purpose")
 		contract_steps = _normalise_ordered_values(
 			contract, "task contract", required=True
 		)
@@ -370,10 +366,10 @@ class WriteStore(_StoreBase):
 				connection.execute(
 					"""
 						INSERT INTO tasks (
-							id, project_id, slug, release_id, title, overview, purpose,
-							acceptance_criteria, verification, risks, split_rationale, status,
+							id, project_id, slug, release_id, title, overview, verification,
+							split_rationale, status,
 							status_reason, position, created_at, started_at, completed_at, updated_at
-						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+						) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 					""",
 					(
 						task_id,
@@ -382,10 +378,7 @@ class WriteStore(_StoreBase):
 						release_id,
 						title,
 						overview,
-						purpose,
-						acceptance_criteria,
 						verification,
-						risks,
 						split_rationale,
 						status,
 						status_reason,
@@ -557,18 +550,13 @@ class WriteStore(_StoreBase):
 		self,
 		task_id: str,
 		overview: str | None = None,
-		purpose: str | None = None,
 		contract: Sequence[str] | None = None,
 		files: Sequence[str] | None = None,
 		split_rationale: str | None = None,
-		acceptance_criteria: str | None = None,
 		verification: str | None = None,
-		risks: str | None = None,
 		clear_files: bool = False,
 		clear_split_rationale: bool = False,
-		clear_acceptance_criteria: bool = False,
 		clear_verification: bool = False,
-		clear_risks: bool = False,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
 		"""Update selected planning fields without changing task lifecycle data."""
@@ -584,20 +572,15 @@ class WriteStore(_StoreBase):
 
 		values = {
 			"overview": overview,
-			"purpose": purpose,
 			"contract": contract,
 			"files": files,
 			"split_rationale": split_rationale,
-			"acceptance_criteria": acceptance_criteria,
 			"verification": verification,
-			"risks": risks,
 		}
 		clear_fields = {
 			"files": clear_files,
 			"split_rationale": clear_split_rationale,
-			"acceptance_criteria": clear_acceptance_criteria,
 			"verification": clear_verification,
-			"risks": clear_risks,
 		}
 		# Fields whose column is nullable, so clearing them stores NULL rather than empty text.
 		nullable_fields = {"split_rationale"}
@@ -613,7 +596,6 @@ class WriteStore(_StoreBase):
 
 		required_text_labels = {
 			"overview": "task overview",
-			"purpose": "task purpose",
 			"contract": "task contract",
 			"split_rationale": "task split rationale",
 		}

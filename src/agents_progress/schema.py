@@ -11,7 +11,7 @@ from .errors import DatabaseBusyError, MigrationFailedError, StaleSchemaError
 Migration = Callable[[sqlite3.Connection], None]
 
 # the schema version this package writes when creating a database from empty
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 # the newest schema version this package knows how to migrate to
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION
 
@@ -183,6 +183,11 @@ def _split_files(files: str | None) -> list[str]:
 	return [file.strip() for file in files.split(";") if file.strip()]
 
 
+def _split_acceptance_criteria(criteria: str) -> list[str]:
+	"""Split newline-separated acceptance criteria, dropping blank entries."""
+	return [line.strip() for line in criteria.splitlines() if line.strip()]
+
+
 def _migrate_to_version_2(connection: sqlite3.Connection) -> None:
 	"""Move each task's contract and files into ordered tables and add the split rationale.
 
@@ -329,12 +334,50 @@ def _migrate_to_version_4(connection: sqlite3.Connection) -> None:
 		connection.execute("ALTER TABLE tasks DROP COLUMN model_tier")
 
 
+def _migrate_to_version_5(connection: sqlite3.Connection) -> None:
+	"""Merge task purpose and acceptance criteria into the remaining task fields.
+
+	Existing purpose text is added to the end of each task overview. Each non-empty
+	acceptance criterion becomes a contract step after the existing steps. Task risks
+	are dropped.
+	"""
+	task_rows = connection.execute(
+		"SELECT id, overview, purpose, acceptance_criteria FROM tasks"
+	).fetchall()
+	for task_id, overview, purpose, acceptance_criteria in task_rows:
+		if purpose:
+			connection.execute(
+				"UPDATE tasks SET overview = ? WHERE id = ?",
+				("\n\n".join((overview, purpose)), task_id),
+			)
+
+		criteria = _split_acceptance_criteria(acceptance_criteria)
+		if not criteria:
+			continue
+
+		position = connection.execute(
+			"SELECT COALESCE(MAX(position), 0) FROM task_contract_steps WHERE task_id = ?",
+			(task_id,),
+		).fetchone()[0]
+		for criterion in criteria:
+			position += 1
+			connection.execute(
+				"INSERT INTO task_contract_steps (task_id, position, text) VALUES (?, ?, ?)",
+				(task_id, position, criterion),
+			)
+
+	connection.execute("ALTER TABLE tasks DROP COLUMN purpose")
+	connection.execute("ALTER TABLE tasks DROP COLUMN acceptance_criteria")
+	connection.execute("ALTER TABLE tasks DROP COLUMN risks")
+
+
 # maps each supported schema version to the migration that produces it
 MIGRATIONS: dict[int, Migration] = {
 	1: _create_schema,
 	2: _migrate_to_version_2,
 	3: _migrate_to_version_3,
 	4: _migrate_to_version_4,
+	5: _migrate_to_version_5,
 }
 
 
