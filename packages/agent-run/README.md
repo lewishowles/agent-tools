@@ -16,10 +16,14 @@ uv tool install --editable packages/agent-run
 
 ```sh
 agent-run --help
+agent-run --version
 agent-run --json
 agent-run repository
 agent-run repository --json
 ```
+
+Use `agent-run --version` to print the installed version. Add `--json` to get
+the version as JSON.
 
 `agent-run repository` finds the Git repository containing the current working
 directory and assigns it a stable ID. The ID is stored in the clone-local Git

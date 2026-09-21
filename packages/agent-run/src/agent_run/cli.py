@@ -9,6 +9,7 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
+from importlib.metadata import version
 from pathlib import Path
 from typing import NoReturn
 from uuid import uuid4
@@ -137,6 +138,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "-h",
         action="store_true",
         help="Show this help message and exit.",
+    )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Show the installed version and exit.",
     )
     parser.add_argument(
         "--json",
@@ -584,6 +590,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(
             "the -- separator is only valid for the add, edit, or run commands"
         )
+
+    if parsed.version:
+        package_version = version("agent-run")
+
+        if parsed.json:
+            return render_success(
+                json_mode=True,
+                data={"version": package_version},
+            )
+
+        return render_success(json_mode=False, text=f"agent-run {package_version}")
 
     if parsed.command == "repository" and parsed.repository_help:
         repository_help_text = repository_parser.format_help()

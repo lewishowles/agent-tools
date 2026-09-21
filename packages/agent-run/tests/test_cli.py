@@ -65,6 +65,40 @@ def test_json_help_returns_help_data(capsys: pytest.CaptureFixture[str]) -> None
     assert captured.err == ""
 
 
+def test_version_prints_the_installed_package_version(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--version` prints the installed package version and succeeds."""
+    monkeypatch.setattr("agent_run.cli.version", lambda _name: "9.8.7")
+    exit_code = main(["--version"])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.out == "agent-run 9.8.7\n"
+    assert captured.err == ""
+
+
+def test_json_version_returns_version_data(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--version --json` returns the version in a successful JSON envelope."""
+    monkeypatch.setattr("agent_run.cli.version", lambda _name: "9.8.7")
+    exit_code = main(["--version", "--json"])
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert result == {
+        "ok": True,
+        "data": {"version": "9.8.7"},
+    }
+    assert captured.err == ""
+
+
 def test_cli_run_success_supports_text_and_json(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
