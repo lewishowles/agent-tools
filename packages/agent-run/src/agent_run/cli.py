@@ -1334,35 +1334,42 @@ def main(argv: Sequence[str] | None = None) -> int:
             connection = connect_database(database_path)
             try:
                 records = list_all_runs(connection)
-                total_bytes, sizes = measure_log_sizes(
-                    resolve_log_directory(database_path), records
+                now = datetime.now(timezone.utc)
+                total_bytes, sizes, orphan_logs = measure_log_sizes(
+                    resolve_log_directory(database_path), records, now=now
                 )
                 plan = select_prune_candidates(
                     records,
-                    now=datetime.now(timezone.utc),
+                    now=now,
                     sizes=sizes,
                     total_bytes=total_bytes,
+                    orphan_logs=orphan_logs,
                 )
 
                 if parsed.apply:
                     removed_candidates = delete_prune_candidates(
-                        connection, plan.candidates
+                        connection, plan.candidates, plan.logs
                     )
                     remaining_records = list_all_runs(connection)
-                    remaining_total_bytes, _ = measure_log_sizes(
+                    remaining_total_bytes, _, _ = measure_log_sizes(
                         resolve_log_directory(database_path), remaining_records
                     )
                     plan = RetentionPlan(
                         candidates=removed_candidates,
+                        logs=plan.logs,
                         total_bytes=remaining_total_bytes,
                         freed_bytes=sum(
                             candidate.size_bytes for candidate in removed_candidates
-                        ),
+                        )
+                        + sum(candidate.size_bytes for candidate in plan.logs),
                     )
             finally:
                 connection.close()
         except PruneError as error:
             removed_run_ids = [candidate.record.run_id for candidate in error.removed]
+            removed_log_paths = [
+                str(candidate.path) for candidate in error.removed_logs
+            ]
             message = str(error)
 
             if removed_run_ids:
@@ -1370,15 +1377,29 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f" Runs removed before failure: {', '.join(removed_run_ids)}."
                 )
 
+            if removed_log_paths:
+                message += (
+                    f" Logs removed before failure: {', '.join(removed_log_paths)}."
+                )
+
+            if error.target_kind == "run":
+                error_data = {"run_id": error.target}
+            else:
+                error_data = {"path": error.target}
+
+            error_data.update(
+                {
+                    "reason": error.reason,
+                    "removed_runs": removed_run_ids,
+                    "removed_logs": removed_log_paths,
+                }
+            )
+
             return render_error(
                 json_mode=parsed.json,
                 code="environment",
                 message=message,
-                data={
-                    "run_id": error.run_id,
-                    "reason": error.reason,
-                    "removed_runs": removed_run_ids,
-                },
+                data=error_data,
             )
         except (
             NewerSchemaError,
@@ -1870,6 +1891,14 @@ def _retention_plan_record(
             }
             for candidate in plan.candidates
         ],
+        "logs": [
+            {
+                "path": str(candidate.path),
+                "reason": "no saved run",
+                "space_freed_bytes": candidate.size_bytes,
+            }
+            for candidate in plan.logs
+        ],
         "total_log_bytes": plan.total_bytes,
         "space_freed_bytes": plan.freed_bytes,
     }
@@ -1882,15 +1911,25 @@ def _format_retention_plan(plan: RetentionPlan, *, applied: bool = False) -> str
         f"space freed: {plan.freed_bytes} bytes",
     ]
 
-    if not plan.candidates:
+    if not plan.candidates and not plan.logs:
         lines.append("No runs were removed." if applied else "No runs need pruning.")
-    else:
+
+    if plan.candidates:
         lines.append("Runs removed:" if applied else "Runs to remove:")
         lines.extend(
             "run ID: "
             f"{candidate.record.run_id}; reason: {candidate.reason}; "
             f"space freed: {candidate.size_bytes} bytes"
             for candidate in plan.candidates
+        )
+
+    if plan.logs:
+        lines.append("Logs removed:" if applied else "Logs to remove:")
+        lines.extend(
+            "log path: "
+            f"{candidate.path}; reason: no saved run; "
+            f"space freed: {candidate.size_bytes} bytes"
+            for candidate in plan.logs
         )
 
     return "\n".join(lines)

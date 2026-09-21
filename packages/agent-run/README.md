@@ -218,14 +218,16 @@ agent-run prune --apply --json
 The policy selects saved runs older than 7 days. If saved-run logs add up to
 more than 25 MB, it then selects the oldest remaining saved runs until the
 saved-run total would be at or under that limit. The preview covers every saved
-run in the database, including runs from other repositories. The reported total
-log size includes every `.log` file in the shared directory, so logs without a
-saved run record remain visible in that total but never trigger size selection
-or appear as removable runs. The limits are fixed module constants, and there
+run in the database, including runs from other repositories. It also selects
+`.log` files with no saved run record when their file modification time is more
+than 7 days old. Fresh logs without a saved run record remain untouched so an
+active run can finish safely. The reported total log size includes every `.log`
+file in the shared directory. The limits are fixed module constants, and there
 are no settings for changing them.
 
 Both output modes report whether deletion was applied, the total log size after
-deletion, each selected run's reason and space freed, and the total space
-freed. If a run cannot be removed, `--apply` stops at that run. Runs removed
-before the failure stay removed and are named in the error. A run record that
+deletion, each selected run or orphan log's reason and space freed, and the
+total space freed. If a run or log cannot be removed, `--apply` stops at that
+item. Runs removed before the failure stay removed and are named in the error.
+The error also names orphan logs removed before the failure. A run record that
 has already gone is skipped, so applying the command again is safe.

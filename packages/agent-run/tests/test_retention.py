@@ -1,6 +1,7 @@
 """Tests for log retention selection and its preview command."""
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,6 +10,7 @@ from agent_run.cli import main
 from agent_run.database import connect_database
 from agent_run.retention import (
     MAX_LOG_BYTES,
+    RETENTION_DAYS,
     PruneCandidate,
     delete_prune_candidates,
     measure_log_sizes,
@@ -137,10 +139,13 @@ def test_measure_log_sizes_ignores_saved_logs_outside_the_shared_directory(
     inside = _record("inside", datetime.now(timezone.utc), inside_path)
     outside = _record("outside", datetime.now(timezone.utc), outside_path)
 
-    total_bytes, sizes = measure_log_sizes(log_directory, [inside, outside])
+    total_bytes, sizes, orphan_logs = measure_log_sizes(
+        log_directory, [inside, outside]
+    )
 
     assert total_bytes == inside_path.stat().st_size
     assert sizes == {"inside": inside_path.stat().st_size}
+    assert orphan_logs == ()
 
 
 def _save_run(
@@ -219,6 +224,7 @@ def test_prune_previews_all_repositories_and_reports_shared_log_totals(
             "space_freed_bytes": 10,
         },
     ]
+    assert result["data"]["logs"] == []
     assert "orphan" not in captured.out
 
     text_exit_code = main(["prune"])
@@ -228,6 +234,7 @@ def test_prune_previews_all_repositories_and_reports_shared_log_totals(
     assert f"total log size: {MAX_LOG_BYTES + 30} bytes" in text_output.out
     assert "space freed: 10 bytes" in text_output.out
     assert f"run ID: {old_id}; reason: age" in text_output.out
+    assert "Logs to remove:" not in text_output.out
     assert recent_id not in text_output.out
     assert "orphan" not in text_output.out
 
@@ -260,6 +267,11 @@ def test_prune_apply_removes_the_runs_selected_by_preview(
     finally:
         connection.close()
 
+    orphan_path = resolve_log_directory(database_path) / "orphan.log"
+    orphan_path.write_bytes(b"orphan")
+    old_timestamp = (now - timedelta(days=RETENTION_DAYS, seconds=1)).timestamp()
+    os.utime(orphan_path, (old_timestamp, old_timestamp))
+
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
 
@@ -276,10 +288,12 @@ def test_prune_apply_removes_the_runs_selected_by_preview(
     assert preview["data"]["applied"] is False
     assert applied["data"]["applied"] is True
     assert applied["data"]["runs"] == preview["data"]["runs"]
+    assert applied["data"]["logs"] == preview["data"]["logs"]
     assert applied["data"]["space_freed_bytes"] == preview["data"]["space_freed_bytes"]
-    assert preview["data"]["total_log_bytes"] == 30
+    assert preview["data"]["total_log_bytes"] == 36
     assert applied["data"]["total_log_bytes"] == 20
     assert not (resolve_log_directory(database_path) / f"{old_id}.log").exists()
+    assert not orphan_path.exists()
     assert (resolve_log_directory(database_path) / f"{recent_id}.log").exists()
 
     connection = connect_database(database_path)
@@ -320,6 +334,13 @@ def test_prune_apply_reports_removed_runs_in_text(
     finally:
         connection.close()
 
+    orphan_path = resolve_log_directory(database_path) / "orphan.log"
+    orphan_path.write_bytes(b"orphan")
+    old_timestamp = (
+        datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS, seconds=1)
+    ).timestamp()
+    os.utime(orphan_path, (old_timestamp, old_timestamp))
+
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
 
@@ -330,6 +351,11 @@ def test_prune_apply_reports_removed_runs_in_text(
     assert "total log size: 0 bytes" in captured.out
     assert "Runs removed:" in captured.out
     assert f"run ID: {old_id}; reason: age; space freed: 10 bytes" in captured.out
+    assert "Logs removed:" in captured.out
+    assert (
+        f"log path: {orphan_path}; reason: no saved run; space freed: 6 bytes"
+        in captured.out
+    )
     assert captured.err == ""
 
 
@@ -398,6 +424,7 @@ def test_prune_apply_leaves_an_active_run_log_without_a_saved_record(
     assert exit_code == 0
     assert result["data"]["applied"] is True
     assert result["data"]["runs"] == []
+    assert result["data"]["logs"] == []
     assert active_log_path.exists()
 
 
@@ -450,6 +477,58 @@ def test_prune_apply_keeps_the_record_when_unlink_fails(
         assert get_run(connection, run_id).run_id == run_id
     finally:
         connection.close()
+
+
+def test_prune_apply_reports_orphan_logs_removed_before_a_later_failure(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """A failed orphan deletion reports the path and earlier orphan deletions."""
+    database_path = tmp_path / "agent-run.db"
+    connection = connect_database(database_path)
+    connection.close()
+
+    log_directory = resolve_log_directory(database_path)
+    log_directory.mkdir()
+    first_log_path = log_directory / "first-orphan.log"
+    second_log_path = log_directory / "second-orphan.log"
+    first_log_path.write_bytes(b"first")
+    second_log_path.write_bytes(b"second")
+    old_timestamp = (
+        datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS, seconds=1)
+    ).timestamp()
+    os.utime(first_log_path, (old_timestamp, old_timestamp))
+    os.utime(second_log_path, (old_timestamp, old_timestamp))
+
+    original_unlink = Path.unlink
+
+    def fail_on_second_orphan(path: Path, *args, **kwargs) -> None:
+        """Refuse to delete the second orphan while allowing the first normally."""
+        if path == second_log_path:
+            raise PermissionError("orphan log is locked")
+
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_on_second_orphan)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    exit_code = main(["prune", "--apply", "--json"])
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 3
+    assert result["error"]["code"] == "environment"
+    assert result["error"]["data"]["path"] == str(second_log_path)
+    assert "run_id" not in result["error"]["data"]
+    assert result["error"]["data"]["reason"] == "orphan log is locked"
+    assert result["error"]["data"]["removed_runs"] == []
+    assert result["error"]["data"]["removed_logs"] == [str(first_log_path)]
+    assert f'Could not prune log "{second_log_path}"' in result["error"]["message"]
+    assert str(first_log_path) in result["error"]["message"]
+    assert not first_log_path.exists()
+    assert second_log_path.exists()
 
 
 def test_prune_apply_reports_runs_removed_before_a_later_failure(

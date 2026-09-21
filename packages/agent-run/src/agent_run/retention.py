@@ -24,53 +24,64 @@ class PruneCandidate:
 
 
 @dataclass(frozen=True)
+class LogPruneCandidate:
+    """One old log with no saved run record selected by the retention policy."""
+
+    path: Path
+    size_bytes: int
+
+
+@dataclass(frozen=True)
 class RetentionPlan:
-    """The runs the retention policy would remove, with the log size totals."""
+    """The runs and logs the retention policy would remove, with size totals."""
 
     candidates: tuple[PruneCandidate, ...]
+    logs: tuple[LogPruneCandidate, ...]
     total_bytes: int
     freed_bytes: int
 
 
 class PruneError(RuntimeError):
-    """Report a run that could not be removed during retention pruning."""
+    """Report a run or log that could not be removed during pruning."""
 
     def __init__(
         self,
-        run_id: str,
+        target: str,
         reason: str,
         removed: Sequence[PruneCandidate],
+        removed_logs: Sequence[LogPruneCandidate] = (),
+        *,
+        target_kind: str = "run",
     ) -> None:
-        """Store the failed run, its reason, and runs removed before it."""
-        self.run_id = run_id
+        """Store the failed target and items removed before it."""
+        self.target = target
         self.reason = reason
         self.removed = tuple(removed)
-        super().__init__(f'Could not prune run "{run_id}": {reason}')
+        self.removed_logs = tuple(removed_logs)
+        self.target_kind = target_kind
+        super().__init__(f'Could not prune {target_kind} "{target}": {reason}')
 
 
 def measure_log_sizes(
     log_directory: str | Path,
     records: Sequence[RunRecord],
-) -> tuple[int, dict[str, int]]:
-    """Return the shared directory size and the size of each saved run log.
+    *,
+    now: datetime | None = None,
+) -> tuple[int, dict[str, int], tuple[LogPruneCandidate, ...]]:
+    """Return the directory total, saved-run log sizes, and old orphan logs.
 
     The total counts every ``.log`` file in the directory, including logs with
     no saved run, so the preview shows how much space logs really use. The
-    per-run sizes only include saved runs whose log is inside the directory,
-    because those are the only logs pruning can remove.
+    per-run sizes only include saved runs whose log is inside the directory.
+
+    A log with no saved run is only returned for removal once nothing has
+    written to it for ``RETENTION_DAYS``. The run record is saved when the
+    command finishes, so a newer log may belong to a run that is still going.
+    ``now`` defaults to the current time.
     """
     directory = Path(log_directory).expanduser().resolve()
-    total_bytes = 0
-
-    if directory.is_dir():
-        for path in directory.glob("*.log"):
-            try:
-                if path.is_file():
-                    total_bytes += path.stat().st_size
-            except OSError:
-                continue
-
     sizes: dict[str, int] = {}
+    saved_paths: set[Path] = set()
 
     for record in records:
         log_path = record.log_path.expanduser().resolve()
@@ -80,12 +91,42 @@ def measure_log_sizes(
         except ValueError:
             continue
 
+        saved_paths.add(log_path)
+
         try:
             sizes[record.run_id] = log_path.stat().st_size
         except OSError:
             continue
 
-    return total_bytes, sizes
+    current_time = _as_utc(now) if now is not None else datetime.now(timezone.utc)
+    cutoff = current_time - timedelta(days=RETENTION_DAYS)
+    total_bytes = 0
+    orphan_logs: list[LogPruneCandidate] = []
+
+    if directory.is_dir():
+        for path in sorted(directory.glob("*.log")):
+            try:
+                if not path.is_file():
+                    continue
+
+                file_stat = path.stat()
+                total_bytes += file_stat.st_size
+
+                resolved_path = path.resolve()
+                modified_at = datetime.fromtimestamp(
+                    file_stat.st_mtime, tz=timezone.utc
+                )
+            except OSError:
+                continue
+
+            if resolved_path in saved_paths or modified_at >= cutoff:
+                continue
+
+            orphan_logs.append(
+                LogPruneCandidate(path=resolved_path, size_bytes=file_stat.st_size)
+            )
+
+    return total_bytes, sizes, tuple(orphan_logs)
 
 
 def select_prune_candidates(
@@ -94,13 +135,13 @@ def select_prune_candidates(
     now: datetime,
     sizes: Mapping[str, int],
     total_bytes: int,
+    orphan_logs: Sequence[LogPruneCandidate] = (),
 ) -> RetentionPlan:
     """Select old runs, then oldest runs needed to meet the size limit.
 
     The size limit is measured against the saved-run sizes in ``sizes`` only.
-    Logs with no saved run cannot be removed, so counting them could select
-    every run without ever getting under the limit. ``total_bytes`` is passed
-    through to the plan for reporting.
+    Orphan logs are already selected separately by ``measure_log_sizes`` and
+    are passed through to the plan for reporting and deletion.
     """
     current_time = _as_utc(now)
     cutoff = current_time - timedelta(days=RETENTION_DAYS)
@@ -139,32 +180,36 @@ def select_prune_candidates(
 
     return RetentionPlan(
         candidates=tuple(selected),
+        logs=tuple(orphan_logs),
         total_bytes=total_bytes,
-        freed_bytes=freed_bytes,
+        freed_bytes=freed_bytes + sum(log.size_bytes for log in orphan_logs),
     )
 
 
 def delete_prune_candidates(
     connection: sqlite3.Connection,
     candidates: Sequence[PruneCandidate],
+    logs: Sequence[LogPruneCandidate] = (),
 ) -> tuple[PruneCandidate, ...]:
-    """Delete each chosen run's saved record and log, stopping at the first failure.
+    """Delete each chosen run and orphan log, stopping at the first failure.
 
     Each run is deleted in its own transaction. The record is only committed as
     deleted once its log file is gone, so a log that cannot be removed keeps its
     record and the next prune can try again. A log or record that is already
-    missing does not count as a failure.
+    missing does not count as a failure. Orphan logs are deleted after the saved
+    runs because they have no database record to update.
 
     Args:
         connection: Open database connection used to remove run records.
         candidates: Runs selected by ``select_prune_candidates``.
+        logs: Orphan logs selected by ``measure_log_sizes``.
 
     Returns:
         The runs removed during this call, in selection order.
 
     Raises:
         PruneError: If a run record or log cannot be removed. The error keeps
-            the runs removed before the failure.
+            the runs and orphan logs removed before the failure.
     """
     removed: list[PruneCandidate] = []
 
@@ -195,6 +240,24 @@ def delete_prune_candidates(
             raise PruneError(run_id, str(error), removed) from error
 
         removed.append(candidate)
+
+    removed_logs: list[LogPruneCandidate] = []
+
+    for candidate in logs:
+        try:
+            candidate.path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            raise PruneError(
+                str(candidate.path),
+                str(error),
+                removed,
+                removed_logs,
+                target_kind="log",
+            ) from error
+
+        removed_logs.append(candidate)
 
     return tuple(removed)
 
