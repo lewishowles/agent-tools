@@ -44,6 +44,15 @@ def _run_git(root: Path, arguments: Sequence[str]) -> subprocess.CompletedProces
         raise RepositoryError("Git could not be started.") from error
 
 
+def _git_error_message(message: str, stderr: str) -> str:
+    """Add Git's error text to a message when Git printed any."""
+    diagnostic = stderr.strip()
+    if diagnostic:
+        return f"{message} {diagnostic}"
+
+    return message
+
+
 def find_repository_root(start: str | Path | None = None) -> Path:
     """Return the absolute Git root containing ``start``.
 
@@ -88,7 +97,11 @@ def ensure_repository_id(root: str | Path) -> str:
         return result.stdout.strip()
 
     if result.returncode not in (0, 1):
-        raise RepositoryError("Git could not read the local repository ID.")
+        raise RepositoryError(
+            _git_error_message(
+                "Git could not read the local repository ID.", result.stderr
+            )
+        )
 
     repository_id = str(uuid.uuid4())
     result = _run_git(
@@ -96,7 +109,11 @@ def ensure_repository_id(root: str | Path) -> str:
         ["config", "--local", _REPOSITORY_ID_KEY, repository_id],
     )
     if result.returncode != 0:
-        raise RepositoryError("Git could not write the local repository ID.")
+        raise RepositoryError(
+            _git_error_message(
+                "Git could not write the local repository ID.", result.stderr
+            )
+        )
 
     return repository_id
 

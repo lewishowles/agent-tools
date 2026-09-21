@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,57 @@ def test_repository_id_is_stable_across_calls(tmp_path: Path) -> None:
     ).stdout.strip()
 
     assert first_id == second_id == configured_id
+
+
+@pytest.mark.parametrize(
+    ("failure", "stderr", "expected_message"),
+    [
+        ("read", "", "Git could not read the local repository ID."),
+        (
+            "read",
+            " fatal: could not read config \n",
+            "Git could not read the local repository ID. fatal: could not read config",
+        ),
+        ("write", "", "Git could not write the local repository ID."),
+        (
+            "write",
+            " fatal: could not write config \n",
+            "Git could not write the local repository ID. fatal: could not write config",
+        ),
+    ],
+)
+def test_repository_id_errors_include_git_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    stderr: str,
+    expected_message: str,
+) -> None:
+    """Repository ID errors add Git's trimmed error text when Git printed any."""
+    root = tmp_path / "repository"
+    root.mkdir()
+    if failure == "read":
+        git_results = [
+            subprocess.CompletedProcess(["git"], 2, stdout="", stderr=stderr)
+        ]
+    else:
+        git_results = [
+            subprocess.CompletedProcess(["git"], 1, stdout="", stderr=""),
+            subprocess.CompletedProcess(["git"], 2, stdout="", stderr=stderr),
+        ]
+
+    def run_git(
+        _root: Path, _arguments: Sequence[str]
+    ) -> subprocess.CompletedProcess[str]:
+        """Return the next simulated Git result."""
+        return git_results.pop(0)
+
+    monkeypatch.setattr("agent_run.repository._run_git", run_git)
+
+    with pytest.raises(RepositoryError) as error:
+        ensure_repository_id(root)
+
+    assert str(error.value) == expected_message
 
 
 def test_cloned_repository_gets_a_different_id(tmp_path: Path) -> None:
