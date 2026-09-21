@@ -1,4 +1,4 @@
-"""Create private run logs and store immutable run records."""
+"""Create private run logs and store command run records."""
 
 import json
 import os
@@ -15,6 +15,10 @@ LOG_DIRECTORY_NAME = "agent-run-logs"
 
 # Number of recent runs shown when no listing limit is supplied.
 DEFAULT_RUN_LIMIT = 20
+# Status of a run that has not finished yet.
+RUNNING_STATUS = "running"
+# Status of a run whose command has finished.
+FINISHED_STATUS = "finished"
 
 
 class RunNotFoundError(LookupError):
@@ -23,7 +27,7 @@ class RunNotFoundError(LookupError):
 
 @dataclass(frozen=True)
 class RunRecord:
-    """One finished command run, as stored in the database.
+    """One command run, as stored in the database.
 
     Attributes:
         run_id: Random ID that names the run and its log file.
@@ -32,10 +36,13 @@ class RunRecord:
         working_directory: Directory relative to the repository root.
         timeout_seconds: Time allowed before the command was stopped.
         started_at: UTC start time in ISO 8601 format.
-        duration_seconds: Time the command ran for.
-        exit_status: Exit status, negative when a signal ended the command.
+        duration_seconds: Time the command ran for, or ``None`` while running.
+        exit_status: Exit status, negative when a signal ended the command, or
+            ``None`` while running.
         timed_out: Whether the command was stopped at its timeout.
         log_path: File holding the command's combined output.
+        status: Whether the command is still running or has finished.
+        pid: Process ID of the agent-run process that owns the record.
     """
 
     run_id: str
@@ -44,10 +51,12 @@ class RunRecord:
     working_directory: str
     timeout_seconds: float
     started_at: str
-    duration_seconds: float
-    exit_status: int
+    duration_seconds: float | None
+    exit_status: int | None
     timed_out: bool
     log_path: Path
+    status: str = FINISHED_STATUS
+    pid: int | None = None
 
 
 def resolve_log_directory(database_path: str | Path | None = None) -> Path:
@@ -94,7 +103,17 @@ def discard_run_log(log_path: str | Path) -> None:
         resolved_log_path.unlink()
 
 
-def save_run(
+def discard_run(
+    connection: sqlite3.Connection,
+    run_id: str,
+    log_path: str | Path,
+) -> None:
+    """Remove a run record and its empty log after the command did not start."""
+    connection.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+    discard_run_log(log_path)
+
+
+def start_run(
     connection: sqlite3.Connection,
     *,
     run_id: str,
@@ -103,16 +122,10 @@ def save_run(
     working_directory: str,
     timeout_seconds: float,
     started_at: str,
-    duration_seconds: float,
-    exit_status: int,
-    timed_out: bool,
     log_path: str | Path,
+    pid: int,
 ) -> RunRecord:
-    """Save a finished run and return its record.
-
-    Runs are only ever added, never changed, so the caller saves each run once,
-    after the command has ended.
-    """
+    """Save a new running record, which ``finalise_run`` completes."""
     command_arguments = tuple(argv)
     resolved_log_path = Path(log_path).expanduser().resolve()
     record = RunRecord(
@@ -122,10 +135,12 @@ def save_run(
         working_directory=working_directory,
         timeout_seconds=timeout_seconds,
         started_at=started_at,
-        duration_seconds=duration_seconds,
-        exit_status=exit_status,
-        timed_out=timed_out,
+        duration_seconds=None,
+        exit_status=None,
+        timed_out=False,
         log_path=resolved_log_path,
+        status=RUNNING_STATUS,
+        pid=pid,
     )
 
     connection.execute(
@@ -140,8 +155,10 @@ def save_run(
             duration_seconds,
             exit_status,
             timed_out,
-            log_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            log_path,
+            status,
+            pid
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.run_id,
@@ -154,10 +171,37 @@ def save_run(
             record.exit_status,
             int(record.timed_out),
             str(record.log_path),
+            record.status,
+            record.pid,
         ),
     )
 
     return record
+
+
+def finalise_run(
+    connection: sqlite3.Connection,
+    *,
+    run_id: str,
+    duration_seconds: float,
+    exit_status: int,
+    timed_out: bool,
+) -> RunRecord:
+    """Mark a running record finished with the command's final outcome."""
+    connection.execute(
+        """
+        UPDATE runs
+        SET
+            duration_seconds = ?,
+            exit_status = ?,
+            timed_out = ?,
+            status = ?
+        WHERE run_id = ?
+        """,
+        (duration_seconds, exit_status, int(timed_out), FINISHED_STATUS, run_id),
+    )
+
+    return get_run(connection, run_id)
 
 
 def _run_from_row(row: sqlite3.Row | tuple[object, ...]) -> RunRecord:
@@ -173,6 +217,8 @@ def _run_from_row(row: sqlite3.Row | tuple[object, ...]) -> RunRecord:
         exit_status,
         timed_out,
         log_path,
+        status,
+        pid,
     ) = row
 
     return RunRecord(
@@ -182,10 +228,14 @@ def _run_from_row(row: sqlite3.Row | tuple[object, ...]) -> RunRecord:
         working_directory=str(working_directory),
         timeout_seconds=float(timeout_seconds),
         started_at=str(started_at),
-        duration_seconds=float(duration_seconds),
-        exit_status=int(exit_status),
+        duration_seconds=(
+            None if duration_seconds is None else float(duration_seconds)
+        ),
+        exit_status=None if exit_status is None else int(exit_status),
         timed_out=bool(timed_out),
         log_path=Path(str(log_path)),
+        status=str(status),
+        pid=None if pid is None else int(pid),
     )
 
 
@@ -203,7 +253,9 @@ def get_run(connection: sqlite3.Connection, run_id: str) -> RunRecord:
             duration_seconds,
             exit_status,
             timed_out,
-            log_path
+            log_path,
+            status,
+            pid
         FROM runs
         WHERE run_id = ?
         """,
@@ -237,7 +289,9 @@ def list_runs(
             duration_seconds,
             exit_status,
             timed_out,
-            log_path
+            log_path,
+            status,
+            pid
         FROM runs
         WHERE repository_id = ?
         ORDER BY started_at DESC, rowid DESC
@@ -263,7 +317,9 @@ def list_all_runs(connection: sqlite3.Connection) -> tuple[RunRecord, ...]:
             duration_seconds,
             exit_status,
             timed_out,
-            log_path
+            log_path,
+            status,
+            pid
         FROM runs
         ORDER BY started_at ASC, rowid ASC
         """

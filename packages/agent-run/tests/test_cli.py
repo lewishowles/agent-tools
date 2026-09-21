@@ -1,6 +1,7 @@
 """Tests for the agent-run entry point and result output."""
 
 import json
+import os
 import shlex
 import signal
 import subprocess
@@ -329,6 +330,37 @@ def test_cli_run_non_executable_file_removes_empty_log_and_run_record(
         assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
     finally:
         connection.close()
+
+
+def test_cli_run_keeps_the_startup_error_when_discard_run_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A cleanup failure does not replace the original startup error."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    def fail_discard_run(*_arguments: object) -> None:
+        """Raise the cleanup failure that the CLI must ignore."""
+        raise OSError("cleanup unavailable")
+
+    monkeypatch.setattr("agent_run.cli.discard_run", fail_discard_run)
+
+    exit_code = main(
+        ["run", "--timeout", "5", "--json", "--", "missing-agent-run-command"]
+    )
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 3
+    assert result["error"]["code"] == "environment"
+    assert "missing-agent-run-command" in result["error"]["message"]
+    assert "cleanup unavailable" not in result["error"]["message"]
+    assert "Traceback" not in captured.out
+    assert captured.err == ""
 
 
 def test_cli_run_defaults_timeout(
@@ -937,9 +969,20 @@ def test_cli_run_returns_130_after_interrupt(
     root = _initialise_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
-    monkeypatch.setattr(
-        "agent_run.cli.run_command", Mock(side_effect=KeyboardInterrupt)
-    )
+
+    def interrupt_run(*_arguments: object, **_options: object) -> None:
+        connection = connect_database(tmp_path / "agent-run.db")
+        try:
+            row = connection.execute(
+                "SELECT status, pid, duration_seconds, exit_status FROM runs"
+            ).fetchone()
+        finally:
+            connection.close()
+
+        assert row == ("running", os.getpid(), None, None)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("agent_run.cli.run_command", interrupt_run)
 
     exit_code = main(["run", "--timeout", "5", "--", "echo"])
 
@@ -953,11 +996,13 @@ def test_cli_run_returns_130_after_interrupt(
 
     connection = connect_database(tmp_path / "agent-run.db")
     try:
-        row = connection.execute("SELECT exit_status, timed_out FROM runs").fetchone()
+        row = connection.execute(
+            "SELECT status, pid, exit_status, timed_out FROM runs"
+        ).fetchone()
     finally:
         connection.close()
 
-    assert row == (-signal.SIGINT, 0)
+    assert row == ("finished", os.getpid(), -signal.SIGINT, 0)
 
 
 def test_cli_run_json_failure_includes_unrecognised_tail(

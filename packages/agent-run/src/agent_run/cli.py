@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import shlex
 import signal
 import sqlite3
@@ -62,12 +63,13 @@ from agent_run.runs import (
     RunNotFoundError,
     RunRecord,
     create_run_log,
-    discard_run_log,
+    discard_run,
+    finalise_run,
     get_run,
     list_all_runs,
     list_runs,
     resolve_log_directory,
-    save_run,
+    start_run,
 )
 from agent_run.schema import NewerSchemaError
 from agent_run.targets import resolve_file_targets
@@ -775,6 +777,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         connection: sqlite3.Connection | None = None
         log_path: Path | None = None
         run_lock: RunLock | None = None
+        record: RunRecord | None = None
+        # Set once the command has ended, so a failed save afterwards keeps the
+        # running record and its log for prune instead of deleting them.
+        finalising = False
 
         try:
             repository = identify_repository()
@@ -847,6 +853,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             started_at = datetime.now(timezone.utc).isoformat()
             started_monotonic = time.monotonic()
             interrupted = False
+            record = start_run(
+                connection,
+                run_id=run_id,
+                repository_id=repository.id,
+                argv=command_arguments,
+                working_directory=relative_working_directory,
+                timeout_seconds=timeout_seconds,
+                started_at=started_at,
+                log_path=log_path,
+                pid=os.getpid(),
+            )
 
             try:
                 result = run_command(
@@ -868,18 +885,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     log_path=log_path,
                 )
 
-            record = save_run(
+            finalising = True
+            record = finalise_run(
                 connection,
                 run_id=run_id,
-                repository_id=repository.id,
-                argv=result.argv,
-                working_directory=relative_working_directory,
-                timeout_seconds=timeout_seconds,
-                started_at=started_at,
                 duration_seconds=result.duration_seconds,
                 exit_status=result.exit_status,
                 timed_out=result.timed_out,
-                log_path=result.log_path,
             )
         except RunBusyError as error:
             return _busy_command_error(
@@ -888,8 +900,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_id=error.run_id,
             )
         except (RepositoryError, NewerSchemaError, OSError, sqlite3.Error) as error:
-            if log_path is not None:
-                discard_run_log(log_path)
+            if not finalising and connection is not None and log_path is not None:
+                try:
+                    discard_run(connection, run_id, log_path)
+                except (OSError, sqlite3.Error):
+                    # Report the original startup error, not the cleanup failure.
+                    pass
 
             return render_error(
                 json_mode=parsed.json,

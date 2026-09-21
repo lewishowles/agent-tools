@@ -19,9 +19,10 @@ from agent_run.retention import (
 from agent_run.runs import (
     RunRecord,
     create_run_log,
+    finalise_run,
     get_run,
     resolve_log_directory,
-    save_run,
+    start_run,
 )
 
 
@@ -159,7 +160,7 @@ def _save_run(
     """Create one saved run and write the requested number of log bytes."""
     run_id, log_path = create_run_log(database_path)
     log_path.write_bytes(b"x" * size)
-    save_run(
+    start_run(
         connection,
         run_id=run_id,
         repository_id=repository_id,
@@ -167,10 +168,15 @@ def _save_run(
         working_directory=".",
         timeout_seconds=5,
         started_at=started_at.isoformat(),
+        log_path=log_path,
+        pid=os.getpid(),
+    )
+    finalise_run(
+        connection,
+        run_id=run_id,
         duration_seconds=0.1,
         exit_status=0,
         timed_out=False,
-        log_path=log_path,
     )
     return run_id
 

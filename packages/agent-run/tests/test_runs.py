@@ -1,18 +1,21 @@
-"""Tests for private logs and immutable run records."""
+"""Tests for private logs and command run records."""
 
 import os
+import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from agent_run.database import connect_database
 from agent_run.runs import (
+    RUNNING_STATUS,
     RunNotFoundError,
     create_run_log,
+    finalise_run,
     get_run,
     list_runs,
     resolve_log_directory,
-    save_run,
+    start_run,
 )
 
 
@@ -41,14 +44,14 @@ def test_create_run_log_uses_an_allocated_run_id(tmp_path: Path) -> None:
     assert log_path.name == f"{allocated_run_id}.log"
 
 
-def test_save_run_inserts_and_reads_all_record_fields(tmp_path: Path) -> None:
+def test_start_run_inserts_and_reads_all_record_fields(tmp_path: Path) -> None:
     """A saved run can be read back without losing its stored fields."""
     database_path = tmp_path / "agent-run.db"
     connection = connect_database(database_path)
     run_id, log_path = create_run_log(database_path)
 
     try:
-        record = save_run(
+        record = start_run(
             connection,
             run_id=run_id,
             repository_id="repository-id",
@@ -56,16 +59,93 @@ def test_save_run_inserts_and_reads_all_record_fields(tmp_path: Path) -> None:
             working_directory="tools",
             timeout_seconds=5,
             started_at="2026-09-16T12:00:00+00:00",
-            duration_seconds=0.25,
-            exit_status=4,
-            timed_out=False,
             log_path=log_path,
+            pid=1234,
         )
         stored_record = get_run(connection, run_id)
     finally:
         connection.close()
 
     assert stored_record == record
+
+
+def test_finalise_run_updates_a_running_record(tmp_path: Path) -> None:
+    """Finalising a running record stores its outcome and keeps its process ID."""
+    database_path = tmp_path / "agent-run.db"
+    connection = connect_database(database_path)
+    run_id, log_path = create_run_log(database_path)
+
+    try:
+        running_record = start_run(
+            connection,
+            run_id=run_id,
+            repository_id="repository-id",
+            argv=("pytest", "tests"),
+            working_directory="tools",
+            timeout_seconds=5,
+            started_at="2026-09-16T12:00:00+00:00",
+            log_path=log_path,
+            pid=1234,
+        )
+        finished_record = finalise_run(
+            connection,
+            run_id=run_id,
+            duration_seconds=0.25,
+            exit_status=4,
+            timed_out=False,
+        )
+    finally:
+        connection.close()
+
+    assert running_record.status == "running"
+    assert running_record.duration_seconds is None
+    assert running_record.exit_status is None
+    assert finished_record.status == "finished"
+    assert finished_record.pid == 1234
+    assert finished_record.duration_seconds == 0.25
+    assert finished_record.exit_status == 4
+
+
+def test_finalise_run_failure_keeps_the_running_record_and_log(
+    tmp_path: Path,
+) -> None:
+    """A failed finalisation leaves the running record and its log in place."""
+    database_path = tmp_path / "agent-run.db"
+    connection = connect_database(database_path)
+    run_id, log_path = create_run_log(database_path)
+
+    start_run(
+        connection,
+        run_id=run_id,
+        repository_id="repository-id",
+        argv=("pytest", "tests"),
+        working_directory="tools",
+        timeout_seconds=5,
+        started_at="2026-09-16T12:00:00+00:00",
+        log_path=log_path,
+        pid=1234,
+    )
+    connection.close()
+
+    with pytest.raises(sqlite3.Error):
+        finalise_run(
+            connection,
+            run_id=run_id,
+            duration_seconds=0.25,
+            exit_status=4,
+            timed_out=False,
+        )
+
+    connection = connect_database(database_path)
+    try:
+        stored_record = get_run(connection, run_id)
+    finally:
+        connection.close()
+
+    assert stored_record.status == RUNNING_STATUS
+    assert stored_record.duration_seconds is None
+    assert stored_record.exit_status is None
+    assert log_path.exists()
 
 
 def test_get_run_rejects_an_unknown_id(tmp_path: Path) -> None:
@@ -88,7 +168,7 @@ def test_list_runs_returns_one_repository_newest_first(tmp_path: Path) -> None:
     other_id, other_log_path = create_run_log(database_path)
 
     try:
-        save_run(
+        start_run(
             connection,
             run_id=first_id,
             repository_id="repository-id",
@@ -96,12 +176,10 @@ def test_list_runs_returns_one_repository_newest_first(tmp_path: Path) -> None:
             working_directory=".",
             timeout_seconds=5,
             started_at="2026-09-16T12:00:00+00:00",
-            duration_seconds=0.25,
-            exit_status=0,
-            timed_out=False,
             log_path=first_log_path,
+            pid=1234,
         )
-        save_run(
+        start_run(
             connection,
             run_id=second_id,
             repository_id="repository-id",
@@ -109,12 +187,10 @@ def test_list_runs_returns_one_repository_newest_first(tmp_path: Path) -> None:
             working_directory=".",
             timeout_seconds=5,
             started_at="2026-09-16T13:00:00+00:00",
-            duration_seconds=0.5,
-            exit_status=1,
-            timed_out=False,
             log_path=second_log_path,
+            pid=1234,
         )
-        save_run(
+        start_run(
             connection,
             run_id=other_id,
             repository_id="other-repository-id",
@@ -122,10 +198,8 @@ def test_list_runs_returns_one_repository_newest_first(tmp_path: Path) -> None:
             working_directory=".",
             timeout_seconds=5,
             started_at="2026-09-16T14:00:00+00:00",
-            duration_seconds=0.75,
-            exit_status=0,
-            timed_out=False,
             log_path=other_log_path,
+            pid=1234,
         )
 
         records = list_runs(connection, "repository-id")

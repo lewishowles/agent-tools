@@ -80,8 +80,8 @@ def test_commands_table_is_created_by_second_migration(tmp_path: Path) -> None:
     ]
 
 
-def test_existing_commands_gain_an_optional_timeout_column(tmp_path: Path) -> None:
-    """Opening an existing database adds a nullable command timeout."""
+def test_existing_database_gains_new_command_and_run_fields(tmp_path: Path) -> None:
+    """Opening an existing database migrates command and run records."""
     database_path = tmp_path / "agent-run.db"
 
     with sqlite3.connect(database_path) as connection:
@@ -99,6 +99,26 @@ def test_existing_commands_gain_an_optional_timeout_column(tmp_path: Path) -> No
                 created_at TEXT NOT NULL,
                 UNIQUE (repository_id, name)
             );
+            CREATE TABLE runs (
+                run_id TEXT PRIMARY KEY,
+                repository_id TEXT NOT NULL,
+                argv TEXT NOT NULL,
+                working_directory TEXT NOT NULL,
+                timeout_seconds REAL NOT NULL,
+                started_at TEXT NOT NULL,
+                duration_seconds REAL NOT NULL,
+                exit_status INTEGER NOT NULL,
+                timed_out INTEGER NOT NULL,
+                log_path TEXT NOT NULL
+            );
+            INSERT INTO runs (
+                run_id, repository_id, argv, working_directory,
+                timeout_seconds, started_at, duration_seconds, exit_status,
+                timed_out, log_path
+            ) VALUES (
+                'legacy-run', 'repository-id', '["echo"]', '.', 5,
+                '2026-01-01T00:00:00+00:00', 0.25, 0, 0, '/tmp/legacy.log'
+            );
             INSERT INTO schema_migrations (version, applied_at)
             VALUES
                 (1, '2026-01-01T00:00:00+00:00'),
@@ -115,15 +135,20 @@ def test_existing_commands_gain_an_optional_timeout_column(tmp_path: Path) -> No
         timeout, manual = connection.execute(
             "SELECT timeout_seconds, manual FROM commands WHERE name = 'test'"
         ).fetchone()
+        status, pid = connection.execute(
+            "SELECT status, pid FROM runs WHERE run_id = 'legacy-run'"
+        ).fetchone()
     finally:
         connection.close()
 
     assert timeout is None
     assert manual == 0
+    assert status == "finished"
+    assert pid is None
 
 
 def test_runs_table_is_created_by_third_migration(tmp_path: Path) -> None:
-    """The run migration creates all fields needed for immutable records."""
+    """The run migration creates all fields needed for saved records."""
     database_path = tmp_path / "agent-run.db"
 
     connection = connect_database(database_path)
@@ -143,6 +168,8 @@ def test_runs_table_is_created_by_third_migration(tmp_path: Path) -> None:
         "exit_status",
         "timed_out",
         "log_path",
+        "status",
+        "pid",
     ]
 
 

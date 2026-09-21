@@ -41,7 +41,7 @@ def _create_commands(connection: sqlite3.Connection) -> None:
 
 
 def _create_runs(connection: sqlite3.Connection) -> None:
-    """Create the table that stores immutable command run records."""
+    """Create the table that stores command run records."""
     connection.execute(
         """
         CREATE TABLE runs (
@@ -58,6 +58,63 @@ def _create_runs(connection: sqlite3.Connection) -> None:
         )
         """
     )
+
+
+def _upgrade_runs(connection: sqlite3.Connection) -> None:
+    """Allow run records to be saved while their command is still running."""
+    connection.execute(
+        """
+        CREATE TABLE runs_new (
+            run_id TEXT PRIMARY KEY,
+            repository_id TEXT NOT NULL,
+            argv TEXT NOT NULL,
+            working_directory TEXT NOT NULL,
+            timeout_seconds REAL NOT NULL,
+            started_at TEXT NOT NULL,
+            duration_seconds REAL,
+            exit_status INTEGER,
+            timed_out INTEGER NOT NULL,
+            log_path TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'finished'
+                CHECK (status IN ('running', 'finished')),
+            pid INTEGER
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO runs_new (
+            run_id,
+            repository_id,
+            argv,
+            working_directory,
+            timeout_seconds,
+            started_at,
+            duration_seconds,
+            exit_status,
+            timed_out,
+            log_path,
+            status,
+            pid
+        )
+        SELECT
+            run_id,
+            repository_id,
+            argv,
+            working_directory,
+            timeout_seconds,
+            started_at,
+            duration_seconds,
+            exit_status,
+            timed_out,
+            log_path,
+            'finished',
+            NULL
+        FROM runs
+        """
+    )
+    connection.execute("DROP TABLE runs")
+    connection.execute("ALTER TABLE runs_new RENAME TO runs")
 
 
 def _add_command_timeout(connection: sqlite3.Connection) -> None:
@@ -88,6 +145,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _add_command_timeout,
     _add_command_capability,
     _add_command_manual,
+    _upgrade_runs,
 )
 # Newest schema version this release understands.
 LATEST_SCHEMA_VERSION = len(MIGRATIONS)
