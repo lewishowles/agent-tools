@@ -2028,7 +2028,7 @@ def _format_run(result: RunResult, record: RunRecord, summary: Sequence[str]) ->
     )
     summary_text = "\n".join(summary)
 
-    return f"{result_text}\n{summary_text}\nlog path: {record.log_path}"
+    return f"{result_text}\n{summary_text}\nLog path: {record.log_path}"
 
 
 if __name__ == "__main__":

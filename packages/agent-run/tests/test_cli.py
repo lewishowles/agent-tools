@@ -122,11 +122,11 @@ def test_cli_run_success_supports_text_and_json(
     assert "out\nerr\n" in text_output.out
     assert "Command completed" in text_output.out
     assert "Run ID" in text_output.out
-    assert "log path" in text_output.out
+    assert "Log path" in text_output.out
     assert (
         text_output.out.index("Command completed")
         < text_output.out.index("out\nerr\n")
-        < text_output.out.index("log path")
+        < text_output.out.index("Log path")
     )
     assert text_output.err == ""
 
