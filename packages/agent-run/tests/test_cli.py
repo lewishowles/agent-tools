@@ -85,10 +85,15 @@ def test_cli_run_success_supports_text_and_json(
     text_output = capsys.readouterr()
 
     assert text_exit_code == 0
-    assert "out\nerr\n" not in text_output.out
+    assert "out\nerr\n" in text_output.out
     assert "Command completed" in text_output.out
     assert "Run ID" in text_output.out
     assert "log path" in text_output.out
+    assert (
+        text_output.out.index("Command completed")
+        < text_output.out.index("out\nerr\n")
+        < text_output.out.index("log path")
+    )
     assert text_output.err == ""
 
     json_exit_code = main(["run", "--timeout", "5", "--json", "--", *command])
@@ -103,9 +108,35 @@ def test_cli_run_success_supports_text_and_json(
     assert result["data"]["timed_out"] is False
     assert result["data"]["duration_seconds"] >= 0
     assert result["data"]["run_id"]
+    assert result["data"]["summary"] == ["out", "err"]
     log_path = Path(result["data"]["log_path"])
     assert log_path.read_text() == "out\nerr\n"
     assert json_output.err == ""
+
+
+def test_cli_run_success_uses_fallback_when_log_cannot_be_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A successful run reports a placeholder summary when its log is unreadable."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    def unreadable_log(_path: Path) -> bytes:
+        raise OSError("log unavailable")
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable_log)
+
+    exit_code = main(["run", "--json", "--", sys.executable, "-c", "print('passed')"])
+    output = capsys.readouterr()
+    result = json.loads(output.out)
+
+    assert exit_code == 0
+    assert result["ok"] is True
+    assert result["data"]["summary"] == ["Output could not be read."]
+    assert output.err == ""
 
 
 def test_cli_show_keeps_a_long_log_path_on_one_line(

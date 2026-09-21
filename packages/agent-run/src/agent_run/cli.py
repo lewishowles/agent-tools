@@ -37,6 +37,7 @@ from agent_run.execution import DEFAULT_TIMEOUT_SECONDS, RunResult, run_command
 from agent_run.failures import (
     Failure,
     FailureReport,
+    summarise_output,
 )
 from agent_run.locking import RunBusyError, RunLock, acquire_run_lock
 from agent_run.output import (
@@ -909,8 +910,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             failure_message = f"Command exited with status {result.exit_status}."
 
         if failure_message is None:
+            try:
+                log_text = record.log_path.read_bytes().decode(
+                    "utf-8", errors="replace"
+                )
+            except OSError:
+                summary = ["Output could not be read."]
+            else:
+                summary = summarise_output(log_text)
+
             data = _run_record(result, record, resolved_file_paths)
-            text = _format_run(result, record)
+            data["summary"] = summary
+            text = _format_run(result, record, summary)
 
             if parsed.json:
                 return render_success(json_mode=True, data=data)
@@ -1988,7 +1999,7 @@ def _format_failure_line(failure: Failure) -> str:
     return f"{location}: {failure.title}" if location else failure.title
 
 
-def _format_run(result: RunResult, record: RunRecord) -> str:
+def _format_run(result: RunResult, record: RunRecord, summary: Sequence[str]) -> str:
     """Format one human-readable result block for a completed command."""
     result_text = render_command_result(
         result="success",
@@ -1998,8 +2009,9 @@ def _format_run(result: RunResult, record: RunRecord) -> str:
         duration=f"{result.duration_seconds:.3f}s",
         detail=f"Run ID: {record.run_id}",
     )
+    summary_text = "\n".join(summary)
 
-    return f"{result_text}\nlog path: {record.log_path}"
+    return f"{result_text}\n{summary_text}\nlog path: {record.log_path}"
 
 
 if __name__ == "__main__":

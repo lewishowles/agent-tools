@@ -2,7 +2,8 @@
 
 from collections.abc import Sequence
 
-from agent_run.failures import Failure, FailureReport
+import pytest
+from agent_run.failures import Failure, FailureReport, summarise_output
 from agent_run.readers import read_failure_report
 
 
@@ -44,6 +45,41 @@ def _failure(detail: tuple[str, ...] = ()) -> Failure:
         title="AssertionError",
         detail=detail,
     )
+
+
+@pytest.mark.parametrize(
+    ("log_text", "expected"),
+    [
+        (
+            (
+                "============================= test session starts =============================\n"
+                "collected 176 items\n\n"
+                "====================== 176 passed in 0.42s ======================\n"
+            ),
+            [
+                "============================= test session starts =============================",
+                "collected 176 items",
+                "====================== 176 passed in 0.42s ======================",
+            ],
+        ),
+        ("All checks passed!\n", ["All checks passed!"]),
+        ("first\n\nsecond\n\n\n", ["first", "second"]),
+        ("\x1b[32mpassed\x1b[0m\n", ["passed"]),
+        ("", ["No output."]),
+    ],
+)
+def test_summarise_output_returns_bounded_clean_lines(
+    log_text: str, expected: list[str]
+) -> None:
+    """Summaries keep useful test and lint output without terminal colour codes."""
+    assert summarise_output(log_text) == expected
+
+
+def test_summarise_output_keeps_only_the_last_eight_non_blank_lines() -> None:
+    """Long command output is bounded to its final eight lines."""
+    log_text = "\n".join(f"line {index}" for index in range(10))
+
+    assert summarise_output(log_text) == [f"line {index}" for index in range(2, 10)]
 
 
 def test_read_failure_report_uses_the_first_matching_reader(monkeypatch) -> None:

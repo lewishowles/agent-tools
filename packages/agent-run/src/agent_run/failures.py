@@ -1,5 +1,6 @@
-"""Store bounded failure models and reader contracts."""
+"""Store bounded failure models, success summaries, and reader contracts."""
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -12,6 +13,27 @@ MAX_ADDITIONAL_FAILURES = 20
 
 # Log lines shown when no reader recognises the output.
 MAX_TAIL_LINES = 15
+
+# Log lines shown after a successful run.
+MAX_SUMMARY_LINES = 8
+
+# Terminal colour escape sequences removed from captured output.
+ANSI_SGR_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def summarise_output(log_text: str) -> list[str]:
+    """Return the last eight non-blank log lines, without terminal colour codes.
+
+    Agents use these lines to confirm what a successful command did, such as
+    how many tests ran. Empty or whitespace-only output returns
+    ["No output."].
+    """
+    clean = ANSI_SGR_PATTERN.sub("", log_text).strip()
+    if not clean:
+        return ["No output."]
+
+    lines = [line for line in clean.splitlines() if line.strip()]
+    return lines[-MAX_SUMMARY_LINES:]
 
 
 @dataclass(frozen=True)

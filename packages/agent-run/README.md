@@ -150,6 +150,10 @@ and tracked files deleted from disk are excluded. Each pattern's matches are
 sorted, all targets must be regular files inside the repository, and targets
 are reported relative to the command's working directory.
 
+A successful run also shows the last eight non-blank lines of its output, so
+you can see what it did, such as how many tests ran. JSON output returns these
+lines as `summary` in `data`.
+
 Failures from pytest, ruff, and Vitest include the first failure's
 source location, title, and bounded detail. Up to 20 further failures are shown
 as one-line entries, with a count for anything hidden by the limit. The first
