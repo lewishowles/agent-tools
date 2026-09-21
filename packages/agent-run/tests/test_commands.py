@@ -363,10 +363,10 @@ def test_cli_add_and_list_support_text_and_json(
     add_output = capsys.readouterr()
 
     assert add_exit_code == 0
-    assert "name: build" in add_output.out
-    assert "working directory: scripts" in add_output.out
-    assert "manual: true" in add_output.out
-    assert 'argv: ["make", "all"]' in add_output.out
+    assert "name               build" in add_output.out
+    assert "working directory  scripts" in add_output.out
+    assert "manual             true" in add_output.out
+    assert 'argv               ["make", "all"]' in add_output.out
     assert add_output.err == ""
 
     list_exit_code = main(["list", "--json"])
@@ -505,9 +505,9 @@ def test_cli_edit_rename_and_remove_support_text_and_json(
     rename_output = capsys.readouterr()
 
     assert rename_exit_code == 0
-    assert "name: check" in rename_output.out
-    assert "working directory: scripts" in rename_output.out
-    assert 'argv: ["make", "all"]' in rename_output.out
+    assert "name               check" in rename_output.out
+    assert "working directory  scripts" in rename_output.out
+    assert 'argv               ["make", "all"]' in rename_output.out
     assert rename_output.err == ""
 
     remove_exit_code = main(["remove", "check", "--json"])
@@ -713,8 +713,8 @@ def test_cli_add_preserves_command_arguments_starting_with_double_dash(
     captured = capsys.readouterr()
 
     assert exit_code == 0
-    assert captured.out.startswith("name: build")
-    assert 'argv: ["--", "x"]' in captured.out
+    assert captured.out.startswith("name               build")
+    assert 'argv               ["--", "x"]' in captured.out
     assert captured.err == ""
 
 
@@ -734,8 +734,8 @@ def test_cli_add_accepts_abbreviated_cwd_option(
     captured = capsys.readouterr()
 
     assert exit_code == 0
-    assert "working directory: tools" in captured.out
-    assert 'argv: ["x"]' in captured.out
+    assert "working directory  tools" in captured.out
+    assert 'argv               ["x"]' in captured.out
     assert captured.err == ""
 
 
@@ -754,8 +754,8 @@ def test_cli_add_keeps_json_flag_in_command_arguments(
     captured = capsys.readouterr()
 
     assert exit_code == 0
-    assert captured.out.startswith("name: a")
-    assert 'argv: ["echo", "--json"]' in captured.out
+    assert captured.out.startswith("name               a")
+    assert 'argv               ["echo", "--json"]' in captured.out
     assert captured.err == ""
 
 

@@ -18,11 +18,15 @@ name = "agent-run"
 version = "0.1.0"
 source = { editable = "packages/agent-run" }
 dependencies = [
+    { name = "lewishowles-cli-style" },
     { name = "questionary" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "questionary", specifier = ">=2.1.1" }]
+requires-dist = [
+    { name = "lewishowles-cli-style", specifier = ">=0.15.0" },
+    { name = "questionary", specifier = ">=2.1.1" },
+]
 
 [[package]]
 name = "colorama"
@@ -40,6 +44,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
+]
+
+[[package]]
+name = "lewishowles-cli-style"
+version = "0.15.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5d/5d/55c916ca77013a7373cd78986f5b9910cb9ae37c2bc6cfce6e607c39ccae/lewishowles_cli_style-0.15.0.tar.gz", hash = "sha256:59c765cd0fcc6e7a35048956647745ea32fbd8c2268f437c113095dd7ddf3415", size = 5501, upload-time = "2026-09-20T14:40:45.831Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a5/42/eeef27d0a9dbb7c85d536e7352b72938b7f85208cecaada1fd4d1010180d/lewishowles_cli_style-0.15.0-py3-none-any.whl", hash = "sha256:b01442cab4a414c674523bb7dfdfec2ed21c074ea9afd0a165f6cedc8046c1e0", size = 6701, upload-time = "2026-09-20T14:40:44.654Z" },
 ]
 
 [[package]]

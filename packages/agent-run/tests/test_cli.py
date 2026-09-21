@@ -11,11 +11,13 @@ from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
-from agent_run.cli import main
+from agent_run.cli import _format_failure_report, main
 from agent_run.database import connect_database
+from agent_run.failures import Failure, FailureReport
 from agent_run.locking import acquire_run_lock
-from agent_run.output import render_error, render_success
+from agent_run.output import render_command_result, render_error, render_success
 from agent_run.repository import identify_repository
+from cli_style import CliStyleNotFoundError
 
 
 def _initialise_repository(path: Path) -> Path:
@@ -84,9 +86,9 @@ def test_cli_run_success_supports_text_and_json(
 
     assert text_exit_code == 0
     assert "out\nerr\n" not in text_output.out
-    assert "exit status: 0" in text_output.out
-    assert "run ID:" in text_output.out
-    assert "log path:" in text_output.out
+    assert "Command completed" in text_output.out
+    assert "Run ID" in text_output.out
+    assert "log path" in text_output.out
     assert text_output.err == ""
 
     json_exit_code = main(["run", "--timeout", "5", "--json", "--", *command])
@@ -104,6 +106,34 @@ def test_cli_run_success_supports_text_and_json(
     log_path = Path(result["data"]["log_path"])
     assert log_path.read_text() == "out\nerr\n"
     assert json_output.err == ""
+
+
+def test_cli_show_keeps_a_long_log_path_on_one_line(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The saved log path remains copyable when it is long and contains spaces."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    log_parent = tmp_path / ("long log directory " + "x" * 80)
+    log_parent.mkdir()
+    database_path = log_parent / "agent run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    exit_code = main(["run", "--json", "--", sys.executable, "-c", "print('passed')"])
+    run_output = capsys.readouterr()
+    run_result = json.loads(run_output.out)
+    run_id = run_result["data"]["run_id"]
+    expected_log_path = run_result["data"]["log_path"]
+
+    assert exit_code == 0
+
+    show_exit_code = main(["show", run_id])
+    show_output = capsys.readouterr()
+
+    assert show_exit_code == 0
+    assert f"log path: {expected_log_path}\n" in show_output.out
 
 
 def test_cli_run_maps_failures_to_contract_errors(
@@ -507,7 +537,7 @@ def test_cli_add_auto_marks_browser_runner_and_edit_can_remove_mark(
     assert main(["add", "browser", "--", "npx", "playwright", "test"]) == 0
     add_output = capsys.readouterr()
 
-    assert "manual: true" in add_output.out
+    assert "manual             true" in add_output.out
 
     assert (
         main(
@@ -548,7 +578,7 @@ def test_cli_edit_replacement_auto_marks_browser_runner_unless_overridden(
     assert main(["edit", "browser", "--", "playwright", "test"]) == 0
     marked_output = capsys.readouterr()
 
-    assert "manual: true" in marked_output.out
+    assert "manual             true" in marked_output.out
 
     assert (
         main(
@@ -565,7 +595,7 @@ def test_cli_edit_replacement_auto_marks_browser_runner_unless_overridden(
     )
     overridden_output = capsys.readouterr()
 
-    assert "manual: false" in overridden_output.out
+    assert "manual             false" in overridden_output.out
 
 
 def test_cli_detect_add_marks_browser_runner_script_manual(
@@ -638,7 +668,7 @@ def test_cli_named_file_list_run_appends_relative_files(
     list_output = capsys.readouterr()
 
     assert list_exit_code == 0
-    assert "capability: file-list" in list_output.out
+    assert "capability         file-list" in list_output.out
 
     exit_code = main(
         [
@@ -1022,8 +1052,8 @@ raise SystemExit(1)
     runs_text_output = capsys.readouterr()
 
     assert runs_text_exit_code == 0
-    assert f"run ID: {run_id}" in runs_text_output.out
-    assert f'command: ["{command_path}"]' in runs_text_output.out
+    assert f"run ID             {run_id}" in runs_text_output.out
+    assert command_path.name in runs_text_output.out
 
     show_exit_code = main(["show", run_id, "--json"])
     show_output = capsys.readouterr()
@@ -1039,11 +1069,13 @@ raise SystemExit(1)
     show_text_output = capsys.readouterr()
 
     assert show_text_exit_code == 0
-    assert f"run ID: {run_id}" in show_text_output.out
-    assert f'command: ["{command_path}"]' in show_text_output.out
-    assert "exit status: 1" in show_text_output.out
-    assert "duration:" in show_text_output.out
-    assert "log path:" in show_text_output.out
+    assert f"run ID             {run_id}" in show_text_output.out
+    assert command_path.name in show_text_output.out
+    assert "exit status        1" in show_text_output.out
+    assert "timeout" in show_text_output.out
+    assert "5 seconds" in show_text_output.out
+    assert "duration" in show_text_output.out
+    assert "log path" in show_text_output.out
 
     log_exit_code = main(["log", run_id])
     log_output = capsys.readouterr()
@@ -1195,7 +1227,7 @@ def test_cli_runs_text_reports_no_runs(
     captured = capsys.readouterr()
 
     assert exit_code == 0
-    assert captured.out == "No runs recorded.\n"
+    assert captured.out == "- No runs recorded\n"
     assert captured.err == ""
 
 
@@ -1297,6 +1329,84 @@ def test_text_mode_renders_result() -> None:
     assert exit_code == 0
     assert stdout.getvalue() == "Ready\n"
     assert stderr.getvalue() == ""
+
+
+def test_cli_style_text_renderer_uses_plain_fixed_width_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Text renderers disable colour and use the shared fixed width."""
+    options: dict[str, object] = {}
+
+    def fake_command_result(**kwargs: object) -> str:
+        options.update(kwargs)
+        return "rendered"
+
+    monkeypatch.setattr("agent_run.output.command_result", fake_command_result)
+    monkeypatch.setattr(
+        "agent_run.output._RENDER_OPTIONS",
+        {"plain": True, "width": 80, "raise_on_missing": False},
+    )
+
+    rendered = render_command_result(
+        result="success",
+        summary="Command completed",
+        command="echo ok",
+        exit_code=0,
+        duration="0.001s",
+        detail="Run ID: run-1",
+    )
+
+    assert rendered == "rendered"
+    assert options["plain"] is True
+    assert options["width"] == 80
+    assert options["raise_on_missing"] is False
+
+
+def test_cli_style_text_renderer_falls_back_without_binary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Text rendering still returns plain output when the binary is unavailable."""
+
+    def missing_binary(binary: str) -> str:
+        raise CliStyleNotFoundError(f"missing: {binary}")
+
+    monkeypatch.setattr("cli_style.core.resolve_binary", missing_binary)
+
+    rendered = render_command_result(
+        result="success",
+        summary="Command completed",
+        command="echo ok",
+        exit_code=0,
+        duration="0.001s",
+        detail="Run ID: run-1",
+    )
+
+    assert "command: echo ok" in rendered
+    assert "summary: Command completed" in rendered
+
+
+def test_failure_text_drops_the_repeated_source_location() -> None:
+    """Failure text keeps the location in the heading only once."""
+    failure = Failure(
+        path="tests/example.py",
+        line=4,
+        column=None,
+        title="AssertionError",
+        detail=("E       values differ", "tests/example.py:4: AssertionError"),
+    )
+    report = FailureReport(
+        recognised=True,
+        first=failure,
+        more=(),
+        hidden_count=0,
+        truncated=False,
+        tail=(),
+    )
+
+    rendered = _format_failure_report(report)
+
+    assert rendered.count("tests/example.py:4") == 1
+    assert "E       values differ" in rendered
 
 
 def test_json_mode_renders_result() -> None:

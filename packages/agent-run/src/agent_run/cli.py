@@ -39,7 +39,13 @@ from agent_run.failures import (
     FailureReport,
 )
 from agent_run.locking import RunBusyError, RunLock, acquire_run_lock
-from agent_run.output import render_error, render_success
+from agent_run.output import (
+    render_command_result,
+    render_empty_state,
+    render_error,
+    render_row_group,
+    render_success,
+)
 from agent_run.readers import read_failure_report
 from agent_run.repository import RepositoryError, identify_repository
 from agent_run.retention import (
@@ -896,8 +902,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if interrupted:
             failure_message = "Command interrupted."
         elif result.timed_out:
-            unit = "second" if timeout_seconds == 1 else "seconds"
-            failure_message = f"Command killed after {timeout_seconds:g} {unit}."
+            failure_message = (
+                f"Command killed after {_format_timeout(timeout_seconds)}."
+            )
         elif result.exit_status != 0:
             failure_message = f"Command exited with status {result.exit_status}."
 
@@ -1571,26 +1578,34 @@ def _busy_command_error(*, json_mode: bool, name: str, run_id: str) -> int:
 
 def _format_command(command: Command) -> str:
     """Format one named command for human-readable output."""
-    return "\n".join(
+    timeout = (
+        "default"
+        if command.timeout_seconds is None
+        else _format_timeout(command.timeout_seconds)
+    )
+
+    return render_row_group(
         [
-            f"name: {command.name}",
-            f"working directory: {command.working_directory}",
-            f"capability: {command.capability}",
-            f"manual: {str(command.manual).lower()}",
-            (
-                "timeout: default"
-                if command.timeout_seconds is None
-                else f"timeout: {command.timeout_seconds:g}"
-            ),
-            f"argv: {json.dumps(list(command.argv))}",
+            {"label": "name", "value": command.name},
+            {"label": "working directory", "value": command.working_directory},
+            {"label": "capability", "value": command.capability},
+            {"label": "manual", "value": str(command.manual).lower()},
+            {"label": "timeout", "value": timeout},
+            {"label": "argv", "value": json.dumps(list(command.argv))},
         ]
     )
+
+
+def _format_timeout(timeout_seconds: float) -> str:
+    """Format a timeout value with the unit shown to a human."""
+    unit = "second" if timeout_seconds == 1 else "seconds"
+    return f"{timeout_seconds:g} {unit}"
 
 
 def _format_commands(commands: Sequence[Command]) -> str:
     """Format named commands as separated human-readable records."""
     if not commands:
-        return "No named commands registered."
+        return render_empty_state(title="No named commands registered")
 
     return "\n\n".join(_format_command(command) for command in commands)
 
@@ -1787,25 +1802,26 @@ def _saved_run_record(record: RunRecord) -> dict[str, object]:
 
 def _format_saved_run(record: RunRecord) -> str:
     """Format one stored run record for human-readable output."""
-    return "\n".join(
+    rows = render_row_group(
         [
-            f"run ID: {record.run_id}",
-            f"command: {json.dumps(list(record.argv))}",
-            f"working directory: {record.working_directory}",
-            f"timeout: {record.timeout_seconds:g}",
-            f"started at: {record.started_at}",
-            f"exit status: {record.exit_status}",
-            f"timed out: {str(record.timed_out).lower()}",
-            f"duration: {record.duration_seconds:.3f}s",
-            f"log path: {record.log_path}",
+            {"label": "run ID", "value": record.run_id},
+            {"label": "command", "value": json.dumps(list(record.argv))},
+            {"label": "working directory", "value": record.working_directory},
+            {"label": "timeout", "value": _format_timeout(record.timeout_seconds)},
+            {"label": "started at", "value": record.started_at},
+            {"label": "exit status", "value": record.exit_status},
+            {"label": "timed out", "value": str(record.timed_out).lower()},
+            {"label": "duration", "value": f"{record.duration_seconds:.3f}s"},
         ]
     )
+
+    return f"{rows}\nlog path: {record.log_path}"
 
 
 def _format_runs(records: Sequence[RunRecord]) -> str:
     """Format saved runs for text output, one block per run, or say there are none."""
     if not records:
-        return "No runs recorded."
+        return render_empty_state(title="No runs recorded")
 
     return "\n\n".join(_format_saved_run(record) for record in records)
 
@@ -1923,10 +1939,14 @@ def _format_failure_report(report: FailureReport) -> str:
         )
 
     lines = ["First failure:", _format_failure_line(report.first)]
-    lines.extend(report.first.detail)
+    lines.extend(
+        line
+        for line in report.first.detail
+        if not _is_repeated_failure_location(line, report.first)
+    )
 
     if report.more:
-        lines.extend(["", "Additional failures:"])
+        lines.extend(["Additional failures:"])
         lines.extend(_format_failure_line(failure) for failure in report.more)
 
     if report.hidden_count:
@@ -1938,6 +1958,19 @@ def _format_failure_report(report: FailureReport) -> str:
         lines.append("Some failure details were truncated by the limit.")
 
     return "\n".join(lines)
+
+
+def _is_repeated_failure_location(line: str, failure: Failure) -> bool:
+    """Return whether a detail line repeats the failure's source location."""
+    if not failure.path or failure.line is None:
+        return False
+
+    location = f"{failure.path}:{failure.line}"
+
+    if failure.column is not None:
+        location = f"{location}:{failure.column}"
+
+    return line.startswith(f"{location}:")
 
 
 def _format_failure_line(failure: Failure) -> str:
@@ -1956,12 +1989,17 @@ def _format_failure_line(failure: Failure) -> str:
 
 
 def _format_run(result: RunResult, record: RunRecord) -> str:
-    """Format one human-readable status line for a completed command."""
-    return (
-        f"exit status: {result.exit_status}; "
-        f"duration: {result.duration_seconds:.3f}s; "
-        f"run ID: {record.run_id}; log path: {record.log_path}"
+    """Format one human-readable result block for a completed command."""
+    result_text = render_command_result(
+        result="success",
+        summary="Command completed",
+        command=shlex.join(result.argv),
+        exit_code=result.exit_status,
+        duration=f"{result.duration_seconds:.3f}s",
+        detail=f"Run ID: {record.run_id}",
     )
+
+    return f"{result_text}\nlog path: {record.log_path}"
 
 
 if __name__ == "__main__":
