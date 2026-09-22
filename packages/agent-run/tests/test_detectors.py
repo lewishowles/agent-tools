@@ -12,6 +12,7 @@ from agent_run.database import connect_database
 from agent_run.detectors import Candidate, CandidateCollection, collect_candidates
 from agent_run.detectors.package_json import detect_package_json_scripts
 from agent_run.detectors.pyproject import detect_pyproject_checks
+from agent_run.detectors.shell import detect_shell_checks
 from agent_run.detectors.swift import detect_swift_checks
 from agent_run.repository import Repository, create_repository_id, identify_repository
 
@@ -275,6 +276,49 @@ def test_swift_detector_returns_supported_root_checks(
     candidates = detect_swift_checks(_repository(root))
 
     assert candidates == expected
+
+
+def test_shell_detector_returns_supported_checks_only(tmp_path: Path) -> None:
+    """Shell scripts under tests/ and scripts/ become candidates; others are ignored."""
+    root = _initialise_repository(tmp_path / "repository")
+    tests_directory = root / "tests"
+    scripts_directory = root / "scripts"
+    nested_tests = tests_directory / "nested"
+    tests_directory.mkdir()
+    scripts_directory.mkdir()
+    nested_tests.mkdir()
+
+    (tests_directory / "integration.sh").touch()
+    (tests_directory / "unit.sh").touch()
+    (tests_directory / "executable").touch(mode=0o755)
+    (nested_tests / "nested.sh").touch()
+    (scripts_directory / "validate.sh").touch()
+    (scripts_directory / "test.sh").touch()
+    (scripts_directory / "check.sh").touch()
+    (scripts_directory / "lint.sh").touch()
+    (scripts_directory / "sync.sh").touch()
+    (scripts_directory / "build.sh").touch()
+
+    candidates = detect_shell_checks(_repository(root))
+
+    assert candidates == (
+        Candidate(
+            "integration",
+            ("bash", "tests/integration.sh"),
+            ".",
+            "tests/integration.sh",
+        ),
+        Candidate("unit", ("bash", "tests/unit.sh"), ".", "tests/unit.sh"),
+        Candidate(
+            "validate",
+            ("bash", "scripts/validate.sh"),
+            ".",
+            "scripts/validate.sh",
+        ),
+        Candidate("test", ("bash", "scripts/test.sh"), ".", "scripts/test.sh"),
+        Candidate("check", ("bash", "scripts/check.sh"), ".", "scripts/check.sh"),
+        Candidate("lint", ("bash", "scripts/lint.sh"), ".", "scripts/lint.sh"),
+    )
 
 
 def test_detect_reports_no_commands_in_text_mode(

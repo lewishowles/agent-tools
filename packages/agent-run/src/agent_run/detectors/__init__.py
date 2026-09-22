@@ -6,6 +6,7 @@ from typing import Protocol
 
 from agent_run.detectors.package_json import detect_package_json_scripts
 from agent_run.detectors.pyproject import detect_pyproject_checks
+from agent_run.detectors.shell import detect_shell_checks
 from agent_run.detectors.swift import detect_swift_checks
 from agent_run.repository import Repository
 
@@ -55,6 +56,7 @@ DETECTORS: tuple[Detector, ...] = (
     detect_package_json_scripts,
     detect_pyproject_checks,
     detect_swift_checks,
+    detect_shell_checks,
 )
 
 

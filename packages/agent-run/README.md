@@ -70,6 +70,7 @@ and is safe to run automatically.
 agent-run add test --timeout 30 -- pytest
 agent-run add lint --cwd tools --json -- ruff check
 agent-run add lint-changed --capability file-list -- ruff check
+agent-run add shell-syntax --capability file-list -- zsh -n
 agent-run add browser-check --manual -- npm run browser-check
 ```
 
@@ -109,13 +110,16 @@ agent-run detect --json
 ```
 
 On its own, `detect` only lists what it finds and saves nothing. It looks only
-at files in the repository root:
+at supported paths in the repository root, `tests/`, and `scripts/`:
 
 - `package.json`: a command for each script, run with the package manager that
   matches the root lockfile, or npm when there is no lockfile.
 - `pyproject.toml`: pytest and ruff checks, for each tool the file configures.
 - `Package.swift`: `swift build` and `swift test`.
 - `.swift-format`: `swift-format lint --recursive .`.
+- Shell scripts: every `.sh` file directly under `tests/`, plus
+  `scripts/validate.sh`, `scripts/test.sh`, `scripts/check.sh`, and
+  `scripts/lint.sh` when present.
 
 Xcode projects and packages below the root are not detected; add those with
 `agent-run add`.
