@@ -1,12 +1,13 @@
 """Choose which saved runs the log retention policy would remove."""
 
+import os
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from agent_run.runs import RunRecord
+from agent_run.runs import RUNNING_STATUS, RunRecord
 
 # A saved run becomes eligible by age after this many days.
 RETENTION_DAYS = 7
@@ -129,6 +130,22 @@ def measure_log_sizes(
     return total_bytes, sizes, tuple(orphan_logs)
 
 
+def _is_process_alive(pid: int) -> bool:
+    """Report whether the agent-run process that owns a running record still exists.
+
+    A permission error means the process exists but belongs to another user, so
+    it counts as alive. Treating it as gone would delete a run someone else owns.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+    return True
+
+
 def select_prune_candidates(
     records: Sequence[RunRecord],
     *,
@@ -136,21 +153,47 @@ def select_prune_candidates(
     sizes: Mapping[str, int],
     total_bytes: int,
     orphan_logs: Sequence[LogPruneCandidate] = (),
+    liveness_check: Callable[[int], bool] = _is_process_alive,
 ) -> RetentionPlan:
-    """Select old runs, then oldest runs needed to meet the size limit.
+    """Select abandoned runs, then old runs and runs needed to meet the size limit.
 
     The size limit is measured against the saved-run sizes in ``sizes`` only.
     Orphan logs are already selected separately by ``measure_log_sizes`` and
-    are passed through to the plan for reporting and deletion.
+    are passed through to the plan for reporting and deletion. A live running
+    run remains in the size total but is never selected by age or size.
     """
     current_time = _as_utc(now)
     cutoff = current_time - timedelta(days=RETENTION_DAYS)
     ordered_records = sorted(records, key=_record_sort_key)
     selected: list[PruneCandidate] = []
     selected_ids: set[str] = set()
+    # Runs whose agent-run process is still going, which prune must leave alone.
+    live_running_ids = {
+        record.run_id
+        for record in ordered_records
+        if (
+            record.status == RUNNING_STATUS
+            and record.pid is not None
+            and liveness_check(record.pid)
+        )
+    }
     freed_bytes = 0
 
     for record in ordered_records:
+        if record.status != RUNNING_STATUS or record.run_id in live_running_ids:
+            continue
+
+        size_bytes = _size_for_record(record, sizes)
+        selected.append(
+            PruneCandidate(record=record, reason="abandoned", size_bytes=size_bytes)
+        )
+        selected_ids.add(record.run_id)
+        freed_bytes += size_bytes
+
+    for record in ordered_records:
+        if record.run_id in selected_ids or record.run_id in live_running_ids:
+            continue
+
         if _started_at(record) < cutoff:
             size_bytes = _size_for_record(record, sizes)
             selected.append(
@@ -164,7 +207,7 @@ def select_prune_candidates(
 
     if remaining_bytes > MAX_LOG_BYTES:
         for record in ordered_records:
-            if record.run_id in selected_ids:
+            if record.run_id in selected_ids or record.run_id in live_running_ids:
                 continue
 
             size_bytes = _size_for_record(record, sizes)

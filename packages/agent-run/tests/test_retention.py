@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from agent_run import retention
 from agent_run.cli import main
 from agent_run.database import connect_database
 from agent_run.retention import (
@@ -17,6 +18,7 @@ from agent_run.retention import (
     select_prune_candidates,
 )
 from agent_run.runs import (
+    RUNNING_STATUS,
     RunRecord,
     create_run_log,
     finalise_run,
@@ -26,7 +28,14 @@ from agent_run.runs import (
 )
 
 
-def _record(run_id: str, started_at: datetime, log_path: Path) -> RunRecord:
+def _record(
+    run_id: str,
+    started_at: datetime,
+    log_path: Path,
+    *,
+    status: str = "finished",
+    pid: int | None = None,
+) -> RunRecord:
     """Build a saved-run value for selection tests."""
     return RunRecord(
         run_id=run_id,
@@ -39,6 +48,8 @@ def _record(run_id: str, started_at: datetime, log_path: Path) -> RunRecord:
         exit_status=0,
         timed_out=False,
         log_path=log_path,
+        status=status,
+        pid=pid,
     )
 
 
@@ -106,6 +117,159 @@ def test_run_one_second_past_seven_days_is_selected(tmp_path: Path) -> None:
 
     assert [item.record.run_id for item in plan.candidates] == [old.run_id]
     assert plan.candidates[0].reason == "age"
+
+
+def test_selection_removes_abandoned_running_runs_before_old_runs(
+    tmp_path: Path,
+) -> None:
+    """An abandoned run is selected before a finished run that is old."""
+    now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    old = _record("old", now - timedelta(days=8), tmp_path / "old.log")
+    abandoned = _record(
+        "abandoned",
+        now - timedelta(days=8),
+        tmp_path / "abandoned.log",
+        status=RUNNING_STATUS,
+        pid=123,
+    )
+
+    plan = select_prune_candidates(
+        [old, abandoned],
+        now=now,
+        sizes={old.run_id: 1, abandoned.run_id: 2},
+        total_bytes=3,
+        liveness_check=lambda _pid: False,
+    )
+
+    assert [
+        (candidate.record.run_id, candidate.reason) for candidate in plan.candidates
+    ] == [
+        (abandoned.run_id, "abandoned"),
+        (old.run_id, "age"),
+    ]
+    assert plan.freed_bytes == 3
+
+
+def test_selection_treats_a_running_record_without_a_pid_as_abandoned(
+    tmp_path: Path,
+) -> None:
+    """A running record with no owning process is selected as abandoned."""
+    now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    record = _record(
+        "no-pid",
+        now - timedelta(days=1),
+        tmp_path / "no-pid.log",
+        status=RUNNING_STATUS,
+    )
+
+    plan = select_prune_candidates(
+        [record],
+        now=now,
+        sizes={record.run_id: 1},
+        total_bytes=1,
+        liveness_check=lambda _pid: True,
+    )
+
+    assert [
+        (candidate.record.run_id, candidate.reason) for candidate in plan.candidates
+    ] == [
+        (record.run_id, "abandoned"),
+    ]
+
+
+def test_selection_treats_a_missing_process_as_abandoned(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A running record is abandoned when its owning process has gone."""
+    now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    record = _record(
+        "missing-process",
+        now - timedelta(days=1),
+        tmp_path / "missing-process.log",
+        status=RUNNING_STATUS,
+        pid=123,
+    )
+
+    def raise_missing_process(_pid: int, _signal: int) -> None:
+        """Pretend that no process owns the running record."""
+        raise ProcessLookupError
+
+    monkeypatch.setattr(retention.os, "kill", raise_missing_process)
+
+    plan = select_prune_candidates(
+        [record],
+        now=now,
+        sizes={record.run_id: 1},
+        total_bytes=1,
+    )
+
+    assert [
+        (candidate.record.run_id, candidate.reason) for candidate in plan.candidates
+    ] == [
+        (record.run_id, "abandoned"),
+    ]
+
+
+def test_selection_keeps_a_running_record_when_process_access_is_denied(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A running run stays when its process exists but belongs to another user."""
+    now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    record = _record(
+        "protected-process",
+        now - timedelta(days=8),
+        tmp_path / "protected-process.log",
+        status=RUNNING_STATUS,
+        pid=123,
+    )
+
+    def raise_permission_error(_pid: int, _signal: int) -> None:
+        """Pretend that the process exists but belongs to another account."""
+        raise PermissionError
+
+    monkeypatch.setattr(retention.os, "kill", raise_permission_error)
+
+    plan = select_prune_candidates(
+        [record],
+        now=now,
+        sizes={record.run_id: 1},
+        total_bytes=1,
+    )
+
+    assert plan.candidates == ()
+
+
+def test_selection_keeps_live_running_runs_when_age_and_size_rules_apply(
+    tmp_path: Path,
+) -> None:
+    """A live run remains protected while its log still counts towards the limit."""
+    now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    live = _record(
+        "live",
+        now - timedelta(days=8),
+        tmp_path / "live.log",
+        status=RUNNING_STATUS,
+        pid=456,
+    )
+    finished = _record("finished", now - timedelta(days=1), tmp_path / "finished.log")
+
+    plan = select_prune_candidates(
+        [live, finished],
+        now=now,
+        sizes={live.run_id: MAX_LOG_BYTES + 1, finished.run_id: 1},
+        total_bytes=MAX_LOG_BYTES + 2,
+        liveness_check=lambda _pid: True,
+    )
+
+    assert [
+        (candidate.record.run_id, candidate.reason) for candidate in plan.candidates
+    ] == [
+        (finished.run_id, "size"),
+    ]
+    assert plan.total_bytes == MAX_LOG_BYTES + 2
+    assert plan.freed_bytes == 1
 
 
 def test_large_orphan_log_alone_does_not_trigger_size_selection(
