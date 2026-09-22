@@ -9,8 +9,9 @@ import pytest
 from agent_run.cli import main
 from agent_run.repository import (
     RepositoryError,
-    ensure_repository_id,
+    create_repository_id,
     find_repository_root,
+    get_repository_id,
 )
 
 
@@ -39,12 +40,19 @@ def test_find_repository_root_rejects_missing_start_directory(tmp_path: Path) ->
         find_repository_root(missing_path)
 
 
-def test_repository_id_is_stable_across_calls(tmp_path: Path) -> None:
-    """The first ID is stored in local Git config and reused afterwards."""
+def test_get_repository_id_returns_none_when_it_is_missing(tmp_path: Path) -> None:
+    """Reading an uninitialised repository ID does not create one."""
     root = _initialise_repository(tmp_path / "repository")
 
-    first_id = ensure_repository_id(root)
-    second_id = ensure_repository_id(root)
+    assert get_repository_id(root) is None
+
+
+def test_create_repository_id_writes_once_and_reuses_it(tmp_path: Path) -> None:
+    """Creating the ID stores it in local Git config and reuses it afterwards."""
+    root = _initialise_repository(tmp_path / "repository")
+
+    first_id = create_repository_id(root)
+    second_id = create_repository_id(root)
     configured_id = subprocess.run(
         ["git", "config", "--local", "--get", "agent-run.repository-id"],
         cwd=root,
@@ -102,7 +110,7 @@ def test_repository_id_errors_include_git_stderr(
     monkeypatch.setattr("agent_run.repository._run_git", run_git)
 
     with pytest.raises(RepositoryError) as error:
-        ensure_repository_id(root)
+        get_repository_id(root) if failure == "read" else create_repository_id(root)
 
     assert str(error.value) == expected_message
 
@@ -110,11 +118,11 @@ def test_repository_id_errors_include_git_stderr(
 def test_cloned_repository_gets_a_different_id(tmp_path: Path) -> None:
     """A clone receives its own ID because local Git config is not cloned."""
     source = _initialise_repository(tmp_path / "source")
-    source_id = ensure_repository_id(source)
+    source_id = create_repository_id(source)
     clone = tmp_path / "clone"
     subprocess.run(["git", "clone", "--quiet", str(source), str(clone)], check=True)
 
-    clone_id = ensure_repository_id(clone)
+    clone_id = create_repository_id(clone)
 
     assert clone_id != source_id
 

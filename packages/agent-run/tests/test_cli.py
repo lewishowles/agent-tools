@@ -6,6 +6,7 @@ import shlex
 import signal
 import subprocess
 import sys
+from collections.abc import Sequence
 from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock
@@ -18,7 +19,7 @@ from agent_run.execution import TerminateRequested
 from agent_run.failures import Failure, FailureReport
 from agent_run.locking import acquire_run_lock
 from agent_run.output import render_command_result, render_error, render_success
-from agent_run.repository import identify_repository
+from agent_run.repository import create_repository_id, identify_repository
 from agent_run.runs import create_run_log, start_run
 from cli_style import CliStyleNotFoundError
 
@@ -66,6 +67,102 @@ def test_json_help_returns_help_data(capsys: pytest.CaptureFixture[str]) -> None
     assert result["ok"] is True
     assert "usage: agent-run" in result["data"]["help"]
     assert captured.err == ""
+
+
+def test_init_creates_and_prints_the_repository_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Init creates and prints the ID for an uninitialised repository."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+
+    exit_code = main(["init"])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.err == ""
+    assert captured.out.strip() == identify_repository().id
+
+
+def test_init_prints_the_existing_repository_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Init leaves an existing repository ID unchanged."""
+    root = _initialise_repository(tmp_path / "repository")
+    existing_repository_id = create_repository_id(root)
+    monkeypatch.chdir(root)
+
+    exit_code = main(["init"])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.err == ""
+    assert captured.out == f"{existing_repository_id}\n"
+
+
+def test_init_json_creates_and_returns_the_repository_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Init returns its newly created repository ID in the JSON envelope."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+
+    exit_code = main(["init", "--json"])
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert captured.err == ""
+    assert result == {"ok": True, "data": {"id": identify_repository().id}}
+
+
+def test_init_json_reports_environment_when_writing_the_id_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Init reports the environment error when Git cannot write the ID."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    git_results = [
+        subprocess.CompletedProcess(["git"], 0, stdout=f"{root}\n", stderr=""),
+        subprocess.CompletedProcess(["git"], 1, stdout="", stderr=""),
+        subprocess.CompletedProcess(
+            ["git"], 2, stdout="", stderr="fatal: could not write config"
+        ),
+    ]
+
+    def run_git(
+        _root: Path, _arguments: Sequence[str]
+    ) -> subprocess.CompletedProcess[str]:
+        """Return the next simulated Git result."""
+        return git_results.pop(0)
+
+    monkeypatch.setattr("agent_run.repository._run_git", run_git)
+
+    exit_code = main(["init", "--json"])
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 3
+    assert captured.err == ""
+    assert result == {
+        "ok": False,
+        "error": {
+            "code": "environment",
+            "message": "Git could not write the local repository ID. fatal: could not write config",
+        },
+    }
 
 
 def test_version_prints_the_installed_package_version(

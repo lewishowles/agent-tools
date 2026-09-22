@@ -55,7 +55,12 @@ from agent_run.output import (
     render_success,
 )
 from agent_run.readers import read_failure_report
-from agent_run.repository import RepositoryError, identify_repository
+from agent_run.repository import (
+    RepositoryError,
+    create_repository_id,
+    find_repository_root,
+    identify_repository,
+)
 from agent_run.retention import (
     PruneError,
     RetentionPlan,
@@ -174,6 +179,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Show this help message and exit.",
     )
     repository_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Write one structured JSON result to standard output.",
+    )
+
+    init_parser = subparsers.add_parser(
+        "init",
+        help="Create the repository ID when it is missing.",
+        description="Create the repository ID when it is missing.",
+        add_help=False,
+        json_mode=json_mode,
+    )
+    init_parser.add_argument(
+        "--help",
+        "-h",
+        action="store_true",
+        dest="init_help",
+        help="Show this help message and exit.",
+    )
+    init_parser.add_argument(
         "--json",
         action="store_true",
         default=argparse.SUPPRESS,
@@ -618,6 +644,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         return render_success(json_mode=False, text=repository_help_text)
 
+    if parsed.command == "init" and parsed.init_help:
+        init_help_text = init_parser.format_help()
+
+        if parsed.json:
+            return render_success(json_mode=True, data={"help": init_help_text})
+
+        return render_success(json_mode=False, text=init_help_text)
+
     if parsed.command == "add" and parsed.add_help:
         add_help_text = add_parser.format_help()
 
@@ -758,6 +792,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             return render_success(json_mode=True, data=data)
 
         return render_success(json_mode=False, text=text)
+
+    if parsed.command == "init":
+        try:
+            repository_root = find_repository_root()
+            repository_id = create_repository_id(repository_root)
+        except RepositoryError as error:
+            return render_error(
+                json_mode=parsed.json,
+                code="environment",
+                message=str(error),
+            )
+
+        if parsed.json:
+            return render_success(json_mode=True, data={"id": repository_id})
+
+        return render_success(json_mode=False, text=repository_id)
 
     if parsed.command == "run":
         if parsed.name is not None and separator_index + 1 < len(values):

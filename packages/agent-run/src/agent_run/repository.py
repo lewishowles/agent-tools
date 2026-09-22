@@ -78,8 +78,36 @@ def find_repository_root(start: str | Path | None = None) -> Path:
     return Path(repository_root).resolve()
 
 
-def ensure_repository_id(root: str | Path) -> str:
-    """Return the clone-local repository ID, creating it when it is absent.
+def get_repository_id(root: str | Path) -> str | None:
+    """Return the clone-local repository ID when it has already been created.
+
+    The ID lives in Git's local configuration, so it is not committed or copied
+    to a separately cloned repository. Git worktrees use the same local config.
+
+    Raises:
+        RepositoryError: If Git cannot read the local configuration.
+    """
+    repository_root = Path(root).expanduser().resolve()
+    result = _run_git(
+        repository_root,
+        ["config", "--local", "--get", _REPOSITORY_ID_KEY],
+    )
+
+    if result.returncode == 0:
+        return result.stdout.strip() or None
+
+    if result.returncode not in (0, 1):
+        raise RepositoryError(
+            _git_error_message(
+                "Git could not read the local repository ID.", result.stderr
+            )
+        )
+
+    return None
+
+
+def create_repository_id(root: str | Path) -> str:
+    """Create the clone-local repository ID, or return the existing one unchanged.
 
     The ID lives in Git's local configuration, so it is not committed or copied
     to a separately cloned repository. Git worktrees use the same local config.
@@ -88,20 +116,11 @@ def ensure_repository_id(root: str | Path) -> str:
         RepositoryError: If Git cannot read or write the local configuration.
     """
     repository_root = Path(root).expanduser().resolve()
-    result = _run_git(
-        repository_root,
-        ["config", "--local", "--get", _REPOSITORY_ID_KEY],
-    )
 
-    if result.returncode == 0 and result.stdout.strip():
-        return result.stdout.strip()
+    existing_repository_id = get_repository_id(repository_root)
 
-    if result.returncode not in (0, 1):
-        raise RepositoryError(
-            _git_error_message(
-                "Git could not read the local repository ID.", result.stderr
-            )
-        )
+    if existing_repository_id is not None:
+        return existing_repository_id
 
     repository_id = str(uuid.uuid4())
     result = _run_git(
@@ -121,6 +140,6 @@ def ensure_repository_id(root: str | Path) -> str:
 def identify_repository(start: str | Path | None = None) -> Repository:
     """Return the root and stable ID for the repository containing ``start``."""
     root = find_repository_root(start)
-    repository_id = ensure_repository_id(root)
+    repository_id = create_repository_id(root)
 
     return Repository(root=root, id=repository_id)
