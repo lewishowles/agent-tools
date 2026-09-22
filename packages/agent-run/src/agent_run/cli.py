@@ -57,6 +57,7 @@ from agent_run.output import (
 from agent_run.readers import read_failure_report
 from agent_run.repository import (
     RepositoryError,
+    RepositoryUninitialisedError,
     create_repository_id,
     find_repository_root,
     identify_repository,
@@ -778,6 +779,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if parsed.command == "repository":
         try:
             repository = identify_repository()
+        except RepositoryUninitialisedError as error:
+            return _uninitialised_repository_error(json_mode=parsed.json, error=error)
         except RepositoryError as error:
             return render_error(
                 json_mode=parsed.json,
@@ -960,6 +963,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 name=parsed.name,
                 run_id=error.run_id,
             )
+        except RepositoryUninitialisedError as error:
+            return _uninitialised_repository_error(json_mode=parsed.json, error=error)
         except (RepositoryError, NewerSchemaError, OSError, sqlite3.Error) as error:
             if not finalising and connection is not None and log_path is not None:
                 try:
@@ -1090,6 +1095,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             finally:
                 connection.close()
+        except RepositoryUninitialisedError as error:
+            return _uninitialised_repository_error(json_mode=parsed.json, error=error)
         except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
             return render_error(
                 json_mode=parsed.json,
@@ -1137,6 +1144,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             finally:
                 connection.close()
+        except RepositoryUninitialisedError as error:
+            return _uninitialised_repository_error(json_mode=parsed.json, error=error)
         except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
             return render_error(
                 json_mode=parsed.json,
@@ -1185,6 +1194,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             finally:
                 connection.close()
+        except RepositoryUninitialisedError as error:
+            return _uninitialised_repository_error(json_mode=parsed.json, error=error)
         except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
             return render_error(
                 json_mode=parsed.json,
@@ -1225,6 +1236,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 remove_command(connection, repository, parsed.name)
             finally:
                 connection.close()
+        except RepositoryUninitialisedError as error:
+            return _uninitialised_repository_error(json_mode=parsed.json, error=error)
         except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
             return render_error(
                 json_mode=parsed.json,
@@ -1254,6 +1267,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 commands = list_commands(connection, repository)
             finally:
                 connection.close()
+        except RepositoryUninitialisedError as error:
+            return _uninitialised_repository_error(json_mode=parsed.json, error=error)
         except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
             return render_error(
                 json_mode=parsed.json,
@@ -1371,6 +1386,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         added.append(candidate)
             finally:
                 connection.close()
+        except RepositoryUninitialisedError as error:
+            return _uninitialised_repository_error(json_mode=parsed.json, error=error)
         except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
             return render_error(
                 json_mode=parsed.json,
@@ -1511,6 +1528,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 records = list_runs(connection, repository.id, parsed.limit)
             finally:
                 connection.close()
+        except RepositoryUninitialisedError as error:
+            return _uninitialised_repository_error(json_mode=parsed.json, error=error)
         except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
             return render_error(
                 json_mode=parsed.json,
@@ -1542,6 +1561,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             if record.repository_id != repository.id:
                 raise RunNotFoundError(f'Run "{parsed.run_id}" was not found.')
+        except RepositoryUninitialisedError as error:
+            return _uninitialised_repository_error(json_mode=parsed.json, error=error)
         except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
             return render_error(
                 json_mode=parsed.json,
@@ -1582,6 +1603,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             log_text = record.log_path.read_bytes().decode("utf-8", errors="replace")
 
+        except RepositoryUninitialisedError as error:
+            return _uninitialised_repository_error(json_mode=parsed.json, error=error)
         except (RepositoryError, NewerSchemaError, OSError, sqlite3.Error) as error:
             return render_error(
                 json_mode=parsed.json,
@@ -1622,6 +1645,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             if record.repository_id != repository.id:
                 raise RunNotFoundError(f'Run "{parsed.run_id}" was not found.')
+        except RepositoryUninitialisedError as error:
+            return _uninitialised_repository_error(json_mode=parsed.json, error=error)
         except (RepositoryError, NewerSchemaError, OSError, sqlite3.Error) as error:
             return render_error(
                 json_mode=parsed.json,
@@ -1701,6 +1726,17 @@ def _busy_command_error(*, json_mode: bool, name: str, run_id: str) -> int:
         code="busy",
         message=message,
         data={"run_id": run_id},
+    )
+
+
+def _uninitialised_repository_error(
+    *, json_mode: bool, error: RepositoryUninitialisedError
+) -> int:
+    """Report that the repository has no agent-run ID yet and needs `agent-run init`."""
+    return render_error(
+        json_mode=json_mode,
+        code="uninitialised",
+        message=str(error),
     )
 
 

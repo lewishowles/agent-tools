@@ -14,6 +14,10 @@ class RepositoryError(RuntimeError):
     """Report that the local repository could not be identified or updated."""
 
 
+class RepositoryUninitialisedError(RuntimeError):
+    """Report that the repository has no agent-run ID yet."""
+
+
 @dataclass(frozen=True)
 class Repository:
     """Describe the local Git repository used by agent-run.
@@ -138,8 +142,18 @@ def create_repository_id(root: str | Path) -> str:
 
 
 def identify_repository(start: str | Path | None = None) -> Repository:
-    """Return the root and stable ID for the repository containing ``start``."""
+    """Return the root and stable ID for the repository containing ``start``.
+
+    The ID is only read here, never created. Raises
+    ``RepositoryUninitialisedError`` when ``agent-run init`` has not been run
+    in this clone.
+    """
     root = find_repository_root(start)
-    repository_id = create_repository_id(root)
+    repository_id = get_repository_id(root)
+
+    if repository_id is None:
+        raise RepositoryUninitialisedError(
+            "This repository has no agent-run ID yet. Run agent-run init here once."
+        )
 
     return Repository(root=root, id=repository_id)

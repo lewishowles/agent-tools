@@ -9,13 +9,15 @@ import pytest
 from agent_run.cli import main
 from agent_run.repository import (
     RepositoryError,
+    RepositoryUninitialisedError,
     create_repository_id,
     find_repository_root,
     get_repository_id,
+    identify_repository,
 )
 
 
-def _initialise_repository(path: Path) -> Path:
+def _create_repository(path: Path) -> Path:
     """Create an empty temporary Git repository without changing this checkout."""
     path.mkdir()
     subprocess.run(["git", "init", "--quiet"], cwd=path, check=True)
@@ -23,9 +25,17 @@ def _initialise_repository(path: Path) -> Path:
     return path
 
 
+def _initialise_repository(path: Path) -> Path:
+    """Create a temporary Git repository with an agent-run ID."""
+    root = _create_repository(path)
+    create_repository_id(root)
+
+    return root
+
+
 def test_find_repository_root_from_nested_directory(tmp_path: Path) -> None:
     """Discovery returns the repository root from a nested directory."""
-    root = _initialise_repository(tmp_path / "repository")
+    root = _create_repository(tmp_path / "repository")
     nested = root / "nested" / "directory"
     nested.mkdir(parents=True)
 
@@ -42,14 +52,27 @@ def test_find_repository_root_rejects_missing_start_directory(tmp_path: Path) ->
 
 def test_get_repository_id_returns_none_when_it_is_missing(tmp_path: Path) -> None:
     """Reading an uninitialised repository ID does not create one."""
-    root = _initialise_repository(tmp_path / "repository")
+    root = _create_repository(tmp_path / "repository")
+
+    assert get_repository_id(root) is None
+
+
+def test_identify_repository_rejects_a_missing_repository_id(tmp_path: Path) -> None:
+    """Identifying an uninitialised repository does not create an ID."""
+    root = _create_repository(tmp_path / "repository")
+
+    with pytest.raises(
+        RepositoryUninitialisedError,
+        match="This repository has no agent-run ID yet. Run agent-run init here once.",
+    ):
+        identify_repository(root)
 
     assert get_repository_id(root) is None
 
 
 def test_create_repository_id_writes_once_and_reuses_it(tmp_path: Path) -> None:
     """Creating the ID stores it in local Git config and reuses it afterwards."""
-    root = _initialise_repository(tmp_path / "repository")
+    root = _create_repository(tmp_path / "repository")
 
     first_id = create_repository_id(root)
     second_id = create_repository_id(root)
@@ -117,7 +140,7 @@ def test_repository_id_errors_include_git_stderr(
 
 def test_cloned_repository_gets_a_different_id(tmp_path: Path) -> None:
     """A clone receives its own ID because local Git config is not cloned."""
-    source = _initialise_repository(tmp_path / "source")
+    source = _create_repository(tmp_path / "source")
     source_id = create_repository_id(source)
     clone = tmp_path / "clone"
     subprocess.run(["git", "clone", "--quiet", str(source), str(clone)], check=True)

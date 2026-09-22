@@ -13,13 +13,14 @@ from agent_run.detectors import Candidate, CandidateCollection, collect_candidat
 from agent_run.detectors.package_json import detect_package_json_scripts
 from agent_run.detectors.pyproject import detect_pyproject_checks
 from agent_run.detectors.swift import detect_swift_checks
-from agent_run.repository import Repository, identify_repository
+from agent_run.repository import Repository, create_repository_id, identify_repository
 
 
 def _initialise_repository(path: Path) -> Path:
-    """Create an empty temporary Git repository for a detector test."""
+    """Create a temporary Git repository with an agent-run ID."""
     path.mkdir()
     subprocess.run(["git", "init", "--quiet"], cwd=path, check=True)
+    create_repository_id(path)
 
     return path
 

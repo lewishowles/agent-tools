@@ -20,13 +20,14 @@ from agent_run.commands import (
     rename_command,
 )
 from agent_run.database import connect_database
-from agent_run.repository import Repository
+from agent_run.repository import Repository, create_repository_id
 
 
 def _initialise_repository(path: Path) -> Path:
-    """Create an empty temporary Git repository for a command test."""
+    """Create a temporary Git repository with an agent-run ID."""
     path.mkdir()
     subprocess.run(["git", "init", "--quiet"], cwd=path, check=True)
+    create_repository_id(path)
 
     return path
 

@@ -18,6 +18,7 @@ uv tool install --editable packages/agent-run
 agent-run --help
 agent-run --version
 agent-run --json
+agent-run init
 agent-run repository
 agent-run repository --json
 ```
@@ -25,11 +26,29 @@ agent-run repository --json
 Use `agent-run --version` to print the installed version. Add `--json` to get
 the version as JSON.
 
+Run `agent-run init` once in each clone before using any command that works
+with the repository; `--version`, `--help` and `prune` work without it. It
+creates a stable ID in the clone-local Git configuration under
+`agent-run.repository-id`. The ID is never committed. Linked worktrees share
+the main checkout's local configuration and therefore share its ID; each
+separate clone needs its own `agent-run init`.
+
 `agent-run repository` finds the Git repository containing the current working
-directory and assigns it a stable ID. The ID is stored in the clone-local Git
-configuration under `agent-run.repository-id`, so it is never committed and a
-separately cloned repository receives a different ID. Linked worktrees share
-the main checkout's local configuration and therefore share its ID.
+directory and prints its root path and ID.
+
+## Error codes
+
+With `--json`, a failed command reports one of these codes. The number in
+brackets is the exit status, which is the same with or without `--json`.
+
+- `not-found` (1): The named command or run does not exist
+- `check-failed` (1): The command ran and failed
+- `busy` (1): The named command is already running
+- `manual` (1): The command needs a human to run it
+- `usage` (2): The command arguments are invalid
+- `environment` (3): Git, the database, or the local environment could not be used
+- `uninitialised` (3): This clone has no agent-run ID yet; run `agent-run init` once
+- `internal` (3): agent-run hit an unexpected error
 
 ## Register commands
 

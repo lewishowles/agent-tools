@@ -19,6 +19,7 @@ _EXIT_CODES = {
     "busy": 1,
     "manual": 1,
     "environment": 3,
+    "uninitialised": 3,
     "internal": 3,
 }
 

@@ -24,12 +24,20 @@ from agent_run.runs import create_run_log, start_run
 from cli_style import CliStyleNotFoundError
 
 
-def _initialise_repository(path: Path) -> Path:
+def _create_repository(path: Path) -> Path:
     """Create an empty temporary Git repository for a CLI test."""
     path.mkdir()
     subprocess.run(["git", "init", "--quiet"], cwd=path, check=True)
 
     return path
+
+
+def _initialise_repository(path: Path) -> Path:
+    """Create a temporary Git repository with an agent-run ID."""
+    root = _create_repository(path)
+    create_repository_id(root)
+
+    return root
 
 
 def test_bare_command_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
@@ -75,7 +83,7 @@ def test_init_creates_and_prints_the_repository_id(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Init creates and prints the ID for an uninitialised repository."""
-    root = _initialise_repository(tmp_path / "repository")
+    root = _create_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
 
     exit_code = main(["init"])
@@ -93,7 +101,7 @@ def test_init_prints_the_existing_repository_id(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Init leaves an existing repository ID unchanged."""
-    root = _initialise_repository(tmp_path / "repository")
+    root = _create_repository(tmp_path / "repository")
     existing_repository_id = create_repository_id(root)
     monkeypatch.chdir(root)
 
@@ -112,7 +120,7 @@ def test_init_json_creates_and_returns_the_repository_id(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Init returns its newly created repository ID in the JSON envelope."""
-    root = _initialise_repository(tmp_path / "repository")
+    root = _create_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
 
     exit_code = main(["init", "--json"])
@@ -131,7 +139,7 @@ def test_init_json_reports_environment_when_writing_the_id_fails(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Init reports the environment error when Git cannot write the ID."""
-    root = _initialise_repository(tmp_path / "repository")
+    root = _create_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
     git_results = [
         subprocess.CompletedProcess(["git"], 0, stdout=f"{root}\n", stderr=""),
@@ -161,6 +169,82 @@ def test_init_json_reports_environment_when_writing_the_id_fails(
         "error": {
             "code": "environment",
             "message": "Git could not write the local repository ID. fatal: could not write config",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["detect", "--json"],
+        ["list", "--json"],
+        ["run", "--json", "--", "echo"],
+    ],
+)
+def test_commands_reject_an_uninitialised_repository_without_creating_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    """Commands stop before they create data for an uninitialised repository."""
+    root = _create_repository(tmp_path / "repository")
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    exit_code = main(argv)
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 3
+    assert captured.err == ""
+    assert not database_path.exists()
+    assert result == {
+        "ok": False,
+        "error": {
+            "code": "uninitialised",
+            "message": "This repository has no agent-run ID yet. Run agent-run init here once.",
+        },
+    }
+
+
+def test_list_keeps_a_failed_repository_id_read_as_an_environment_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A failed Git config read is not treated as an uninitialised repository."""
+    root = _create_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    git_results = [
+        subprocess.CompletedProcess(["git"], 0, stdout=f"{root}\n", stderr=""),
+        subprocess.CompletedProcess(
+            ["git"], 2, stdout="", stderr="fatal: could not read config"
+        ),
+    ]
+
+    def run_git(
+        _root: Path, _arguments: Sequence[str]
+    ) -> subprocess.CompletedProcess[str]:
+        """Return the next simulated Git result."""
+        return git_results.pop(0)
+
+    monkeypatch.setattr("agent_run.repository._run_git", run_git)
+
+    exit_code = main(["list", "--json"])
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 3
+    assert captured.err == ""
+    assert result == {
+        "ok": False,
+        "error": {
+            "code": "environment",
+            "message": "Git could not read the local repository ID. fatal: could not read config",
         },
     }
 
