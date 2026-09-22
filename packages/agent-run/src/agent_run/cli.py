@@ -35,7 +35,12 @@ from agent_run.commands import (
 )
 from agent_run.database import connect_database, resolve_database_path
 from agent_run.detectors import Candidate, collect_candidates
-from agent_run.execution import DEFAULT_TIMEOUT_SECONDS, RunResult, run_command
+from agent_run.execution import (
+    DEFAULT_TIMEOUT_SECONDS,
+    RunResult,
+    TerminateRequested,
+    run_command,
+)
 from agent_run.failures import (
     Failure,
     FailureReport,
@@ -872,14 +877,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     timeout_seconds,
                     log_path,
                 )
-            except KeyboardInterrupt:
+            except (KeyboardInterrupt, TerminateRequested) as error:
                 interrupted = True
+                interrupt_signal = (
+                    signal.SIGTERM
+                    if isinstance(error, TerminateRequested)
+                    else signal.SIGINT
+                )
                 result = RunResult(
                     argv=tuple(command_arguments),
                     working_directory=(
                         repository.root / relative_working_directory
                     ).resolve(),
-                    exit_status=-signal.SIGINT,
+                    exit_status=-interrupt_signal,
                     timed_out=False,
                     duration_seconds=time.monotonic() - started_monotonic,
                     log_path=log_path,
@@ -998,7 +1008,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             text=failure_text,
         )
 
-        return 130 if interrupted else exit_code
+        # The shell convention for a process ended by a signal is 128 plus
+        # the signal number, so 130 for Ctrl+C and 143 for SIGTERM.
+        return 128 + interrupt_signal if interrupted else exit_code
 
     if parsed.command == "add":
         # The name is optional to argparse only so `add --help` reaches the help

@@ -14,6 +14,14 @@ from typing import BinaryIO
 DEFAULT_TIMEOUT_SECONDS = 120
 
 
+class TerminateRequested(Exception):
+    """Raised inside ``run_command`` when agent-run receives SIGTERM.
+
+    Any child that had started has already been stopped by the time this
+    reaches the caller, which is left to finish the run record and exit.
+    """
+
+
 @dataclass(frozen=True)
 class RunResult:
     """Describe one completed direct command run.
@@ -91,6 +99,7 @@ def run_command(
         OSError: If the command process cannot be started or its process group
             cannot be terminated.
         KeyboardInterrupt: After the command process group has been cleaned up.
+        TerminateRequested: After the command process group has been cleaned up.
     """
     command_arguments = tuple(argv)
 
@@ -106,22 +115,36 @@ def run_command(
     timed_out = False
 
     with _open_log_file(resolved_log_path) as log_file:
-        process = subprocess.Popen(
-            command_arguments,
-            cwd=working_directory,
-            start_new_session=True,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-        )
 
+        def handle_terminate(_signum: int, _frame: object) -> None:
+            """Turn SIGTERM into ``TerminateRequested`` so the caller can stop
+            the child and record the run as finished.
+            """
+            raise TerminateRequested
+
+        # The handler applies while the child starts and runs.
+        previous_handler = signal.signal(signal.SIGTERM, handle_terminate)
         try:
-            process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            _terminate_process_group(process)
-        except KeyboardInterrupt:
-            _terminate_process_group(process)
-            raise
+            process = subprocess.Popen(
+                command_arguments,
+                cwd=working_directory,
+                start_new_session=True,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+            )
+
+            try:
+                process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                _terminate_process_group(process)
+            except (KeyboardInterrupt, TerminateRequested):
+                _terminate_process_group(process)
+                raise
+        finally:
+            # Restore the previous handler after the child finishes so SIGTERM
+            # behaves as before this run.
+            signal.signal(signal.SIGTERM, previous_handler)
 
     duration_seconds = time.monotonic() - started_at
 

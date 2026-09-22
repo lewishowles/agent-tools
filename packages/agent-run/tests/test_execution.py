@@ -1,12 +1,13 @@
 """Tests for direct foreground command execution."""
 
+import signal
 import sys
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 from agent_run import execution
-from agent_run.execution import run_command
+from agent_run.execution import TerminateRequested, run_command
 from agent_run.runs import create_run_log
 
 
@@ -21,6 +22,7 @@ def test_run_command_writes_combined_output_and_success_status(
 ) -> None:
     """A successful command writes output to its log and returns zero status."""
     log_path = _create_log(tmp_path)
+    previous_handler = signal.getsignal(signal.SIGTERM)
     result = run_command(
         [
             sys.executable,
@@ -43,6 +45,7 @@ def test_run_command_writes_combined_output_and_success_status(
     assert result.duration_seconds >= 0
     assert result.log_path == log_path
     assert log_path.read_text() == "out\nerr\n"
+    assert signal.getsignal(signal.SIGTERM) == previous_handler
 
 
 def test_run_command_preserves_non_zero_exit_status(tmp_path: Path) -> None:
@@ -127,6 +130,28 @@ def test_run_command_cleans_up_before_propagating_interrupt(
     with pytest.raises(KeyboardInterrupt):
         run_command(["command"], tmp_path, timeout=5, log_path=log_path)
 
+    cleanup.assert_called_once_with(process)
+
+
+def test_run_command_cleans_up_before_propagating_terminate_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A terminate request cleans up the process before it reaches the caller."""
+    log_path = _create_log(tmp_path)
+    previous_handler = signal.getsignal(signal.SIGTERM)
+    process = Mock()
+    process.pid = 123
+    process.communicate.side_effect = TerminateRequested
+    cleanup = Mock()
+
+    monkeypatch.setattr(execution.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(execution, "_terminate_process_group", cleanup)
+
+    with pytest.raises(TerminateRequested):
+        run_command(["command"], tmp_path, timeout=5, log_path=log_path)
+
+    assert signal.getsignal(signal.SIGTERM) == previous_handler
     cleanup.assert_called_once_with(process)
 
 

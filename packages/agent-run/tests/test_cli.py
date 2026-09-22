@@ -14,6 +14,7 @@ from uuid import uuid4
 import pytest
 from agent_run.cli import _format_failure_report, main
 from agent_run.database import connect_database
+from agent_run.execution import TerminateRequested
 from agent_run.failures import Failure, FailureReport
 from agent_run.locking import acquire_run_lock
 from agent_run.output import render_command_result, render_error, render_success
@@ -1003,6 +1004,51 @@ def test_cli_run_returns_130_after_interrupt(
         connection.close()
 
     assert row == ("finished", os.getpid(), -signal.SIGINT, 0)
+
+
+def test_cli_run_returns_143_after_terminate_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A terminate request finalises the run and returns the SIGTERM status."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    def terminate_run(*_arguments: object, **_options: object) -> None:
+        connection = connect_database(tmp_path / "agent-run.db")
+        try:
+            row = connection.execute(
+                "SELECT status, pid, duration_seconds, exit_status FROM runs"
+            ).fetchone()
+        finally:
+            connection.close()
+
+        assert row == ("running", os.getpid(), None, None)
+        raise TerminateRequested
+
+    monkeypatch.setattr("agent_run.cli.run_command", terminate_run)
+
+    exit_code = main(["run", "--timeout", "5", "--", "echo"])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 143
+    assert captured.out == ""
+    assert "Error: Command interrupted." in captured.err
+    assert "run ID:" in captured.err
+    assert "log path:" in captured.err
+
+    connection = connect_database(tmp_path / "agent-run.db")
+    try:
+        row = connection.execute(
+            "SELECT status, pid, exit_status, timed_out FROM runs"
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert row == ("finished", os.getpid(), -signal.SIGTERM, 0)
 
 
 def test_cli_run_json_failure_includes_unrecognised_tail(
