@@ -19,6 +19,7 @@ from agent_run.failures import Failure, FailureReport
 from agent_run.locking import acquire_run_lock
 from agent_run.output import render_command_result, render_error, render_success
 from agent_run.repository import identify_repository
+from agent_run.runs import create_run_log, start_run
 from cli_style import CliStyleNotFoundError
 
 
@@ -1265,6 +1266,64 @@ raise SystemExit(1)
         "E       AssertionError: values differ"
     ]
     assert failure_json_result["data"]["failure"]["tail"] == []
+
+
+def test_cli_shows_a_running_run_without_completion_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Run listings and show give the status and leave out fields that are not known yet."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    run_id, log_path = create_run_log(database_path, run_id="running-run")
+    connection = connect_database(database_path)
+    try:
+        start_run(
+            connection,
+            run_id=run_id,
+            repository_id=identify_repository().id,
+            argv=["echo", "running"],
+            working_directory=".",
+            timeout_seconds=5,
+            started_at="2026-09-22T09:00:00+00:00",
+            log_path=log_path,
+            pid=os.getpid(),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    text_exit_code = main(["runs"])
+    text_output = capsys.readouterr()
+
+    assert text_exit_code == 0
+    assert "status             running" in text_output.out
+    assert "exit status" not in text_output.out
+    assert "timed out" not in text_output.out
+    assert "duration" not in text_output.out
+
+    show_exit_code = main(["show", run_id])
+    show_output = capsys.readouterr()
+
+    assert show_exit_code == 0
+    assert "status             running" in show_output.out
+    assert "duration" not in show_output.out
+
+    json_exit_code = main(["runs", "--json"])
+    json_output = capsys.readouterr()
+    json_result = json.loads(json_output.out)
+    data = json_result["data"]["runs"][0]
+
+    assert json_exit_code == 0
+    assert data["run_id"] == run_id
+    assert data["status"] == "running"
+    assert data["exit_status"] is None
+    assert data["duration_seconds"] is None
+    assert "pid" not in data
 
 
 @pytest.mark.parametrize("command", ["show", "log", "failures"])

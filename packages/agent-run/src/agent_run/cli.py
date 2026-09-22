@@ -65,6 +65,7 @@ from agent_run.retention import (
 )
 from agent_run.runs import (
     DEFAULT_RUN_LIMIT,
+    RUNNING_STATUS,
     RunNotFoundError,
     RunRecord,
     create_run_log,
@@ -1870,6 +1871,7 @@ def _saved_run_record(record: RunRecord) -> dict[str, object]:
         "working_directory": record.working_directory,
         "timeout_seconds": record.timeout_seconds,
         "started_at": record.started_at,
+        "status": record.status,
         "duration_seconds": record.duration_seconds,
         "exit_status": record.exit_status,
         "timed_out": record.timed_out,
@@ -1879,18 +1881,27 @@ def _saved_run_record(record: RunRecord) -> dict[str, object]:
 
 def _format_saved_run(record: RunRecord) -> str:
     """Format one stored run record for human-readable output."""
-    rows = render_row_group(
-        [
-            {"label": "run ID", "value": record.run_id},
-            {"label": "command", "value": json.dumps(list(record.argv))},
-            {"label": "working directory", "value": record.working_directory},
-            {"label": "timeout", "value": _format_timeout(record.timeout_seconds)},
-            {"label": "started at", "value": record.started_at},
-            {"label": "exit status", "value": record.exit_status},
-            {"label": "timed out", "value": str(record.timed_out).lower()},
-            {"label": "duration", "value": f"{record.duration_seconds:.3f}s"},
-        ]
-    )
+    row_data = [
+        {"label": "run ID", "value": record.run_id},
+        {"label": "command", "value": json.dumps(list(record.argv))},
+        {"label": "working directory", "value": record.working_directory},
+        {"label": "timeout", "value": _format_timeout(record.timeout_seconds)},
+        {"label": "started at", "value": record.started_at},
+        {"label": "status", "value": record.status},
+    ]
+
+    # A run that is still going has no result yet, so its exit status, timed
+    # out and duration rows are left out rather than shown empty.
+    if record.status != RUNNING_STATUS:
+        row_data.extend(
+            [
+                {"label": "exit status", "value": record.exit_status},
+                {"label": "timed out", "value": str(record.timed_out).lower()},
+                {"label": "duration", "value": f"{record.duration_seconds:.3f}s"},
+            ]
+        )
+
+    rows = render_row_group(row_data)
 
     return f"{rows}\nlog path: {record.log_path}"
 

@@ -198,6 +198,8 @@ failure reader and returns only the failure detail. A passed run reports that
 it has no failures. Add `--json` to any of these commands for the shared JSON
 envelope.
 
+A run that is still going shows status `running` without an exit status or duration.
+
 Logs are stored in `agent-run-logs` beside the database. With the default
 database, logs are written to `~/.agents/agent-run-logs`; setting
 `AGENT_RUN_DATABASE` moves the log directory beside the selected database.
