@@ -1,0 +1,4 @@
+2026-09-23 13:20:25.624 xcodebuild[20930:20011930] [MT] DVTPlugInLoading: Failed to load code for plug-in com.apple.dt.DVTCoreDeviceCore (/Applications/Xcode.app/Contents/SharedFrameworks/DVTCoreDeviceCore.framework), error = Error Domain=NSCocoaErrorDomain Code=3588 "dlopen(/Applications/Xcode.app/Contents/SharedFrameworks/DVTCoreDeviceCore.framework/DVTCoreDeviceCore, 0x0109): Symbol not found: _$s10CoreDevice17DetailedOperationC7metricsSDySSAA12CodableValueOGvg
+  Referenced from: <E47C0F61-0399-382B-A241-7222F33F774E> /Applications/Xcode.app/Contents/SharedFrameworks/DVTCoreDeviceCore.framework/Versions/A/DVTCoreDeviceCore
+/project/LewTimer/LewTimerCore/Sources/LewTimerCore/CorePlaceholder.swift:11:35: error: cannot convert value of type 'String' to specified type 'Int'
+** BUILD FAILED **

@@ -14,6 +14,7 @@ from agent_run.readers.pytest import PytestReader
 from agent_run.readers.ruff import RuffReader
 from agent_run.readers.vitest import VitestReader
 from agent_run.readers.vp_check import VpCheckReader
+from agent_run.readers.xcodebuild import XcodebuildReader
 
 # Readers are tried in this order, and the first that matches a command reads its log.
 FAILURE_READERS: tuple[FailureReader, ...] = (
@@ -21,6 +22,7 @@ FAILURE_READERS: tuple[FailureReader, ...] = (
     RuffReader(),
     VitestReader(),
     VpCheckReader(),
+    XcodebuildReader(),
 )
 
 

@@ -1,0 +1,25 @@
+2026-09-23 13:55:15.207 xcodebuild[49832:20104447] [MT] DVTPlugInLoading: Failed to load code for plug-in com.apple.dt.DVTCoreDeviceCore (/Applications/Xcode.app/Contents/SharedFrameworks/DVTCoreDeviceCore.framework), error = Error Domain=NSCocoaErrorDomain Code=3588 "dlopen(/Applications/Xcode.app/Contents/SharedFrameworks/DVTCoreDeviceCore.framework/DVTCoreDeviceCore, 0x0109): Symbol not found: _$s10CoreDevice17DetailedOperationC7metricsSDySSAA12CodableValueOGvg
+  Referenced from: <E47C0F61-0399-382B-A241-7222F33F774E> /Applications/Xcode.app/Contents/SharedFrameworks/DVTCoreDeviceCore.framework/Versions/A/DVTCoreDeviceCore
+  Referenced from: <E47C0F61-0399-382B-A241-7222F33F774E> /Applications/Xcode.app/Contents/SharedFrameworks/DVTCoreDeviceCore.framework/Versions/A/DVTCoreDeviceCore
+Details:  No locator class for device extension 'Xcode.Device.CoreDevice', error: Error Domain=DVTPlugInErrorDomain Code=2 "Loading a plug-in failed." UserInfo={DVTPlugInIdentifierErrorKey=com.apple.dt.DVTCoreDeviceCore, DVTPlugInExecutablePathErrorKey=/Applications/Xcode.app/Contents/SharedFrameworks/DVTCoreDeviceCore.framework/DVTCoreDeviceCore, NSLocalizedRecoverySuggestion=The plug-in or one of its prerequisite plug-ins may be missing or damaged and may need to be reinstalled., DVTPlugInDYLDErrorMessageErrorKey=dlopen(/Applications/Xcode.app/Contents/SharedFrameworks/DVTCoreDeviceCore.framework/DVTCoreDeviceCore, 0x0000): Symbol not found: _$s10CoreDevice17DetailedOperationC7metricsSDySSAA12CodableValueOGvg
+CoreSimulator is out of date. Current version (1051.55.0) is older than build version (1171.7.0).
+2026-09-23 13:55:15.211 xcodebuild[49832:20106019]  iOSSimulator: [SimServiceContext sharedServiceContextForDeveloperDir:error:] returned nil (Error Domain=DVTCoreSimulatorAdditionsErrorDomain Code=3 "CoreSimulator is out of date. Current version (1051.55.0) is older than build version (1171.7.0)." UserInfo={NSLocalizedDescription=CoreSimulator is out of date. Current version (1051.55.0) is older than build version (1171.7.0).}). Simulator device support disabled.
+2026-09-23 13:55:24.339206+0100 LewTimer[53985:20113532] [Connection] Unable to get synchronousRemoteObjectProxy, error: Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.linkd.autoShortcut" UserInfo={NSDebugDescription=connection to service named com.apple.linkd.autoShortcut}
+2026-09-23 13:55:24.339866+0100 LewTimer[53985:20113534] [Connection] Unable to get synchronousRemoteObjectProxy, error: Error Domain=NSCocoaErrorDomain Code=4097 "connection to service named com.apple.linkd.autoShortcut" UserInfo={NSDebugDescription=connection to service named com.apple.linkd.autoShortcut}
+Test Suite 'Selected tests' started at 2026-09-23 13:55:26.837.
+Test Suite 'LewTimerTests.xctest' started at 2026-09-23 13:55:26.839.
+Test Suite 'FixtureXCTestFailure' started at 2026-09-23 13:55:26.839.
+Test Case '-[LewTimerTests.FixtureXCTestFailure testNumbersDiffer]' started.
+/project/LewTimer/LewTimerTests/FixtureXCTestFailure.swift:5: error: -[LewTimerTests.FixtureXCTestFailure testNumbersDiffer] : XCTAssertEqual failed: ("1") is not equal to ("2") - numbers differ
+Test Case '-[LewTimerTests.FixtureXCTestFailure testNumbersDiffer]' failed (0.139 seconds).
+Test Suite 'FixtureXCTestFailure' failed at 2026-09-23 13:55:26.979.
+	 Executed 1 test, with 1 failure (0 unexpected) in 0.139 (0.140) seconds
+Test Suite 'LewTimerTests.xctest' failed at 2026-09-23 13:55:26.979.
+	 Executed 1 test, with 1 failure (0 unexpected) in 0.139 (0.140) seconds
+Test Suite 'Selected tests' failed at 2026-09-23 13:55:26.979.
+	 Executed 1 test, with 1 failure (0 unexpected) in 0.139 (0.142) seconds
+Details:  setRunnablePIDWithDiagnostics:logSection:andCompletionHandler: called without a completion handler - blocking until diagnostics setup completes. Callers should migrate to using a completion handler for better performance.
+Test Suite 'All tests' started at 2026-09-23 13:55:28.314.
+Test Suite 'All tests' passed at 2026-09-23 13:55:28.314.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+** TEST FAILED **

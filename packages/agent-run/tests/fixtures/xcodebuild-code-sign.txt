@@ -1,0 +1,4 @@
+error: Cannot code sign because the target does not have an Info.plist file.
+Testing failed:
+	Cannot code sign because the target does not have an Info.plist file.
+** TEST FAILED **

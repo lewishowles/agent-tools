@@ -7,6 +7,19 @@ from agent_run.failures import Failure, FailureReport, summarise_output
 from agent_run.readers import read_failure_report
 
 
+def test_read_failure_report_selects_xcodebuild_reader() -> None:
+    """An xcrun-launched build uses Xcode diagnostics instead of the log tail."""
+    report = read_failure_report(
+        ["xcrun", "xcodebuild", "build"],
+        "File.swift:3:2: error: broken\n** BUILD FAILED **\n",
+    )
+
+    assert report.recognised is True
+    assert report.first is not None
+    assert report.first.path == "File.swift"
+    assert report.first.title == "broken"
+
+
 class _StubReader:
     """Return a known report so reader selection can be tested in isolation."""
 

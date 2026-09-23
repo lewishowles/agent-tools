@@ -186,7 +186,7 @@ A successful run also shows the last eight non-blank lines of its output, so
 you can see what it did, such as how many tests ran. JSON output returns these
 lines as `summary` in `data`.
 
-Failures from pytest, ruff, and Vitest include the first failure's
+Failures from pytest, ruff, Vitest, and xcodebuild include the first failure's
 source location, title, and bounded detail. Up to 20 further failures are shown
 as one-line entries, with a count for anything hidden by the limit. The first
 failure detail is limited to 20 lines, keeping the code frame and error message
