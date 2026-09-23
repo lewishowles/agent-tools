@@ -117,9 +117,8 @@ at supported paths in the repository root, `tests/`, and `scripts/`:
 - `pyproject.toml`: pytest and ruff checks, for each tool the file configures.
 - `Package.swift`: `swift build` and `swift test`.
 - `.swift-format`: `swift-format lint --recursive .`.
-- Shell scripts: every `.sh` file directly under `tests/`, plus
-  `scripts/validate.sh`, `scripts/test.sh`, `scripts/check.sh`, and
-  `scripts/lint.sh` when present.
+- Scripts directly under `tests/` and `scripts/`: every `.sh` file runs with
+  Bash; executable files without a suffix run directly.
 
 Xcode projects and packages below the root are not detected; add those with
 `agent-run add`.

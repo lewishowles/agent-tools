@@ -278,8 +278,8 @@ def test_swift_detector_returns_supported_root_checks(
     assert candidates == expected
 
 
-def test_shell_detector_returns_supported_checks_only(tmp_path: Path) -> None:
-    """Shell scripts under tests/ and scripts/ become candidates; others are ignored."""
+def test_shell_detector_returns_direct_scripts(tmp_path: Path) -> None:
+    """Scripts in tests/ and scripts/ become candidates; other files are ignored."""
     root = _initialise_repository(tmp_path / "repository")
     tests_directory = root / "tests"
     scripts_directory = root / "scripts"
@@ -291,6 +291,8 @@ def test_shell_detector_returns_supported_checks_only(tmp_path: Path) -> None:
     (tests_directory / "integration.sh").touch()
     (tests_directory / "unit.sh").touch()
     (tests_directory / "executable").touch(mode=0o755)
+    (tests_directory / "notes").touch()
+    (tests_directory / "data.txt").touch()
     (nested_tests / "nested.sh").touch()
     (scripts_directory / "validate.sh").touch()
     (scripts_directory / "test.sh").touch()
@@ -298,10 +300,14 @@ def test_shell_detector_returns_supported_checks_only(tmp_path: Path) -> None:
     (scripts_directory / "lint.sh").touch()
     (scripts_directory / "sync.sh").touch()
     (scripts_directory / "build.sh").touch()
+    (scripts_directory / "deploy").touch(mode=0o755)
+    (scripts_directory / "notes").touch()
+    (scripts_directory / "data.py").touch(mode=0o755)
 
     candidates = detect_shell_checks(_repository(root))
 
     assert candidates == (
+        Candidate("executable", ("tests/executable",), ".", "tests/executable"),
         Candidate(
             "integration",
             ("bash", "tests/integration.sh"),
@@ -309,15 +315,36 @@ def test_shell_detector_returns_supported_checks_only(tmp_path: Path) -> None:
             "tests/integration.sh",
         ),
         Candidate("unit", ("bash", "tests/unit.sh"), ".", "tests/unit.sh"),
+        Candidate("build", ("bash", "scripts/build.sh"), ".", "scripts/build.sh"),
+        Candidate("check", ("bash", "scripts/check.sh"), ".", "scripts/check.sh"),
+        Candidate("deploy", ("scripts/deploy",), ".", "scripts/deploy"),
+        Candidate("lint", ("bash", "scripts/lint.sh"), ".", "scripts/lint.sh"),
+        Candidate("sync", ("bash", "scripts/sync.sh"), ".", "scripts/sync.sh"),
+        Candidate("test", ("bash", "scripts/test.sh"), ".", "scripts/test.sh"),
         Candidate(
             "validate",
             ("bash", "scripts/validate.sh"),
             ".",
             "scripts/validate.sh",
         ),
-        Candidate("test", ("bash", "scripts/test.sh"), ".", "scripts/test.sh"),
+    )
+
+
+def test_shell_detector_prefers_tests_for_duplicate_names(tmp_path: Path) -> None:
+    """A test script wins when a script in scripts/ has the same name."""
+    root = _initialise_repository(tmp_path / "repository")
+    (root / "tests").mkdir()
+    (root / "scripts").mkdir()
+    (root / "tests" / "check.sh").touch()
+    (root / "scripts" / "check.sh").touch()
+
+    collection = collect_candidates(_repository(root), detectors=(detect_shell_checks,))
+
+    assert collection.candidates == (
+        Candidate("check", ("bash", "tests/check.sh"), ".", "tests/check.sh"),
+    )
+    assert collection.skipped == (
         Candidate("check", ("bash", "scripts/check.sh"), ".", "scripts/check.sh"),
-        Candidate("lint", ("bash", "scripts/lint.sh"), ".", "scripts/lint.sh"),
     )
 
 
