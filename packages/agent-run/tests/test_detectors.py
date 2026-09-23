@@ -9,7 +9,13 @@ from agent_run import cli, detectors
 from agent_run.cli import main
 from agent_run.commands import add_command, list_commands
 from agent_run.database import connect_database
-from agent_run.detectors import Candidate, CandidateCollection, collect_candidates
+from agent_run.detectors import (
+    Candidate,
+    CandidateCollection,
+    SkippedCandidate,
+    SkippedFile,
+    collect_candidates,
+)
 from agent_run.detectors.package_json import detect_package_json_scripts
 from agent_run.detectors.pyproject import detect_pyproject_checks
 from agent_run.detectors.shell import detect_shell_checks
@@ -59,7 +65,7 @@ def test_collect_candidates_keeps_the_first_duplicate_name(
     collection = collect_candidates(repository, (first_detector, second_detector))
 
     assert collection.candidates == (first,)
-    assert collection.skipped == (duplicate,)
+    assert collection.skipped == (SkippedCandidate(duplicate, "duplicate name"),)
 
 
 @pytest.mark.parametrize(
@@ -307,6 +313,11 @@ def test_shell_detector_returns_direct_scripts(tmp_path: Path) -> None:
     candidates = detect_shell_checks(_repository(root))
 
     assert candidates == (
+        SkippedFile(
+            "shell",
+            "tests/data.txt",
+            "neither a .sh file nor an executable without a suffix",
+        ),
         Candidate("executable", ("tests/executable",), ".", "tests/executable"),
         Candidate(
             "integration",
@@ -314,11 +325,26 @@ def test_shell_detector_returns_direct_scripts(tmp_path: Path) -> None:
             ".",
             "tests/integration.sh",
         ),
+        SkippedFile(
+            "shell",
+            "tests/notes",
+            "neither a .sh file nor an executable without a suffix",
+        ),
         Candidate("unit", ("bash", "tests/unit.sh"), ".", "tests/unit.sh"),
         Candidate("build", ("bash", "scripts/build.sh"), ".", "scripts/build.sh"),
         Candidate("check", ("bash", "scripts/check.sh"), ".", "scripts/check.sh"),
+        SkippedFile(
+            "shell",
+            "scripts/data.py",
+            "neither a .sh file nor an executable without a suffix",
+        ),
         Candidate("deploy", ("scripts/deploy",), ".", "scripts/deploy"),
         Candidate("lint", ("bash", "scripts/lint.sh"), ".", "scripts/lint.sh"),
+        SkippedFile(
+            "shell",
+            "scripts/notes",
+            "neither a .sh file nor an executable without a suffix",
+        ),
         Candidate("sync", ("bash", "scripts/sync.sh"), ".", "scripts/sync.sh"),
         Candidate("test", ("bash", "scripts/test.sh"), ".", "scripts/test.sh"),
         Candidate(
@@ -344,7 +370,10 @@ def test_shell_detector_prefers_tests_for_duplicate_names(tmp_path: Path) -> Non
         Candidate("check", ("bash", "tests/check.sh"), ".", "tests/check.sh"),
     )
     assert collection.skipped == (
-        Candidate("check", ("bash", "scripts/check.sh"), ".", "scripts/check.sh"),
+        SkippedCandidate(
+            Candidate("check", ("bash", "scripts/check.sh"), ".", "scripts/check.sh"),
+            "duplicate name",
+        ),
     )
 
 
@@ -380,9 +409,14 @@ def test_detect_reports_candidates_in_json_with_registration_status(
     registered_candidate = Candidate("test", ("pytest",), ".", "fake")
     new_candidate = Candidate("lint", ("ruff", "check"), "tools", "fake")
     skipped_candidate = Candidate("test", ("uv", "run", "pytest"), ".", "other")
+    skipped_file = SkippedFile(
+        "shell",
+        "tests/data.py",
+        "neither a .sh file nor an executable without a suffix",
+    )
 
-    def fake_detector(_: Repository) -> tuple[Candidate, ...]:
-        return (registered_candidate, new_candidate, skipped_candidate)
+    def fake_detector(_: Repository) -> tuple[Candidate | SkippedFile, ...]:
+        return (registered_candidate, new_candidate, skipped_candidate, skipped_file)
 
     monkeypatch.setattr(detectors, "DETECTORS", (fake_detector,))
     connection = connect_database()
@@ -429,7 +463,13 @@ def test_detect_reports_candidates_in_json_with_registration_status(
                     "argv": ["uv", "run", "pytest"],
                     "detector": "other",
                     "registered": False,
-                }
+                    "reason": "duplicate name",
+                },
+                {
+                    "detector": "shell",
+                    "path": "tests/data.py",
+                    "reason": "neither a .sh file nor an executable without a suffix",
+                },
             ],
         },
     }
@@ -447,9 +487,14 @@ def test_detect_reports_candidate_registration_in_text_mode(
 
     candidate = Candidate("test", ("pytest",), ".", "fake")
     skipped_candidate = Candidate("test", ("uv", "run", "pytest"), ".", "other")
+    skipped_file = SkippedFile(
+        "shell",
+        "tests/data.py",
+        "neither a .sh file nor an executable without a suffix",
+    )
 
-    def fake_detector(_: Repository) -> tuple[Candidate, ...]:
-        return (candidate, skipped_candidate)
+    def fake_detector(_: Repository) -> tuple[Candidate | SkippedFile, ...]:
+        return (candidate, skipped_candidate, skipped_file)
 
     monkeypatch.setattr(detectors, "DETECTORS", (fake_detector,))
 
@@ -463,8 +508,15 @@ def test_detect_reports_candidate_registration_in_text_mode(
     assert 'argv: ["pytest"]' in captured.out
     assert "detector: fake" in captured.out
     assert "registered: false" in captured.out
-    assert "Skipped duplicate candidates:" in captured.out
-    assert 'detector: other; name: test; argv: ["uv", "run", "pytest"]' in captured.out
+    assert "Skipped candidates:" in captured.out
+    assert (
+        'detector: other; name: test; argv: ["uv", "run", "pytest"]; reason: duplicate name'
+        in captured.out
+    )
+    assert (
+        "detector: shell; path: tests/data.py; reason: neither a .sh file nor an executable without a suffix"
+        in captured.out
+    )
     assert captured.err == ""
 
 

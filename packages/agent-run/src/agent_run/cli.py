@@ -34,7 +34,12 @@ from agent_run.commands import (
     starts_browser_runner,
 )
 from agent_run.database import connect_database, resolve_database_path
-from agent_run.detectors import Candidate, collect_candidates
+from agent_run.detectors import (
+    Candidate,
+    SkippedCandidate,
+    SkippedFile,
+    collect_candidates,
+)
 from agent_run.execution import (
     DEFAULT_TIMEOUT_SECONDS,
     RunResult,
@@ -1306,8 +1311,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                             for candidate in collection.candidates
                         ],
                         "skipped": [
-                            _candidate_record(candidate, registered_commands)
-                            for candidate in collection.skipped
+                            _skipped_record(skipped, registered_commands)
+                            for skipped in collection.skipped
                         ],
                     }
                     text_sections = [
@@ -1872,6 +1877,24 @@ def _candidate_record(
     }
 
 
+def _skipped_record(
+    skipped: SkippedCandidate | SkippedFile,
+    registered_commands: Mapping[str, Command],
+) -> dict[str, object]:
+    """Return a skipped candidate or file with its reason."""
+    if isinstance(skipped, SkippedFile):
+        return {
+            "detector": skipped.detector,
+            "path": skipped.path,
+            "reason": skipped.reason,
+        }
+
+    return {
+        **_candidate_record(skipped.candidate, registered_commands),
+        "reason": skipped.reason,
+    }
+
+
 def _format_candidate(candidate: Candidate, registered: bool) -> str:
     """Format one detected candidate for human-readable output."""
     return "\n".join(
@@ -1901,15 +1924,22 @@ def _format_candidates(
     )
 
 
-def _format_skipped_candidates(skipped: Sequence[Candidate]) -> str:
-    """List candidates dropped because an earlier detector already used their name."""
-    lines = ["Skipped duplicate candidates:"]
-    lines.extend(
-        "detector: "
-        f"{candidate.detector}; name: {candidate.name}; "
-        f"argv: {json.dumps(list(candidate.argv))}"
-        for candidate in skipped
-    )
+def _format_skipped_candidates(
+    skipped: Sequence[SkippedCandidate | SkippedFile],
+) -> str:
+    """List skipped candidates and files with the reason for each."""
+    lines = ["Skipped candidates:"]
+    for entry in skipped:
+        if isinstance(entry, SkippedFile):
+            lines.append(
+                f"detector: {entry.detector}; path: {entry.path}; reason: {entry.reason}"
+            )
+        else:
+            candidate = entry.candidate
+            lines.append(
+                f"detector: {candidate.detector}; name: {candidate.name}; "
+                f"argv: {json.dumps(list(candidate.argv))}; reason: {entry.reason}"
+            )
 
     return "\n".join(lines)
 

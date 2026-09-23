@@ -120,6 +120,12 @@ at supported paths in the repository root, `tests/`, and `scripts/`:
 - Scripts directly under `tests/` and `scripts/`: every `.sh` file runs with
   Bash; executable files without a suffix run directly.
 
+`detect` also lists what it left out, with a reason for each: candidates whose
+name an earlier candidate already uses, and files directly under `tests/` or
+`scripts/` that are neither `.sh` files nor executable files without a suffix.
+An executable with another suffix, such as `tests/check.py`, is left out; add it
+with `agent-run add`. An empty skipped list means nothing was left out.
+
 Xcode projects and packages below the root are not detected; add those with
 `agent-run add`.
 
