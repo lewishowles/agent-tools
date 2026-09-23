@@ -1,9 +1,9 @@
 """SQLite schema and transactional migrations for progress storage."""
 
-from collections.abc import Callable
-from datetime import datetime, timezone
 import re
 import sqlite3
+from collections.abc import Callable
+from datetime import UTC, datetime
 
 from .errors import DatabaseBusyError, MigrationFailedError, StaleSchemaError
 
@@ -22,7 +22,7 @@ _NUMBERED_STEP_PATTERN = re.compile(r"(?<!\S)(\d+)([.)])[ \t]+")
 
 def utc_timestamp() -> str:
 	"""Return a UTC timestamp in the public ISO 8601 format."""
-	return datetime.now(timezone.utc).isoformat()
+	return datetime.now(UTC).isoformat()
 
 
 def _create_schema(connection: sqlite3.Connection) -> None:
@@ -348,7 +348,7 @@ def _migrate_to_version_5(connection: sqlite3.Connection) -> None:
 		if purpose:
 			connection.execute(
 				"UPDATE tasks SET overview = ? WHERE id = ?",
-				("\n\n".join((overview, purpose)), task_id),
+				(f"{overview}\n\n{purpose}", task_id),
 			)
 
 		criteria = _split_acceptance_criteria(acceptance_criteria)

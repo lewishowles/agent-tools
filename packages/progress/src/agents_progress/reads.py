@@ -1,8 +1,8 @@
 """Read queries shared by the human and JSON progress interfaces."""
 
+import sqlite3
 from collections.abc import Callable, Sequence
 from pathlib import Path
-import sqlite3
 
 from .errors import (
 	InvalidObjectIdError,
@@ -865,7 +865,7 @@ class ReadStore(_StoreBase):
 		requested_fields = set(all_fields if not fields else fields)
 		unknown_fields = requested_fields.difference(all_fields)
 		if unknown_fields:
-			raise ValueError(f"unknown search field {sorted(unknown_fields)[0]!r}")
+			raise ValueError(f"unknown search field {min(unknown_fields)!r}")
 
 		selected_fields = tuple(
 			field for field in all_fields if field in requested_fields

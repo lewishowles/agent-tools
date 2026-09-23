@@ -1,12 +1,13 @@
 import json
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
-from agents_progress.database import Database
+
 import agents_progress.render as render_module
 import agents_progress.style as style_module
 from agents_progress import __version__, cli
+from agents_progress.database import Database
 from agents_progress.errors import (
 	AlreadyExistsError,
 	DuplicateDependencyError,
@@ -1094,8 +1095,10 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 			"Non-empty task summary",
 			"Non-empty task contract step",
 			"Optional file covered by the task; press Enter to skip",
-			"Reason for splitting the task; doctor expects every task "
-			"to have one; press Enter to skip",
+			(
+				"Reason for splitting the task; doctor expects every task "
+				"to have one; press Enter to skip"
+			),
 			"Optional verification instructions; press Enter to skip",
 			"Associate the task with a release; press Enter to skip",
 			"Task ID dependency; press Enter to skip",

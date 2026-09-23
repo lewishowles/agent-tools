@@ -5,6 +5,7 @@ requires-python = ">=3.11"
 [manifest]
 members = [
     "agent-run",
+    "agents-progress",
 ]
 
 [manifest.dependency-groups]
@@ -27,6 +28,16 @@ requires-dist = [
     { name = "lewishowles-cli-style", specifier = ">=0.15.0" },
     { name = "questionary", specifier = ">=2.1.1" },
 ]
+
+[[package]]
+name = "agents-progress"
+source = { editable = "packages/progress" }
+dependencies = [
+    { name = "prompt-toolkit" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "prompt-toolkit", specifier = ">=3.0" }]
 
 [[package]]
 name = "colorama"

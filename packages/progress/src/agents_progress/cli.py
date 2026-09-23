@@ -24,7 +24,6 @@ from .style import (
 )
 from .writes import WriteStore
 
-
 # Top-level commands removed by prior releases, mapped to their direct replacement.
 _LEGACY_COMMAND_ALIASES = {
 	"current": "next",

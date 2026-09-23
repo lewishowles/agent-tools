@@ -1,8 +1,8 @@
 """Generation and validation for human-readable progress object IDs."""
 
-from collections.abc import Callable
 import re
 import secrets
+from collections.abc import Callable
 
 from .errors import InvalidObjectIdError, ObjectIdCollisionError, WrongObjectIdTypeError
 

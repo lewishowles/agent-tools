@@ -1,8 +1,8 @@
 """Project records and their repository-local Git bindings."""
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Protocol
 
@@ -111,8 +111,8 @@ class ProjectStore:
 				repository.clear_binding()
 			else:
 				repository.set_binding(previous_binding)
-		except Exception as compensation_error:
-			# Provide a manual recovery command when compensation cannot restore the binding.
+		except Exception as compensation_error:  # noqa: BLE001
+			# Catch every error so that, whatever broke the rollback, the user still gets the Git command to restore the binding by hand.
 			recovery_command = (
 				"git config --local --unset-all progress.project-id"
 				if previous_binding is None

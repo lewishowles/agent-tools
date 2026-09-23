@@ -19,3 +19,10 @@ path = "src/agents_progress/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agents_progress"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+known-first-party = ["agents_progress"]
+
+[tool.ruff.format]
+indent-style = "tab"

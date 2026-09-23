@@ -1,7 +1,7 @@
 """Git repository discovery and local progress project bindings."""
 
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 from .errors import GitBindingError, NotAProjectError
 

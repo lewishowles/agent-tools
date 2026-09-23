@@ -1,8 +1,8 @@
 """Transactional creation and lifecycle writes for progress storage."""
 
+import sqlite3
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-import sqlite3
 
 from .errors import (
 	AlreadyExistsError,
@@ -1542,8 +1542,8 @@ def _remove_release(
 	for task_id in task_ids:
 		task_result = _remove_task(connection, task_id, project_id, force=True)
 		task_deleted = task_result["deleted"]
-		for record_type in deleted:
-			deleted[record_type].extend(task_deleted[record_type])
+		for record_type, records in deleted.items():
+			records.extend(task_deleted[record_type])
 
 		unblocked_tasks.extend(
 			unblocked_task_id

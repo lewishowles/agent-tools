@@ -14,7 +14,6 @@ from .style import (
 	table as render_table,
 )
 
-
 # Column width the long prose fields wrap to.
 _ROW_WRAP_WIDTH = 72
 
@@ -1027,11 +1026,7 @@ def _status_result_type(status: object) -> str:
 def _render_object(data: dict[str, object]) -> str:
 	"""Render one stable public object as labelled rows."""
 	lines = []
-	for key in data:
-		if key not in data:
-			continue
-
-		value = data[key]
+	for key, value in data.items():
 		if key == "demoted_task":
 			lines.append(f"Demoted task: {_format_demoted_task(value)}")
 			continue

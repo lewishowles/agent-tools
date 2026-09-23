@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+
 from agents_progress.database import Database
 from agents_progress.errors import NotFoundError, WrongObjectIdTypeError
 from agents_progress.ids import RELEASE_PREFIX, TASK_PREFIX
@@ -738,9 +739,11 @@ def test_resolve_identifier_tries_id_then_project_slug(
 def test_resolve_identifier_rejects_a_wrong_object_type(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 
-	with store.database.connection() as connection:
-		with pytest.raises(WrongObjectIdTypeError):
-			resolve_identifier(connection, CHUNK_A, TASK_PREFIX, PROJECT_ID)
+	with (
+		store.database.connection() as connection,
+		pytest.raises(WrongObjectIdTypeError),
+	):
+		resolve_identifier(connection, CHUNK_A, TASK_PREFIX, PROJECT_ID)
 
 
 @pytest.mark.parametrize(

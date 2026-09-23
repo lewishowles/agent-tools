@@ -4,6 +4,7 @@ from multiprocessing import get_context
 from pathlib import Path
 
 import pytest
+
 from agents_progress import database as database_module
 from agents_progress.database import Database
 from agents_progress.errors import (
@@ -221,7 +222,8 @@ def _add_release_in_process(database_path: str, slug: str, results) -> None:
 		result = WriteStore(database, _ProjectStore(database)).release_add(
 			slug, slug.title(), overview=f"{slug} overview"
 		)
-	except Exception as error:
+	# Catch every error so the parent process hears about it; an exception left in the child would be lost.
+	except Exception as error:  # noqa: BLE001
 		results.put(("error", getattr(error, "code", type(error).__name__)))
 	else:
 		results.put(("ok", result["slug"]))

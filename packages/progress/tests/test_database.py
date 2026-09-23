@@ -79,9 +79,8 @@ def test_transaction_converts_locked_begin_and_commit_errors(
 	database = Database(tmp_path / "progress.db")
 	monkeypatch.setattr(database, "connect", lambda: connection)
 
-	with pytest.raises(DatabaseBusyError):
-		with database.transaction():
-			pass
+	with pytest.raises(DatabaseBusyError), database.transaction():
+		pass
 
 	assert connection.closed
 

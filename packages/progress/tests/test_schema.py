@@ -1,6 +1,7 @@
 import sqlite3
 
 import pytest
+
 from agents_progress import schema
 from agents_progress.database import Database
 from agents_progress.errors import MigrationFailedError, StaleSchemaError

@@ -12,7 +12,6 @@ from agents_progress._cli_style import (
 	status as render_status,
 )
 
-
 # Match cli-style's plain-text result markers when its binary is unavailable.
 _PLAIN_RESULT_MARKERS = {
 	"failed": "x",
