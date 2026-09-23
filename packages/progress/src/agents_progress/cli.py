@@ -13,7 +13,7 @@ from prompt_toolkit import prompt
 
 from . import __version__
 from .database import Database
-from .errors import ProgressError
+from .errors import NotFoundError, ProgressError
 from .projects import ProjectStore
 from .reads import DEFAULT_LIMIT, MAX_LIMIT, ReadStore
 from .render import render
@@ -568,7 +568,7 @@ _COMMAND_SPECS = (
 			_CommandSpec(
 				"get",
 				"show one task",
-				arguments=(_argument("task_id"),),
+				arguments=(_argument("task_id", nargs="?"),),
 			),
 			_CommandSpec(
 				"list",
@@ -641,12 +641,12 @@ _COMMAND_SPECS = (
 			_CommandSpec(
 				"get",
 				"show one chunk",
-				arguments=(_argument("chunk_id"),),
+				arguments=(_argument("chunk_id", nargs="?"),),
 			),
 			_CommandSpec(
 				"list",
 				"list chunks for a task",
-				arguments=(_argument("--task", required=True, dest="task_id"),),
+				arguments=(_argument("--task", dest="task_id"),),
 				page_options=True,
 			),
 		),
@@ -1323,7 +1323,9 @@ def _run_command(
 			"task unblock",
 		),
 		("task", "get"): lambda: (
-			ReadStore(database).task_get(args.task_id),
+			(store := ReadStore(database)).task_get(
+				_selected_id(store, args.task_id, "task")
+			),
 			"task get",
 		),
 		("task", "list"): lambda: (
@@ -1350,7 +1352,9 @@ def _run_command(
 			"chunk list",
 		),
 		("chunk", "get"): lambda: (
-			ReadStore(database).chunk_get(args.chunk_id),
+			(store := ReadStore(database)).chunk_get(
+				_selected_id(store, args.chunk_id, "chunk")
+			),
 			"chunk get",
 		),
 		("chunk", "add"): lambda: (
@@ -1451,17 +1455,39 @@ def _run_command(
 def _run_chunk_list(
 	args: argparse.Namespace, database: Database, human_output: bool
 ) -> object:
-	"""Load a task's chunks, adding the task title and ID for the text header."""
+	"""Load a task's chunks, using the selected task when --task is omitted.
+
+	Human output also gets the task title and ID for the heading.
+	"""
 	store = ReadStore(database)
-	data = store.chunk_list(args.task_id, args.limit, args.offset)
+	task_id = _selected_id(store, args.task_id, "task")
+	data = store.chunk_list(task_id, args.limit, args.offset)
 	if not human_output or not isinstance(data, dict):
 		return data
 
-	task = store.task_get(args.task_id)
+	task = store.task_get(task_id)
 	return {
 		**data,
 		"task": {"id": task.get("id", ""), "title": task.get("title", "")},
 	}
+
+
+def _selected_id(store: ReadStore, explicit_id: str | None, kind: str) -> str:
+	"""Return the given ID, or the task or chunk that progress next selects when the ID is omitted.
+
+	Raises NotFoundError with a recovery hint in its details when nothing is selected.
+	"""
+	if explicit_id is not None:
+		return explicit_id
+
+	selected = store.next().get(kind)
+	if not isinstance(selected, dict) or not selected.get("id"):
+		raise NotFoundError(
+			f"no {kind} is selected",
+			{"hint": "Run progress next to see the current selection."},
+		)
+
+	return str(selected["id"])
 
 
 def _run_release_move(
@@ -1621,6 +1647,9 @@ def _write_error(
 		)
 	else:
 		sys.stderr.write("\n" + render_status("failed", "Error", message) + "\n")
+		hint = details.get("hint")
+		if isinstance(hint, str):
+			sys.stderr.write(hint + "\n")
 
 	return status
 

@@ -419,11 +419,13 @@ progress task unblock <task_id> [--json] [--database <path>]
 
 ### `progress task get`
 
-Show one task by ID:
+Show one task by ID, or omit the ID to use the task selected by `progress next`:
 
 ```text
-progress task get <task_id> [--json] [--database <path>]
+progress task get [<task_id>] [--json] [--database <path>]
 ```
+
+If no task is selected, the command returns an error with a recovery hint.
 
 ### `progress task block`
 
@@ -548,17 +550,29 @@ when the description needs changing.
 
 ### `progress chunk list`
 
-List chunks:
+List chunks for a task, or omit `--task` to use the task selected by `progress next`:
 
 ```text
-progress chunk list --task <task_id> [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
+progress chunk list [--task <task_id>] [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
 ```
+
+If no task is selected, the command returns an error with a recovery hint.
 
 - `--task <task_id>`: task whose chunks should be listed
 - `--limit <limit>`: maximum number of chunks to return
 - `--offset <offset>`: number of chunks to skip before returning results
 
 See [Listing](#listing) for pagination details.
+
+### `progress chunk get`
+
+Show one chunk by ID, or omit the ID to use the chunk selected by `progress next`:
+
+```text
+progress chunk get [<chunk_id>] [--json] [--database <path>]
+```
+
+If no chunk is selected, the command returns an error with a recovery hint.
 
 ### `progress search`
 

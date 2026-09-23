@@ -26,6 +26,126 @@ def _stderr_error_message(captured_err: str) -> str:
 	return after_marker.removeprefix("Error ").rstrip("\n")
 
 
+@pytest.mark.parametrize(
+	"command, explicit_id, selected_kind, method_name",
+	[
+		(["task", "get"], "tsk_explicit", "task", "task_get"),
+		(["chunk", "get"], "chk_explicit", "chunk", "chunk_get"),
+		(["chunk", "list"], "tsk_explicit", "task", "chunk_list"),
+	],
+)
+@pytest.mark.parametrize("use_selection", [False, True])
+def test_read_commands_resolve_only_omitted_identifiers(
+	tmp_path: Path,
+	monkeypatch,
+	capsys,
+	command: list[str],
+	explicit_id: str,
+	selected_kind: str,
+	method_name: str,
+	use_selection: bool,
+) -> None:
+	calls = []
+	selected_id = "tsk_selected" if selected_kind == "task" else "chk_selected"
+	data = (
+		{"items": [], "limit": 50, "offset": 0, "has_more": False}
+		if method_name == "chunk_list"
+		else {"id": selected_id if use_selection else explicit_id}
+	)
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def next(self):
+			calls.append(("next",))
+			return {"task": {"id": "tsk_selected"}, "chunk": {"id": "chk_selected"}}
+
+		def task_get(self, identifier):
+			calls.append(("task_get", identifier))
+			return data
+
+		def chunk_get(self, identifier):
+			calls.append(("chunk_get", identifier))
+			return data
+
+		def chunk_list(self, identifier, limit, offset):
+			calls.append(("chunk_list", identifier, limit, offset))
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+	identifier_arguments = (
+		[]
+		if use_selection
+		else (["--task", explicit_id] if method_name == "chunk_list" else [explicit_id])
+	)
+
+	assert (
+		cli.main(
+			[
+				*command,
+				*identifier_arguments,
+				"--database",
+				str(tmp_path / "db"),
+				"--json",
+			]
+		)
+		== 0
+	)
+
+	assert calls == ([("next",)] if use_selection else []) + (
+		[("chunk_list", selected_id if use_selection else explicit_id, 50, 0)]
+		if method_name == "chunk_list"
+		else [(method_name, selected_id if use_selection else explicit_id)]
+	)
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+@pytest.mark.parametrize(
+	"command, selected_kind",
+	[
+		(["task", "get"], "task"),
+		(["chunk", "get"], "chunk"),
+		(["chunk", "list"], "task"),
+	],
+)
+def test_read_commands_hint_when_no_selection_exists(
+	tmp_path: Path, monkeypatch, capsys, command: list[str], selected_kind: str
+) -> None:
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def next(self):
+			return {"task": None, "chunk": None}
+
+		def task_get(self, identifier):
+			pytest.fail("No task ID should reach the store")
+
+		def chunk_get(self, identifier):
+			pytest.fail("No chunk ID should reach the store")
+
+		def chunk_list(self, identifier, limit, offset):
+			pytest.fail("No task ID should reach the store")
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+	arguments = [*command, "--database", str(tmp_path / "db")]
+
+	assert cli.main([*arguments, "--json"]) == 1
+	response = json.loads(capsys.readouterr().out)
+	assert response == {
+		"ok": False,
+		"error": {
+			"code": "not-found",
+			"message": f"no {selected_kind} is selected",
+			"details": {"hint": "Run progress next to see the current selection."},
+		},
+	}
+
+	assert cli.main(arguments) == 1
+	assert "Run progress next to see the current selection." in capsys.readouterr().err
+
+
 def test_bare_invocation_prints_help_and_succeeds(capsys) -> None:
 	assert cli.main([]) == 0
 
