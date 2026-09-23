@@ -1,0 +1,34 @@
+2026-09-23 13:39:22.837 xcodebuild[27895:20044420] [MT] DVTPlugInLoading: Failed to load code for plug-in com.apple.dt.DVTCoreDeviceCore (/Applications/Xcode.app/Contents/SharedFrameworks/DVTCoreDeviceCore.framework), error = Error Domain=NSCocoaErrorDomain Code=3588 "dlopen(/Applications/Xcode.app/Contents/SharedFrameworks/DVTCoreDeviceCore.framework/DVTCoreDeviceCore, 0x0109): Symbol not found: _$s10CoreDevice17DetailedOperationC7metricsSDySSAA12CodableValueOGvg
+2026-09-23 13:39:22.838 xcodebuild[27895:20044420] [MT] DVTPlugInExtensionFaulting: Failed to fire fault for extension Xcode.Device.CoreDevice: Error Domain=DVTPlugInErrorDomain Code=2 "Loading a plug-in failed." UserInfo={DVTPlugInIdentifierErrorKey=com.apple.dt.DVTCoreDeviceCore, DVTPlugInExecutablePathErrorKey=/Applications/Xcode.app/Contents/SharedFrameworks/DVTCoreDeviceCore.framework/DVTCoreDeviceCore, NSLocalizedRecoverySuggestion=The plug-in or one of its prerequisite plug-ins may be missing or damaged and may need to be reinstalled., DVTPlugInDYLDErrorMessageErrorKey=dlopen(/Applications/Xcode.app/Contents/SharedFrameworks/DVTCoreDeviceCore.framework/DVTCoreDeviceCore, 0x0000): Symbol not found: _$s10CoreDevice17DetailedOperationC7metricsSDySSAA12CodableValueOGvg
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+􀟈 Test run started.
+􀄵 Testing Library Version: 2084
+􀄵 Target Platform: arm64e-apple-macos14.0
+􀟈 Test appModuleLoads() started.
+􁁛 Test appModuleLoads() passed after 0.001 seconds.
+􁁛 Test run with 1 test in 0 suites passed after 0.001 seconds.
+2026-09-23 13:39:31.413 xcodebuild[27895:20044425]  DVTAssertions: Warning in IDEFrameworks/IDEFoundation/Execution/LaunchSystem/IDELaunchSession.m:395
+Details:  setRunnablePIDWithDiagnostics:logSection:andCompletionHandler: called without a completion handler - blocking until diagnostics setup completes. Callers should migrate to using a completion handler for better performance.
+Object:   <IDELaunchSession: 0x76adb45680>
+Method:   -setRunnablePIDWithDiagnostics:logSection:andCompletionHandler:
+Thread:   <NSThread: 0x76aeeff080>{number = 3, name = (null)}
+Please file a bug at https://feedbackassistant.apple.com with this warning message and any useful information you can provide.
+Test Suite 'All tests' started at 2026-09-23 13:39:32.430.
+Test Suite 'All tests' passed at 2026-09-23 13:39:32.432.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.002) seconds
+􀟈 Test run started.
+􀄵 Testing Library Version: 2084
+􀄵 Target Platform: arm64e-apple-macos14.0
+􀟈 Test coreModuleLoads() started.
+􁁛 Test coreModuleLoads() passed after 0.001 seconds.
+􁁛 Test run with 1 test in 0 suites passed after 0.001 seconds.
+2026-09-23 13:39:32.746 xcodebuild[27895:20044420] [MT] IDETestOperationsObserverDebug: 4.743 elapsed -- Testing started completed.
+2026-09-23 13:39:32.746 xcodebuild[27895:20044420] [MT] IDETestOperationsObserverDebug: 0.000 sec, +0.000 sec -- start
+2026-09-23 13:39:32.746 xcodebuild[27895:20044420] [MT] IDETestOperationsObserverDebug: 4.743 sec, +4.743 sec -- end
+
+Test session results, code coverage, and logs:
+	/project/Lew Timer/.build/DerivedData/Logs/Test/Test-LewTimer-2026.09.23_13-39-24-+0100.xcresult
+
+** TEST SUCCEEDED **
+
+Testing started

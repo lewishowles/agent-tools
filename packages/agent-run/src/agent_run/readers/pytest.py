@@ -33,6 +33,8 @@ _PYTEST_ERROR_MESSAGE = re.compile(r"^\s*E(?:\s|$)")
 
 # Captured output can contain text that looks like a source location.
 _CAPTURED_OUTPUT_HEADER = re.compile(r"^-{4,}\s+Captured\b.*-{4,}$")
+# Pytest's final passing line gives the count and duration, with a clock suffix after a minute.
+_PASSING_SUMMARY = re.compile(r"^\d+ passed(?:, .*?)? in \S+(?: \(\d+:\d{2}:\d{2}\))?$")
 
 
 class PytestReader:
@@ -127,6 +129,15 @@ class PytestReader:
             truncated=False,
             tail=(),
         )
+
+    def summarise(self, log_text: str) -> list[str] | None:
+        """Keep pytest's final passing totals and duration."""
+        for line in reversed(log_text.splitlines()):
+            clean = line.strip().strip("=").strip()
+            if _PASSING_SUMMARY.match(clean):
+                return [clean]
+
+        return None
 
 
 def _find_line(lines: Sequence[str], pattern: re.Pattern[str]) -> int | None:

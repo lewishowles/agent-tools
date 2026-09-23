@@ -28,6 +28,8 @@ _VITEST_CARET = re.compile(r"^\s*\|\s*\^")
 # Separators and progress counters do not belong to a failure's detail.
 _SEPARATOR = re.compile(r"^\s*⎯+")
 _COUNTER = re.compile(r"^\s*\[\d+/\d+\]\s*$")
+# Vitest prints passing file and test totals near the end of a run.
+_PASSING_TOTAL = re.compile(r"^(?P<heading>Test Files|Tests)\s+\d+ passed\b")
 
 
 class VitestReader:
@@ -132,6 +134,19 @@ class VitestReader:
             truncated=False,
             tail=(),
         )
+
+    def summarise(self, log_text: str) -> list[str] | None:
+        """Keep Vitest's final file and test totals."""
+        totals: dict[str, str] = {}
+        for line in log_text.splitlines():
+            clean = line.strip()
+            match = _PASSING_TOTAL.match(clean)
+            if match:
+                totals[match.group("heading")] = clean
+
+        return [
+            totals[heading] for heading in ("Test Files", "Tests") if heading in totals
+        ] or None
 
 
 def _failure_location(

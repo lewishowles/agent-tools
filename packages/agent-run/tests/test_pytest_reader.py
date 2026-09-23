@@ -10,6 +10,21 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @pytest.mark.parametrize(
+    ("log_text", "expected"),
+    [
+        (None, "3 passed in 0.42s"),
+        ("3 passed in 75.23s (0:01:15)", "3 passed in 75.23s (0:01:15)"),
+    ],
+)
+def test_summarises_passing_totals(log_text: str | None, expected: str) -> None:
+    """The final pytest count and duration replace collection output."""
+    if log_text is None:
+        log_text = (FIXTURES / "pytest-success.txt").read_text(encoding="utf-8")
+
+    assert PytestReader().summarise(log_text) == [expected]
+
+
+@pytest.mark.parametrize(
     "argv",
     [
         ["pytest", "tests"],

@@ -357,6 +357,40 @@ def test_cli_run_success_uses_fallback_when_log_cannot_be_read(
     assert output.err == ""
 
 
+def test_cli_run_uses_reader_summary_for_text_and_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The human result and JSON data show the same selected success lines."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    class SummaryReader:
+        """Supply a known summary for a successful command."""
+
+        def matches(self, argv: Sequence[str]) -> bool:
+            """Match the test command."""
+            return bool(argv)
+
+        def summarise(self, log_text: str) -> list[str]:
+            """Summarise the captured output."""
+            return ["Tests passed: 2 tests"]
+
+    monkeypatch.setattr("agent_run.readers.FAILURE_READERS", (SummaryReader(),))
+    command = [sys.executable, "-c", "print('raw output')"]
+
+    assert main(["run", "--timeout", "5", "--", *command]) == 0
+    text_output = capsys.readouterr()
+    assert "Tests passed: 2 tests" in text_output.out
+    assert "\nraw output\n" not in text_output.out
+
+    assert main(["run", "--timeout", "5", "--json", "--", *command]) == 0
+    json_output = json.loads(capsys.readouterr().out)
+    assert json_output["data"]["summary"] == ["Tests passed: 2 tests"]
+
+
 def test_cli_show_keeps_a_long_log_path_on_one_line(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -37,6 +37,14 @@ _FAILED_BLOCK = re.compile(r"^\*\* (?:BUILD|TEST) FAILED \*\*$")
 # The line under "Undefined symbols for architecture ..." that names a missing
 # symbol. The indented lines after it list the code that uses the symbol.
 _UNDEFINED_SYMBOL = re.compile(r'^\s+"(?P<symbol>_[^\"]+)", referenced from:$')
+# XCTest repeats totals for nested suites, so only top-level suite totals count.
+_XCTEST_TOP_LEVEL_SUMMARY = re.compile(
+    r"^Test Suite '(?:All tests|Selected tests)' passed at .+$"
+)
+# The test count immediately below a top-level XCTest suite result.
+_XCTEST_EXECUTED = re.compile(r"\bExecuted (?P<count>\d+) tests?\b")
+# Swift Testing prints one total for each test bundle.
+_SWIFT_TEST_TOTAL = re.compile(r"\bTest run with (?P<count>\d+) tests?\b")
 
 
 class XcodebuildReader:
@@ -144,6 +152,46 @@ class XcodebuildReader:
             return None
 
         return FailureReport(True, failures[0], tuple(failures[1:]), 0, False, ())
+
+    def summarise(self, log_text: str) -> list[str] | None:
+        """Report Xcode's passing build or combined test count and result bundle."""
+        lines = log_text.splitlines()
+        is_test = "** TEST SUCCEEDED **" in lines
+        if not is_test and "** BUILD SUCCEEDED **" not in lines:
+            return None
+
+        if not is_test:
+            return ["Build succeeded"]
+
+        count = 0
+        found_total = False
+        for index, line in enumerate(lines):
+            swift = _SWIFT_TEST_TOTAL.search(line)
+            if swift:
+                count += int(swift.group("count"))
+                found_total = True
+
+            xctest = _XCTEST_EXECUTED.search(line)
+            if (
+                xctest
+                and index > 0
+                and _XCTEST_TOP_LEVEL_SUMMARY.match(lines[index - 1])
+            ):
+                count += int(xctest.group("count"))
+                found_total = True
+
+        if not found_total:
+            return None
+
+        test_label = "test" if count == 1 else "tests"
+        summary = [f"Tests passed: {count} {test_label}"]
+        result = next(
+            (line.strip() for line in lines if line.strip().endswith(".xcresult")), None
+        )
+        if result is not None:
+            summary.append(f"Results: {result}")
+
+        return summary
 
 
 def _summary_failures(lines: Sequence[str]) -> list[Failure]:

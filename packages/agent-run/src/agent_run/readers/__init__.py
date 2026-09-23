@@ -9,6 +9,7 @@ from agent_run.failures import (
     Failure,
     FailureReader,
     FailureReport,
+    summarise_output,
 )
 from agent_run.readers.pytest import PytestReader
 from agent_run.readers.ruff import RuffReader
@@ -24,6 +25,16 @@ FAILURE_READERS: tuple[FailureReader, ...] = (
     VpCheckReader(),
     XcodebuildReader(),
 )
+
+
+def summarise_success(argv: Sequence[str], log_text: str) -> list[str]:
+    """Use a matching reader's success lines, or keep the bounded log tail."""
+    reader = next(
+        (candidate for candidate in FAILURE_READERS if candidate.matches(argv)),
+        None,
+    )
+    summary = reader.summarise(log_text) if reader is not None else None
+    return summary or summarise_output(log_text)
 
 
 def read_failure_report(argv: Sequence[str], log_text: str) -> FailureReport:

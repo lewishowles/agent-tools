@@ -9,6 +9,13 @@ from agent_run.readers.ruff import RuffReader
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+def test_summarises_passing_check() -> None:
+    """A clean Ruff check reports its confirmation line."""
+    log_text = (FIXTURES / "ruff-success.txt").read_text(encoding="utf-8")
+
+    assert RuffReader().summarise(log_text) == ["All checks passed!"]
+
+
 @pytest.mark.parametrize(
     "argv",
     [

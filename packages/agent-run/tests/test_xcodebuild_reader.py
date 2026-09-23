@@ -10,6 +10,57 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @pytest.mark.parametrize(
+    ("fixture", "expected"),
+    [
+        ("xcodebuild-success-build.txt", ["Build succeeded"]),
+        (
+            "xcodebuild-success-test.txt",
+            [
+                "Tests passed: 2 tests",
+                "Results: /project/Lew Timer/.build/DerivedData/Logs/Test/Test-LewTimer-2026.09.23_13-39-24-+0100.xcresult",
+            ],
+        ),
+    ],
+)
+def test_summarises_success(fixture: str, expected: list[str]) -> None:
+    """A passing Xcode run reports the result after install noise."""
+    log_text = (FIXTURES / fixture).read_text(encoding="utf-8")
+
+    assert XcodebuildReader().summarise(log_text) == expected
+
+
+def test_summarises_test_counts_across_bundles() -> None:
+    """XCTest and Swift Testing totals both contribute to the final count."""
+    log_text = (
+        "Test Suite 'All tests' passed at 2026-09-23 13:39:32.432.\n"
+        "\t Executed 2 tests, with 0 failures\n"
+        "Test run with 3 tests in 1 suite passed\n"
+        "** TEST SUCCEEDED **\n"
+    )
+
+    assert XcodebuildReader().summarise(log_text) == ["Tests passed: 5 tests"]
+
+
+def test_summarises_one_test_with_singular_wording() -> None:
+    """A one-test run uses singular wording."""
+    log_text = "Test run with 1 test in 0 suites passed\n** TEST SUCCEEDED **\n"
+
+    assert XcodebuildReader().summarise(log_text) == ["Tests passed: 1 test"]
+
+
+def test_summarises_nested_xctest_suites_once() -> None:
+    """Nested XCTest suite totals do not count the same test again."""
+    log_text = (FIXTURES / "xcodebuild-success-xctest.txt").read_text(encoding="utf-8")
+
+    assert XcodebuildReader().summarise(log_text) == ["Tests passed: 1 test"]
+
+
+def test_falls_back_when_passing_test_log_has_no_total() -> None:
+    """A successful test marker alone cannot establish the number of tests."""
+    assert XcodebuildReader().summarise("** TEST SUCCEEDED **\n") is None
+
+
+@pytest.mark.parametrize(
     "argv", [["xcodebuild", "build"], ["/usr/bin/xcrun", "xcodebuild", "test"]]
 )
 def test_matches_xcodebuild_launchers(argv: list[str]) -> None:

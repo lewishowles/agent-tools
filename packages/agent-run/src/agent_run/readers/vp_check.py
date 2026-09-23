@@ -109,6 +109,15 @@ class VpCheckReader:
             tail=(),
         )
 
+    def summarise(self, log_text: str) -> list[str] | None:
+        """Keep the final passing format and lint lines from vp."""
+        lines = [
+            line.strip()
+            for line in log_text.splitlines()
+            if line.strip().startswith("pass: ")
+        ]
+        return lines[-2:] or None
+
 
 def _format_report(lines: Sequence[str]) -> FailureReport | None:
     """Return one failure for each path in a formatting-failure summary."""

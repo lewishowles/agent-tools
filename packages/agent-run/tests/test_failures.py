@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 import pytest
 from agent_run.failures import Failure, FailureReport, summarise_output
-from agent_run.readers import read_failure_report
+from agent_run.readers import read_failure_report, summarise_success
 
 
 def test_read_failure_report_selects_xcodebuild_reader() -> None:
@@ -34,6 +34,7 @@ class _StubReader:
         self.report = report
         self.anchors = anchors
         self.read_calls = 0
+        self.summary: list[str] | None = None
 
     def matches(self, argv: Sequence[str]) -> bool:
         """Return the configured match result."""
@@ -44,9 +45,44 @@ class _StubReader:
         self.read_calls += 1
         return self.report
 
+    def summarise(self, log_text: str) -> list[str] | None:
+        """Return the configured success summary for selection tests."""
+        return self.summary
+
     def detail_anchors(self, detail: Sequence[str]) -> tuple[int | None, int | None]:
-        """Return the configured anchors so the trimming window can be tested without a real reader."""
+        """Return the configured anchors for trimming tests."""
         return self.anchors
+
+
+def test_summarise_success_selects_matching_reader(monkeypatch) -> None:
+    """The first matching reader supplies the success summary."""
+    reader = _StubReader(True, None)
+    reader.summary = ["Tests passed: 2 tests"]
+    monkeypatch.setattr("agent_run.readers.FAILURE_READERS", (reader,))
+
+    assert summarise_success(["custom-check"], "noise") == ["Tests passed: 2 tests"]
+
+
+@pytest.mark.parametrize("summary", [None, []])
+def test_summarise_success_falls_back_when_reader_finds_nothing(
+    monkeypatch, summary: list[str] | None
+) -> None:
+    """An empty reader summary retains the last eight output lines."""
+    reader = _StubReader(True, None)
+    reader.summary = summary
+    monkeypatch.setattr("agent_run.readers.FAILURE_READERS", (reader,))
+
+    assert summarise_success(["custom-check"], "first\nlast\n") == [
+        "first",
+        "last",
+    ]
+
+
+def test_summarise_success_falls_back_without_matching_reader(monkeypatch) -> None:
+    """Unknown commands retain the last eight output lines."""
+    monkeypatch.setattr("agent_run.readers.FAILURE_READERS", ())
+
+    assert summarise_success(["custom-check"], "last\n") == ["last"]
 
 
 def _failure(detail: tuple[str, ...] = ()) -> Failure:

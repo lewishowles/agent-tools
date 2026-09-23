@@ -77,13 +77,16 @@ class FailureReport:
 
 
 class FailureReader(Protocol):
-    """Read one command's known failure format."""
+    """Read one command's known failure and success formats."""
 
     def matches(self, argv: Sequence[str]) -> bool:
         """Return whether this reader owns the command argument shape."""
 
     def read(self, log_text: str) -> FailureReport | None:
         """Return a report or `None` when the log has no known failures."""
+
+    def summarise(self, log_text: str) -> list[str] | None:
+        """Return useful success lines, or `None` when none are recognised."""
 
     def detail_anchors(self, detail: Sequence[str]) -> tuple[int | None, int | None]:
         """Return the code-frame and error-message line indexes to keep when the detail

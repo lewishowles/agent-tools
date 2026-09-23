@@ -9,6 +9,16 @@ from agent_run.readers.vp_check import VpCheckReader
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+def test_summarises_passing_checks() -> None:
+    """The format and lint confirmations remain visible together."""
+    log_text = (FIXTURES / "vp-check-success.txt").read_text(encoding="utf-8")
+
+    assert VpCheckReader().summarise(log_text) == [
+        "pass: All 5 files are correctly formatted (21ms, 8 threads)",
+        "pass: Found no warnings or lint errors in 3 files (3ms, 8 threads)",
+    ]
+
+
 @pytest.mark.parametrize(
     "argv",
     [

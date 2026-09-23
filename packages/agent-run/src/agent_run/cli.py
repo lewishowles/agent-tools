@@ -49,7 +49,6 @@ from agent_run.execution import (
 from agent_run.failures import (
     Failure,
     FailureReport,
-    summarise_output,
 )
 from agent_run.locking import RunBusyError, RunLock, acquire_run_lock
 from agent_run.output import (
@@ -59,7 +58,7 @@ from agent_run.output import (
     render_row_group,
     render_success,
 )
-from agent_run.readers import read_failure_report
+from agent_run.readers import read_failure_report, summarise_success
 from agent_run.repository import (
     RepositoryError,
     RepositoryUninitialisedError,
@@ -1021,7 +1020,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             except OSError:
                 summary = ["Output could not be read."]
             else:
-                summary = summarise_output(log_text)
+                summary = summarise_success(result.argv, log_text)
 
             data = _run_record(result, record, resolved_file_paths)
             data["summary"] = summary

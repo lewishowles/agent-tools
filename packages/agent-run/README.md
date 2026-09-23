@@ -182,9 +182,10 @@ and tracked files deleted from disk are excluded. Each pattern's matches are
 sorted, all targets must be regular files inside the repository, and targets
 are reported relative to the command's working directory.
 
-A successful run also shows the last eight non-blank lines of its output, so
-you can see what it did, such as how many tests ran. JSON output returns these
-lines as `summary` in `data`.
+A successful pytest, Ruff, Vitest, `vp check`, or xcodebuild run shows its final
+passing totals or confirmation in one or two lines. Other commands, and reader
+output without a recognised success line, show the last eight non-blank lines.
+JSON output returns the same lines as `summary` in `data`.
 
 Failures from pytest, ruff, Vitest, and xcodebuild include the first failure's
 source location, title, and bounded detail. Up to 20 further failures are shown

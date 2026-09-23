@@ -102,6 +102,14 @@ class RuffReader:
             tail=(),
         )
 
+    def summarise(self, log_text: str) -> list[str] | None:
+        """Keep Ruff's final passing line when present."""
+        for line in reversed(log_text.splitlines()):
+            if line.strip() == "All checks passed!":
+                return ["All checks passed!"]
+
+        return None
+
 
 def _diagnostic_location(
     lines: Sequence[str],

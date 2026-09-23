@@ -9,6 +9,16 @@ from agent_run.readers.vitest import VitestReader
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+def test_summarises_passing_totals() -> None:
+    """Vitest reports its final file and test counts."""
+    log_text = (FIXTURES / "vitest-success.txt").read_text(encoding="utf-8")
+
+    assert VitestReader().summarise(log_text) == [
+        "Test Files  1 passed (1)",
+        "Tests  2 passed (2)",
+    ]
+
+
 @pytest.mark.parametrize(
     "argv",
     [

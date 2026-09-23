@@ -1,0 +1,12 @@
+Test Suite 'Selected tests' started at 2026-09-23 13:55:26.837.
+Test Suite 'LewTimerTests.xctest' started at 2026-09-23 13:55:26.839.
+Test Suite 'FixtureXCTestSuccess' started at 2026-09-23 13:55:26.839.
+Test Case '-[LewTimerTests.FixtureXCTestSuccess testNumbersMatch]' started.
+Test Case '-[LewTimerTests.FixtureXCTestSuccess testNumbersMatch]' passed (0.139 seconds).
+Test Suite 'FixtureXCTestSuccess' passed at 2026-09-23 13:55:26.979.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.139 (0.140) seconds
+Test Suite 'LewTimerTests.xctest' passed at 2026-09-23 13:55:26.979.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.139 (0.140) seconds
+Test Suite 'Selected tests' passed at 2026-09-23 13:55:26.979.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.139 (0.142) seconds
+** TEST SUCCEEDED **
