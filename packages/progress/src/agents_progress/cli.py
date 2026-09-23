@@ -1,0 +1,1667 @@
+"""Command-line interface for progress read and write commands."""
+
+import argparse
+import difflib
+import json
+import re
+import sys
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TextIO
+
+from prompt_toolkit import prompt
+
+from . import __version__
+from .database import Database
+from .errors import ProgressError
+from .projects import ProjectStore
+from .reads import DEFAULT_LIMIT, MAX_LIMIT, ReadStore
+from .render import render
+from .style import (
+	labelled_line as render_labelled_line,
+	span as render_span,
+	status as render_status,
+)
+from .writes import WriteStore
+
+
+# Top-level commands removed by prior releases, mapped to their direct replacement.
+_LEGACY_COMMAND_ALIASES = {
+	"current": "next",
+	"ready": "next",
+}
+
+# Write commands whose store response can contain one result per requested ID.
+_MULTI_ID_WRITE_COMMANDS = frozenset(
+	{
+		"release remove",
+		"release complete",
+		"task remove",
+		"task complete",
+		"chunk remove",
+		"chunk complete",
+	}
+)
+
+# Matches argparse's raw "invalid choice" usage error to pull out the offending token.
+_INVALID_CHOICE_PATTERN = re.compile(
+	r"argument (?P<argument>[^:]+): invalid choice: "
+	r"(?P<quote>['\"])(?P<token>.*?)(?P=quote)"
+)
+
+
+class CliUsageError(Exception):
+	"""Signal a parser error to format through the stable JSON envelope."""
+
+
+class ProgressArgumentParser(argparse.ArgumentParser):
+	"""Raise CliUsageError on a bad argument instead of exiting the process directly."""
+
+	def __init__(self, *args: object, **kwargs: object) -> None:
+		"""Turn off argparse's abbreviation matching for this parser and every subparser built from it.
+
+		A removed flag would otherwise keep working wherever its name is a prefix of a longer one, so
+		`--contract` would still reach `--contract-step`.
+		"""
+		kwargs["allow_abbrev"] = False
+		super().__init__(*args, **kwargs)
+
+	def print_help(self, file: TextIO | None = None) -> None:
+		"""Give help text the same leading blank line every other human output gets.
+
+		Mirrors argparse's signature; `file` defaults to stdout when omitted.
+		"""
+		file = file or sys.stdout
+		file.write("\n")
+		super().print_help(file)
+
+	def error(self, message: str) -> None:
+		"""Turn an argparse usage error into a CliUsageError the caller can format."""
+		raise CliUsageError(message)
+
+
+class ProgressHelpFormatter(argparse.HelpFormatter):
+	"""Format subparser choices as a flat command list without its metavar."""
+
+	def add_arguments(self, actions: list[argparse.Action]) -> None:
+		"""Label sections containing subparsers as commands."""
+		if any(isinstance(action, argparse._SubParsersAction) for action in actions):
+			self._current_section.heading = "commands"
+
+		super().add_arguments(actions)
+
+	def _format_action(self, action: argparse.Action) -> str:
+		"""Format subparser choices without the redundant parent action line."""
+		if isinstance(action, argparse._SubParsersAction):
+			self._action_max_length -= self._indent_increment
+			try:
+				return "".join(
+					self._format_action(subaction)
+					for subaction in action._get_subactions()
+				)
+			finally:
+				self._action_max_length += self._indent_increment
+
+		return super()._format_action(action)
+
+
+@dataclass(frozen=True)
+class _ArgumentSpec:
+	"""Describe one argument on a command parser."""
+
+	names: tuple[str, ...]
+	kwargs: dict[str, object]
+
+
+@dataclass(frozen=True)
+class _PromptArgument:
+	"""One argparse flag the interactive add prompt can ask for, paired with its prompt hint."""
+
+	names: tuple[str, ...]
+	hint: str
+	required: bool = False
+	repeatable: bool = False
+
+
+@dataclass(frozen=True)
+class _CommandSpec:
+	"""Describe one command parser and any nested command parsers."""
+
+	name: str
+	help_text: str
+	arguments: tuple[_ArgumentSpec, ...] = ()
+	children: tuple["_CommandSpec", ...] = ()
+	destination: str | None = None
+	page_options: bool = False
+	# Flag names that argparse rejects together; empty when the command has no such pair.
+	exclusive_arguments: tuple[str, ...] = ()
+	# Whether one of the exclusive flags must be given.
+	exclusive_required: bool = False
+
+
+def _argument(*names: str, **kwargs: object) -> _ArgumentSpec:
+	"""Create one declarative argparse argument specification."""
+	return _ArgumentSpec(names, kwargs)
+
+
+def _output_argument_specs() -> tuple[_ArgumentSpec, ...]:
+	"""Return the --json/--database argument specs shared by the parser and the command manifest, so they cannot drift apart."""
+	return (
+		_argument(
+			"--json",
+			action="store_true",
+			default=argparse.SUPPRESS,
+			help="write the stable agent response envelope",
+		),
+		_argument(
+			"--database",
+			metavar="PATH",
+			default=argparse.SUPPRESS,
+			help="use PATH instead of $AGENTS_PROGRESS_DATABASE or ~/.agents/progress.db",
+		),
+	)
+
+
+def _add_output_options(parser: argparse.ArgumentParser) -> None:
+	"""Add the shared --json and --database options to a command parser."""
+	for argument in _output_argument_specs():
+		parser.add_argument(*argument.names, **argument.kwargs)
+
+
+def _page_argument_specs() -> tuple[_ArgumentSpec, ...]:
+	"""Return the --limit/--offset argument specs shared by the parser and the command manifest, so they cannot drift apart."""
+	return (
+		_argument(
+			"--limit",
+			type=_page_number,
+			default=DEFAULT_LIMIT,
+			help=f"maximum records to show, 1-{MAX_LIMIT} (default: {DEFAULT_LIMIT})",
+		),
+		_argument(
+			"--offset",
+			type=_offset_number,
+			default=0,
+			help="number of records to skip (default: 0)",
+		),
+	)
+
+
+def _add_page_options(parser: argparse.ArgumentParser) -> None:
+	"""Add the shared --limit and --offset options to a list command parser."""
+	for argument in _page_argument_specs():
+		parser.add_argument(*argument.names, **argument.kwargs)
+
+
+def _non_empty_text_argument(flag: str) -> Callable[[str], str]:
+	"""Return an argparse converter that rejects empty flag values."""
+
+	def parse(value: str) -> str:
+		"""Reject values that contain no non-whitespace characters."""
+		if not value.strip():
+			raise argparse.ArgumentTypeError(f"{flag} must not be empty")
+
+		return value
+
+	return parse
+
+
+def _command_metavar(specs: tuple[_CommandSpec, ...]) -> str:
+	"""Return the valid command names in argparse's choice format."""
+	names = ",".join(spec.name for spec in specs)
+	return f"{{{names}}}"
+
+
+def _add_command_specs(
+	commands: argparse._SubParsersAction,
+	specs: tuple[_CommandSpec, ...],
+) -> None:
+	"""Build command parsers from the shared declarative command specification."""
+	for spec in specs:
+		parser = commands.add_parser(
+			spec.name,
+			help=spec.help_text,
+			formatter_class=ProgressHelpFormatter,
+		)
+		# A group parser records itself so main() can show its help when it is
+		# named with no subcommand. Leaf parsers clear the value they would
+		# otherwise inherit from their group, so their command still dispatches.
+		parser.set_defaults(_help_parser=parser if spec.children else None)
+
+		if spec.children:
+			nested_commands = parser.add_subparsers(
+				dest=spec.destination,
+				metavar=_command_metavar(spec.children),
+			)
+			_add_command_specs(nested_commands, spec.children)
+			continue
+
+		exclusive_group = (
+			parser.add_mutually_exclusive_group(required=spec.exclusive_required)
+			if spec.exclusive_arguments
+			else None
+		)
+
+		for argument in spec.arguments:
+			argument_kwargs = dict(argument.kwargs)
+			if isinstance(argument_kwargs.get("default"), list):
+				argument_kwargs["default"] = list(argument_kwargs["default"])
+
+			argument_parser = (
+				exclusive_group
+				if exclusive_group is not None
+				and any(name in spec.exclusive_arguments for name in argument.names)
+				else parser
+			)
+			argument_parser.add_argument(*argument.names, **argument_kwargs)
+
+		if spec.page_options:
+			_add_page_options(parser)
+
+		_add_output_options(parser)
+
+
+# Every CLI command and its nested subcommands, in the order they should appear in --help.
+_COMMAND_SPECS = (
+	_CommandSpec("next", "show the next queued task and active chunk"),
+	_CommandSpec("commands", "list every command and flag"),
+	_CommandSpec("doctor", "find blank required-in-practice fields"),
+	_CommandSpec(
+		"search",
+		"search tasks and chunks",
+		arguments=(
+			_argument("term", help="term to find in task and chunk text"),
+			_argument(
+				"--in",
+				dest="fields",
+				action="append",
+				help="search only this field; repeat for more fields (default: every field)",
+				choices=(
+					"title",
+					"overview",
+					"verification",
+					"contract",
+					"files",
+					"description",
+				),
+			),
+			_argument(
+				"--status",
+				help="filter tasks by status and chunks by their parent task's status",
+				choices=("ready", "in-progress", "blocked", "needs-decision", "done"),
+			),
+		),
+		page_options=True,
+	),
+	_CommandSpec(
+		"project",
+		"manage the current project binding",
+		children=(
+			_CommandSpec(
+				"init",
+				"create and bind a project",
+				arguments=(
+					_argument("--slug", required=True),
+					_argument("--name", required=True),
+				),
+			),
+			_CommandSpec(
+				"attach",
+				"bind an existing project",
+				arguments=(_argument("project_id"),),
+			),
+			_CommandSpec("current", "show the bound project"),
+		),
+		destination="project_command",
+	),
+	_CommandSpec(
+		"release",
+		"read release records",
+		children=(
+			_CommandSpec(
+				"add",
+				"create a release",
+				arguments=(
+					_argument("--slug", required=True),
+					_argument("--title", required=True),
+					_argument(
+						"--overview",
+						required=True,
+						type=_non_empty_text_argument("--overview"),
+					),
+					_argument(
+						"--status",
+						choices=("planned", "active", "done"),
+						default="planned",
+					),
+					_argument("--position", type=int),
+				),
+			),
+			_CommandSpec(
+				"move",
+				"move a release relative to another release",
+				arguments=(
+					_argument("release_id"),
+					_argument("--before", help="move before RELEASE_ID"),
+					_argument("--after", help="move after RELEASE_ID"),
+				),
+			),
+			_CommandSpec(
+				"list",
+				"list releases",
+				arguments=(_argument("--all", action="store_true"),),
+				page_options=True,
+			),
+			_CommandSpec(
+				"get",
+				"show one release",
+				arguments=(_argument("release_id"),),
+			),
+			_CommandSpec(
+				"remove",
+				"remove one or more releases",
+				arguments=(
+					_argument("release_id", nargs="+", metavar="RELEASE_ID"),
+					_argument("--force", action="store_true"),
+				),
+			),
+			_CommandSpec(
+				"rename",
+				"rename a release",
+				arguments=(
+					_argument("release_id"),
+					_argument("--title", required=True),
+				),
+			),
+			_CommandSpec(
+				"edit",
+				"edit a release overview",
+				arguments=(
+					_argument("release_id"),
+					_argument(
+						"--overview",
+						default=argparse.SUPPRESS,
+						type=_non_empty_text_argument("--overview"),
+					),
+				),
+			),
+			_CommandSpec(
+				"complete",
+				"complete one or more planned or active releases",
+				arguments=(_argument("release_id", nargs="+", metavar="RELEASE_ID"),),
+			),
+		),
+		destination="release_command",
+	),
+	_CommandSpec(
+		"task",
+		"read task records",
+		children=(
+			_CommandSpec(
+				"add",
+				"create a task",
+				arguments=(
+					_argument("--slug", required=True),
+					_argument("--title", required=True),
+					_argument(
+						"--overview",
+						required=True,
+						type=_non_empty_text_argument("--overview"),
+					),
+					_argument(
+						"--contract-step",
+						dest="contract",
+						required=True,
+						action="append",
+						type=_non_empty_text_argument("--contract-step"),
+					),
+					_argument(
+						"--file",
+						dest="files",
+						action="append",
+						default=None,
+						type=_non_empty_text_argument("--file"),
+					),
+					_argument(
+						"--split-rationale",
+						type=_non_empty_text_argument("--split-rationale"),
+					),
+					_argument("--verification", default=""),
+					_argument("--release", "--release-id", dest="release_id"),
+					_argument(
+						"--depends-on",
+						"--dependency",
+						dest="depends_on",
+						action="append",
+						default=[],
+					),
+					_argument("--position", type=int),
+				),
+			),
+			_CommandSpec(
+				"move",
+				"move a task within a queue or to a release",
+				arguments=(
+					_argument("task_id"),
+					_argument(
+						"--release",
+						dest="release_id",
+						nargs="?",
+						const="",
+						metavar="RELEASE_ID",
+						help="move to RELEASE_ID; use without a value for unassigned",
+					),
+					_argument("--before", help="move before TASK_ID"),
+					_argument("--after", help="move after TASK_ID"),
+				),
+			),
+			_CommandSpec(
+				"dependency",
+				"manage task dependencies",
+				children=(
+					_CommandSpec(
+						"add",
+						"add a task dependency",
+						arguments=(
+							_argument("task_id"),
+							_argument("depends_on_task_id"),
+						),
+					),
+					_CommandSpec(
+						"remove",
+						"remove a task dependency",
+						arguments=(
+							_argument("task_id"),
+							_argument("depends_on_task_id"),
+						),
+					),
+				),
+				destination="dependency_command",
+			),
+			_CommandSpec(
+				"remove",
+				"remove one or more tasks",
+				arguments=(
+					_argument("task_id", nargs="+", metavar="TASK_ID"),
+					_argument("--force", action="store_true"),
+				),
+			),
+			_CommandSpec(
+				"clean",
+				"remove done tasks and now-empty releases",
+				arguments=(_argument("--force", action="store_true"),),
+			),
+			_CommandSpec(
+				"rename",
+				"rename a task",
+				arguments=(_argument("task_id"), _argument("--title", required=True)),
+			),
+			_CommandSpec(
+				"edit",
+				"edit task planning fields",
+				arguments=(
+					_argument("task_id"),
+					_argument(
+						"--overview",
+						default=argparse.SUPPRESS,
+						type=_non_empty_text_argument("--overview"),
+					),
+					_argument(
+						"--contract-step",
+						dest="contract",
+						default=argparse.SUPPRESS,
+						action="append",
+						type=_non_empty_text_argument("--contract-step"),
+					),
+					_argument(
+						"--file",
+						dest="files",
+						action="append",
+						default=argparse.SUPPRESS,
+						type=_non_empty_text_argument("--file"),
+					),
+					_argument(
+						"--split-rationale",
+						default=argparse.SUPPRESS,
+						type=_non_empty_text_argument("--split-rationale"),
+					),
+					_argument("--verification", default=argparse.SUPPRESS),
+					_argument(
+						"--clear-files",
+						action="store_true",
+						default=argparse.SUPPRESS,
+					),
+					_argument(
+						"--clear-split-rationale",
+						action="store_true",
+						default=argparse.SUPPRESS,
+					),
+					_argument(
+						"--clear-verification",
+						action="store_true",
+						default=argparse.SUPPRESS,
+					),
+				),
+			),
+			_CommandSpec(
+				"start",
+				"start a ready task",
+				arguments=(_argument("task_id"),),
+			),
+			_CommandSpec(
+				"complete",
+				"complete one or more tasks",
+				arguments=(_argument("task_id", nargs="+", metavar="TASK_ID"),),
+			),
+			_CommandSpec(
+				"block",
+				"block a task",
+				arguments=(
+					_argument("task_id"),
+					_argument("--reason", required=True),
+					_argument("--needs-decision", action="store_true"),
+				),
+			),
+			_CommandSpec(
+				"unblock",
+				"make a blocked task ready",
+				arguments=(_argument("task_id"),),
+			),
+			_CommandSpec(
+				"get",
+				"show one task",
+				arguments=(_argument("task_id"),),
+			),
+			_CommandSpec(
+				"list",
+				"list tasks",
+				arguments=(_argument("--status"),),
+				page_options=True,
+			),
+		),
+		destination="task_command",
+	),
+	_CommandSpec(
+		"chunk",
+		"read chunk records",
+		children=(
+			_CommandSpec(
+				"add",
+				"create a pending chunk",
+				arguments=(
+					_argument("--task", required=True, dest="task_id"),
+					_argument("--title", required=True),
+					_argument(
+						"--description",
+						required=True,
+						type=_non_empty_text_argument("--description"),
+					),
+					_argument("--position", type=int),
+				),
+			),
+			_CommandSpec(
+				"move",
+				"move a chunk before or after another chunk",
+				arguments=(
+					_argument("chunk_id"),
+					_argument("--before", help="move before CHUNK_ID"),
+					_argument("--after", help="move after CHUNK_ID"),
+				),
+			),
+			_CommandSpec(
+				"start",
+				"activate a pending chunk",
+				arguments=(_argument("chunk_id"),),
+			),
+			_CommandSpec(
+				"complete",
+				"complete one or more active chunks",
+				arguments=(_argument("chunk_id", nargs="+", metavar="CHUNK_ID"),),
+			),
+			_CommandSpec(
+				"remove",
+				"remove one or more chunks",
+				arguments=(_argument("chunk_id", nargs="+", metavar="CHUNK_ID"),),
+			),
+			_CommandSpec(
+				"rename",
+				"rename a chunk",
+				arguments=(_argument("chunk_id"), _argument("--title", required=True)),
+			),
+			_CommandSpec(
+				"edit",
+				"edit chunk planning fields",
+				arguments=(
+					_argument("chunk_id"),
+					_argument(
+						"--description",
+						default=argparse.SUPPRESS,
+						type=_non_empty_text_argument("--description"),
+					),
+				),
+			),
+			_CommandSpec(
+				"get",
+				"show one chunk",
+				arguments=(_argument("chunk_id"),),
+			),
+			_CommandSpec(
+				"list",
+				"list chunks for a task",
+				arguments=(_argument("--task", required=True, dest="task_id"),),
+				page_options=True,
+			),
+		),
+		destination="chunk_command",
+	),
+	_CommandSpec(
+		"discovery",
+		"record a discovery note",
+		children=(
+			_CommandSpec(
+				"add",
+				"add a discovery note",
+				arguments=(
+					_argument("--release", dest="release_id"),
+					_argument("--task", dest="task_id"),
+					_argument("body", nargs="+"),
+				),
+				exclusive_arguments=("--release", "--task"),
+				exclusive_required=True,
+			),
+			_CommandSpec(
+				"list",
+				"list discovery notes",
+				arguments=(
+					_argument("--release", dest="release_id"),
+					_argument("--task", dest="task_id"),
+				),
+				page_options=True,
+				exclusive_arguments=("--release", "--task"),
+			),
+			_CommandSpec(
+				"remove",
+				"remove a discovery note",
+				arguments=(_argument("note_id"),),
+			),
+		),
+		destination="discovery_command",
+	),
+	_CommandSpec(
+		"decision",
+		"record a decision note",
+		children=(
+			_CommandSpec(
+				"add",
+				"add a decision note",
+				arguments=(
+					_argument("--release", dest="release_id"),
+					_argument("--task", dest="task_id"),
+					_argument("--supersedes", dest="supersedes_id"),
+					_argument("body", nargs="+"),
+				),
+				exclusive_arguments=("--release", "--task"),
+				exclusive_required=True,
+			),
+			_CommandSpec(
+				"list",
+				"list decision notes",
+				arguments=(
+					_argument("--release", dest="release_id"),
+					_argument("--task", dest="task_id"),
+				),
+				page_options=True,
+				exclusive_arguments=("--release", "--task"),
+			),
+			_CommandSpec(
+				"remove",
+				"remove a decision note",
+				arguments=(_argument("note_id"),),
+			),
+		),
+		destination="decision_command",
+	),
+	_CommandSpec(
+		"context",
+		"replace handoff context",
+		children=(
+			_CommandSpec("get", "show current handoff context"),
+			_CommandSpec(
+				"set",
+				"set current handoff context",
+				arguments=(
+					_argument("--current-goal"),
+					_argument("--previous-step"),
+					_argument("--next-step"),
+					_argument("--standing-context"),
+					_argument("--verify-with"),
+					_argument("--stop-marker"),
+				),
+			),
+		),
+		destination="context_command",
+	),
+)
+
+
+def _leaf_command_paths(
+	specs: tuple[_CommandSpec, ...], parent_path: tuple[str, ...] = ()
+) -> list[tuple[str, ...]]:
+	"""Return every complete command path in the command registry."""
+	paths = []
+
+	for spec in specs:
+		path = (*parent_path, spec.name)
+		if spec.children:
+			paths.extend(_leaf_command_paths(spec.children, path))
+		else:
+			paths.append(path)
+
+	return paths
+
+
+def _command_words(arguments: list[str]) -> list[str]:
+	"""Return command words from argv before the first command argument option."""
+	words = []
+	skip_next = False
+
+	for argument in arguments:
+		if skip_next:
+			skip_next = False
+			continue
+		if argument == "--database":
+			skip_next = True
+			continue
+		if argument == "--json":
+			continue
+		if argument.startswith("-"):
+			break
+
+		words.append(argument)
+
+	return words
+
+
+# Fields `task add` prompts for, in the same order as its parser flags.
+_TASK_ADD_PROMPT_ARGUMENTS = (
+	_PromptArgument(("--slug",), "short identifier stored on the task", required=True),
+	_PromptArgument(("--title",), "display title", required=True),
+	_PromptArgument(("--overview",), "non-empty task summary", required=True),
+	_PromptArgument(
+		("--contract-step",),
+		"non-empty task contract step",
+		required=True,
+		repeatable=True,
+	),
+	_PromptArgument(("--file",), "optional file covered by the task", repeatable=True),
+	_PromptArgument(
+		("--split-rationale",),
+		"reason for splitting the task; doctor expects every task to have one",
+	),
+	_PromptArgument(("--verification",), "optional verification instructions"),
+	_PromptArgument(("--release", "--release-id"), "associate the task with a release"),
+	_PromptArgument(
+		("--depends-on", "--dependency"),
+		"task ID dependency",
+		repeatable=True,
+	),
+	_PromptArgument(("--position",), "optional ordering position"),
+)
+
+# Fields `chunk add` prompts for, in the same order as its parser flags.
+_CHUNK_ADD_PROMPT_ARGUMENTS = (
+	_PromptArgument(("--task",), "task ID that owns the chunk", required=True),
+	_PromptArgument(("--title",), "display title", required=True),
+	_PromptArgument(("--description",), "non-empty chunk description", required=True),
+	_PromptArgument(("--position",), "optional ordering position"),
+)
+
+# Looks up a command's prompt fields by its first two argv words.
+_PROMPT_ARGUMENTS_BY_COMMAND = {
+	("task", "add"): _TASK_ADD_PROMPT_ARGUMENTS,
+	("chunk", "add"): _CHUNK_ADD_PROMPT_ARGUMENTS,
+}
+
+
+def _prompt_arguments_for_command(
+	arguments: list[str],
+) -> tuple[_PromptArgument, ...]:
+	"""Look up the prompt fields for a command, or an empty tuple outside task/chunk add."""
+	command = tuple(_command_words(arguments)[:2])
+	return _PROMPT_ARGUMENTS_BY_COMMAND.get(command, ())
+
+
+def _argument_is_present(arguments: list[str], names: tuple[str, ...]) -> bool:
+	"""Check whether argv already supplies one of an argument's flag names."""
+	return any(
+		argument == name or argument.startswith(f"{name}=")
+		for argument in arguments
+		for name in names
+	)
+
+
+def _prompt_value(argument: _PromptArgument, *, repeatable_value: bool = False) -> str:
+	"""Ask for one field's value, showing its hint and, for optional fields, how to skip it."""
+	names = "/".join(argument.names)
+	field_name = argument.names[0].removeprefix("--")
+	optional_hint = ""
+	if not argument.required or repeatable_value:
+		optional_hint = (
+			"; press Enter when finished"
+			if repeatable_value
+			else "; press Enter to skip"
+		)
+
+	hint = argument.hint[:1].upper() + argument.hint[1:]
+	styled_names = render_span(names, "muted", weight="normal")
+
+	print()
+	print(f"({styled_names}) {hint}{optional_hint}")
+
+	try:
+		value = prompt(f"{field_name}: ")
+	except KeyboardInterrupt:
+		print()
+		print("Cancelled.")
+		# 130 is the conventional exit status for a command ended by SIGINT.
+		raise SystemExit(130)
+	except EOFError:
+		# A closed stdin mid-prompt reads as a blank answer, so required-field
+		# validation reports it instead of the prompt crashing.
+		value = ""
+
+	return value
+
+
+def _should_prompt_add_arguments(arguments: list[str]) -> bool:
+	"""Decide whether to prompt: task/chunk add, not help or --json, missing a required flag, real terminal."""
+	if "-h" in arguments or "--help" in arguments:
+		return False
+
+	prompt_arguments = _prompt_arguments_for_command(arguments)
+	if not prompt_arguments or "--json" in arguments:
+		return False
+
+	if not any(
+		argument.required and not _argument_is_present(arguments, argument.names)
+		for argument in prompt_arguments
+	):
+		return False
+
+	return sys.stdin.isatty()
+
+
+def _prompt_add_arguments(arguments: list[str]) -> list[str]:
+	"""Prompt for each missing field and append the answers to argv, so parsing and validation run unchanged."""
+	prompt_arguments = _prompt_arguments_for_command(arguments)
+	prompted_arguments = list(arguments)
+
+	for argument in prompt_arguments:
+		if _argument_is_present(prompted_arguments, argument.names):
+			continue
+
+		if argument.required:
+			prompted_arguments.extend((argument.names[0], _prompt_value(argument)))
+			if not argument.repeatable:
+				continue
+			has_value = True
+		else:
+			has_value = False
+
+		while True:
+			value = _prompt_value(argument, repeatable_value=has_value)
+			if not value:
+				break
+
+			prompted_arguments.extend((argument.names[0], value))
+			has_value = True
+			if not argument.repeatable:
+				break
+
+	return prompted_arguments
+
+
+def _format_command_suggestions(
+	token: str, command_paths: list[tuple[str, ...]]
+) -> str:
+	"""Format copyable full command paths for a missing command noun."""
+	suggestions = "\n".join(
+		f"  progress {' '.join(command_path)}" for command_path in command_paths
+	)
+	return f"'{token}' is not a command on its own. Did you mean one of:\n{suggestions}"
+
+
+def _format_alias_suggestion(token: str, alias: str) -> str:
+	"""Format a direct replacement for a removed top-level command."""
+	return f"'{token}' was removed. Use progress {alias} instead."
+
+
+def _suggest_command_error(message: str, arguments: list[str]) -> str:
+	"""Suggest a complete progress command for an invalid subcommand choice."""
+	match = _INVALID_CHOICE_PATTERN.search(message)
+	if match is None:
+		return message
+
+	token = match.group("token")
+	words = _command_words(arguments)
+	try:
+		token_index = words.index(token)
+	except ValueError:
+		token_index = 0
+
+	parent_path = tuple(words[:token_index])
+	all_paths = _leaf_command_paths(_COMMAND_SPECS)
+	scoped_paths = [
+		command_path
+		for command_path in all_paths
+		if command_path[: len(parent_path)] == parent_path
+	]
+
+	if match.group("argument") == "COMMAND":
+		alias = _LEGACY_COMMAND_ALIASES.get(token)
+		if alias is not None:
+			return _format_alias_suggestion(token, alias)
+
+	exact_paths = [
+		command_path for command_path in scoped_paths if command_path[-1] == token
+	]
+	if exact_paths:
+		return _format_command_suggestions(token, exact_paths)
+
+	comparison_values = [token]
+	command_input = " ".join(words)
+	if command_input != token:
+		comparison_values.append(command_input)
+
+	candidate_paths = scoped_paths if parent_path else all_paths
+	path_by_candidate: dict[str, list[tuple[str, ...]]] = {}
+	for command_path in candidate_paths:
+		for candidate in (command_path[-1], " ".join(command_path)):
+			path_by_candidate.setdefault(candidate, []).append(command_path)
+
+	fuzzy_paths = []
+	for comparison_value in comparison_values:
+		matches = difflib.get_close_matches(
+			comparison_value,
+			list(path_by_candidate),
+			n=3,
+			cutoff=0.75,
+		)
+		for candidate in matches:
+			for command_path in path_by_candidate[candidate]:
+				if command_path not in fuzzy_paths:
+					fuzzy_paths.append(command_path)
+
+	if fuzzy_paths:
+		return _format_command_suggestions(token, fuzzy_paths)
+
+	if parent_path and scoped_paths:
+		return _format_command_suggestions(token, scoped_paths)
+
+	return message
+
+
+def _manifest_argument_is_required(argument: _ArgumentSpec) -> bool:
+	"""Return whether an argument is required: positionals are required unless their nargs allows an empty value, flags only when explicitly marked."""
+	if argument.names[0].startswith("-"):
+		return bool(argument.kwargs.get("required", False))
+
+	return argument.kwargs.get("nargs") not in {"?", "*"}
+
+
+def _manifest_flags(spec: _CommandSpec) -> list[dict[str, object]]:
+	"""Return the flags attached to one leaf command's parser; a noun with children returns none, since flags live on its subcommands."""
+	if spec.children:
+		return []
+
+	argument_specs = list(spec.arguments)
+	if spec.page_options:
+		argument_specs.extend(_page_argument_specs())
+	argument_specs.extend(_output_argument_specs())
+
+	return [
+		{
+			"names": list(argument.names),
+			"required": _manifest_argument_is_required(argument),
+		}
+		for argument in argument_specs
+	]
+
+
+def _command_manifest(
+	specs: tuple[_CommandSpec, ...], parent_path: str = ""
+) -> list[dict[str, object]]:
+	"""Flatten the command registry into path-addressable records so `commands` can describe the whole CLI in one call without a hand-maintained duplicate."""
+	manifest = []
+	for spec in specs:
+		path = f"{parent_path} {spec.name}".strip()
+		command = {
+			"path": path,
+			"help": spec.help_text,
+			"flags": _manifest_flags(spec),
+		}
+		if spec.exclusive_required:
+			command["required_one_of"] = list(spec.exclusive_arguments)
+		manifest.append(command)
+		manifest.extend(_command_manifest(spec.children, path))
+
+	return manifest
+
+
+def build_parser() -> argparse.ArgumentParser:
+	"""Build the full progress command parser with read and write subcommands."""
+	parser = ProgressArgumentParser(
+		prog="progress",
+		description="Track project progress in a local SQLite database.",
+		formatter_class=ProgressHelpFormatter,
+	)
+	parser.add_argument(
+		"--json",
+		action="store_true",
+		default=False,
+		help="write the stable agent response envelope",
+	)
+	parser.add_argument(
+		"--database",
+		metavar="PATH",
+		default=None,
+		help="use PATH instead of $AGENTS_PROGRESS_DATABASE or ~/.agents/progress.db",
+	)
+	parser.add_argument(
+		"--version",
+		action="store_true",
+		default=False,
+		help="show the package version and exit",
+	)
+	commands = parser.add_subparsers(dest="command", metavar="COMMAND")
+
+	_add_command_specs(commands, _COMMAND_SPECS)
+
+	return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+	"""Parse arguments, run the matching command, and return the process exit status."""
+	arguments = list(sys.argv[1:] if argv is None else argv)
+	json_mode = "--json" in arguments
+
+	try:
+		parser = build_parser()
+		if _should_prompt_add_arguments(arguments):
+			arguments = _prompt_add_arguments(arguments)
+
+		args = parser.parse_args(arguments)
+		json_mode = bool(getattr(args, "json", json_mode))
+
+		# Handled before command dispatch so `progress --version` works with no
+		# subcommand and never touches the database.
+		if args.version:
+			if json_mode:
+				_write_json({"ok": True, "data": {"version": __version__}})
+			else:
+				sys.stdout.write(render_labelled_line("Version", __version__) + "\n")
+
+			return 0
+
+		if args.command is None:
+			parser.print_help()
+			return 0
+
+		# A command group named with no subcommand shows its own help, the same
+		# as bare `progress` does above.
+		if args._help_parser is not None:
+			args._help_parser.print_help()
+			return 0
+
+		data, command = _run_command(args, include_release_titles=not json_mode)
+	except CliUsageError as error:
+		return _write_error(
+			"usage",
+			_suggest_command_error(str(error), arguments),
+			{},
+			json_mode,
+			status=2,
+		)
+	except ProgressError as error:
+		return _write_error(error.code, error.message, error.details, json_mode)
+
+	# The store does not echo the search term, and the renderer needs it to bold matches; JSON output stays the untouched store response.
+	if command == "search" and not json_mode and isinstance(data, dict):
+		data = {**data, "term": args.term}
+
+	if json_mode:
+		_write_json({"ok": True, "data": data})
+	else:
+		human_output = _render_human_output(command, data)
+
+		# Every human command output gets one blank line above it and a trailing
+		# gap before any Next hint, so nothing butts against the previous prompt.
+		framed_output = human_output.rstrip("\n")
+		sys.stdout.write(f"\n{framed_output}\n\n")
+		hint = _human_hint(command, data)
+		if hint:
+			sys.stdout.write(
+				render_span(f"Next: {hint}", "muted", weight="normal") + "\n"
+			)
+
+	return 0
+
+
+def _single_or_many(values: list[str]) -> str | list[str]:
+	"""Keep one-ID calls scalar while passing multiple IDs as a list."""
+	return values[0] if len(values) == 1 else values
+
+
+def _render_human_output(command: str, data: object) -> str:
+	"""Render each record as one line, with deleted records listed under it after a forced removal.
+
+	Single-record responses and every other command render as before. For a
+	list response, only the first rendered line of each record is kept unless
+	forced removal details need to be shown below it.
+	"""
+	if command not in _MULTI_ID_WRITE_COMMANDS:
+		return render(command, data)
+	if isinstance(data, list):
+		items = data
+	elif isinstance(data, dict) and isinstance(data.get("deleted"), dict):
+		items = [data]
+	else:
+		return render(command, data)
+
+	lines = []
+	for item in items:
+		rendered = render(command, item).strip("\n")
+		if rendered:
+			lines.append(rendered.splitlines()[0])
+
+		if isinstance(item, dict) and isinstance(item.get("deleted"), dict):
+			for record_type, records in item["deleted"].items():
+				if not isinstance(records, list) or not records:
+					continue
+
+				label = record_type.replace("_", " ").capitalize()
+				values = ", ".join(str(record) for record in records)
+				lines.append(
+					f"{render_span(label, 'muted', weight='normal')}: {values}"
+				)
+
+		if (
+			command in {"release remove", "task remove"}
+			and isinstance(item, dict)
+			and isinstance(item.get("unblocked_tasks"), list)
+			and item["unblocked_tasks"]
+		):
+			values = ", ".join(str(task_id) for task_id in item["unblocked_tasks"])
+			lines.append(
+				f"{render_span('Unblocked tasks', 'muted', weight='normal')}: {values}"
+			)
+
+	return "\n".join(lines) + ("\n" if lines else "")
+
+
+def _run_command(
+	args: argparse.Namespace, *, include_release_titles: bool = False
+) -> tuple[object, str]:
+	"""Dispatch parsed arguments to the matching read or write store call."""
+	command_name = args.command
+	if command_name == "commands":
+		return _command_manifest(_COMMAND_SPECS), "commands"
+
+	database = Database(getattr(args, "database", None))
+	subcommand_name = getattr(args, f"{command_name}_command", None)
+
+	# include_release_titles is set only for human (non-JSON) output, so it also
+	# gates the human-only hidden-count hint on release list.
+	human_output = include_release_titles
+	dispatch = {
+		("next", None): lambda: (
+			(
+				ReadStore(database).next(include_position_totals=True)
+				if include_release_titles
+				else ReadStore(database).next()
+			),
+			"next",
+		),
+		("doctor", None): lambda: (ReadStore(database).doctor(), "doctor"),
+		("project", "init"): lambda: (_run_project(args, database), "project init"),
+		("project", "attach"): lambda: (_run_project(args, database), "project attach"),
+		("project", "current"): lambda: (
+			_run_project(args, database),
+			"project current",
+		),
+		("release", "add"): lambda: (
+			WriteStore(database).release_add(
+				slug=args.slug,
+				title=args.title,
+				overview=args.overview,
+				status=args.status,
+				position=args.position,
+			),
+			"release add",
+		),
+		("release", "move"): lambda: _run_release_move(args, database),
+		("release", "list"): lambda: (
+			ReadStore(database).release_list(
+				args.limit,
+				args.offset,
+				show_all=args.all,
+				include_hidden_count=human_output,
+			),
+			"release list",
+		),
+		("release", "get"): lambda: (
+			ReadStore(database).release_get(args.release_id),
+			"release get",
+		),
+		("release", "remove"): lambda: (
+			WriteStore(database).release_remove(
+				_single_or_many(args.release_id), force=args.force
+			),
+			"release remove",
+		),
+		("release", "rename"): lambda: (
+			WriteStore(database).release_rename(args.release_id, args.title),
+			"release rename",
+		),
+		("release", "edit"): lambda: (
+			WriteStore(database).release_edit(
+				args.release_id,
+				overview=getattr(args, "overview", None),
+			),
+			"release edit",
+		),
+		("release", "complete"): lambda: (
+			WriteStore(database).release_complete(_single_or_many(args.release_id)),
+			"release complete",
+		),
+		("task", "add"): lambda: (
+			WriteStore(database).task_add(
+				slug=args.slug,
+				title=args.title,
+				overview=args.overview,
+				contract=args.contract,
+				files=args.files,
+				split_rationale=args.split_rationale,
+				verification=args.verification,
+				release_id=args.release_id,
+				depends_on=args.depends_on,
+				position=args.position,
+			),
+			"task add",
+		),
+		("task", "move"): lambda: _run_task_move(args, database),
+		("task", "dependency"): lambda: _run_task_dependency(args, database),
+		("task", "remove"): lambda: (
+			WriteStore(database).task_remove(
+				_single_or_many(args.task_id), force=args.force
+			),
+			"task remove",
+		),
+		("task", "clean"): lambda: (
+			WriteStore(database).task_clean(force=args.force),
+			"task clean",
+		),
+		("task", "rename"): lambda: (
+			WriteStore(database).task_rename(args.task_id, args.title),
+			"task rename",
+		),
+		("task", "edit"): lambda: _run_task_edit(args, database),
+		("task", "start"): lambda: (
+			WriteStore(database).task_start(args.task_id),
+			"task start",
+		),
+		("task", "complete"): lambda: (
+			WriteStore(database).task_complete(_single_or_many(args.task_id)),
+			"task complete",
+		),
+		("task", "block"): lambda: (
+			WriteStore(database).task_block(
+				args.task_id, args.reason, args.needs_decision
+			),
+			"task block",
+		),
+		("task", "unblock"): lambda: (
+			WriteStore(database).task_unblock(args.task_id),
+			"task unblock",
+		),
+		("task", "get"): lambda: (
+			ReadStore(database).task_get(args.task_id),
+			"task get",
+		),
+		("task", "list"): lambda: (
+			ReadStore(database).task_list(
+				args.status,
+				args.limit,
+				args.offset,
+				include_release_titles=include_release_titles,
+			),
+			"task list",
+		),
+		("search", None): lambda: (
+			ReadStore(database).search(
+				args.term,
+				args.fields,
+				args.status,
+				args.limit,
+				args.offset,
+			),
+			"search",
+		),
+		("chunk", "list"): lambda: (
+			_run_chunk_list(args, database, human_output),
+			"chunk list",
+		),
+		("chunk", "get"): lambda: (
+			ReadStore(database).chunk_get(args.chunk_id),
+			"chunk get",
+		),
+		("chunk", "add"): lambda: (
+			WriteStore(database).chunk_add(
+				task_id=args.task_id,
+				title=args.title,
+				description=args.description,
+				position=args.position,
+			),
+			"chunk add",
+		),
+		("chunk", "move"): lambda: _run_chunk_move(args, database),
+		("chunk", "start"): lambda: (
+			WriteStore(database).chunk_start(args.chunk_id),
+			"chunk start",
+		),
+		("chunk", "complete"): lambda: (
+			WriteStore(database).chunk_complete(_single_or_many(args.chunk_id)),
+			"chunk complete",
+		),
+		("chunk", "remove"): lambda: (
+			WriteStore(database).chunk_remove(_single_or_many(args.chunk_id)),
+			"chunk remove",
+		),
+		("chunk", "rename"): lambda: (
+			WriteStore(database).chunk_rename(args.chunk_id, args.title),
+			"chunk rename",
+		),
+		("chunk", "edit"): lambda: _run_chunk_edit(args, database),
+		("discovery", "add"): lambda: (
+			WriteStore(database).discovery_add(
+				args.task_id,
+				" ".join(args.body),
+				release_id=args.release_id,
+			),
+			"discovery add",
+		),
+		("discovery", "list"): lambda: (
+			ReadStore(database).discovery_list(
+				args.task_id,
+				args.limit,
+				args.offset,
+				release_id=args.release_id,
+			),
+			"discovery list",
+		),
+		("discovery", "remove"): lambda: (
+			WriteStore(database).discovery_remove(args.note_id),
+			"discovery remove",
+		),
+		("decision", "add"): lambda: (
+			WriteStore(database).decision_add(
+				args.task_id,
+				" ".join(args.body),
+				args.supersedes_id,
+				release_id=args.release_id,
+			),
+			"decision add",
+		),
+		("decision", "list"): lambda: (
+			ReadStore(database).decision_list(
+				args.task_id,
+				args.limit,
+				args.offset,
+				release_id=args.release_id,
+			),
+			"decision list",
+		),
+		("decision", "remove"): lambda: (
+			WriteStore(database).decision_remove(args.note_id),
+			"decision remove",
+		),
+		("context", "set"): lambda: (
+			WriteStore(database).context_set(
+				current_goal=args.current_goal,
+				previous_step=args.previous_step,
+				next_step=args.next_step,
+				standing_context=args.standing_context,
+				verify_with=args.verify_with,
+				stop_marker=args.stop_marker,
+			),
+			"context set",
+		),
+		("context", "get"): lambda: (
+			ReadStore(database).context_get(),
+			"context get",
+		),
+	}
+	handler = dispatch.get((command_name, subcommand_name))
+	if handler is None:
+		raise CliUsageError("unknown progress command")
+
+	data, command = handler()
+
+	return data, command
+
+
+def _run_chunk_list(
+	args: argparse.Namespace, database: Database, human_output: bool
+) -> object:
+	"""Load a task's chunks, adding the task title and ID for the text header."""
+	store = ReadStore(database)
+	data = store.chunk_list(args.task_id, args.limit, args.offset)
+	if not human_output or not isinstance(data, dict):
+		return data
+
+	task = store.task_get(args.task_id)
+	return {
+		**data,
+		"task": {"id": task.get("id", ""), "title": task.get("title", "")},
+	}
+
+
+def _run_release_move(
+	args: argparse.Namespace, database: Database
+) -> tuple[object, str]:
+	"""Run release move after validating its relative target flags."""
+	if (args.before is None) == (args.after is None):
+		raise CliUsageError("release move requires exactly one of --before or --after")
+
+	return (
+		WriteStore(database).release_move(
+			args.release_id,
+			before_release_id=args.before,
+			after_release_id=args.after,
+		),
+		"release move",
+	)
+
+
+def _run_task_move(args: argparse.Namespace, database: Database) -> tuple[object, str]:
+	"""Run task move after validating relative and release target flags."""
+	if args.release_id is None:
+		if (args.before is None) == (args.after is None):
+			raise CliUsageError("task move requires exactly one of --before or --after")
+	elif args.before is not None and args.after is not None:
+		raise CliUsageError("task move accepts at most one of --before or --after")
+
+	return (
+		WriteStore(database).task_move(
+			args.task_id,
+			release_id=args.release_id,
+			before_task_id=args.before,
+			after_task_id=args.after,
+		),
+		"task move",
+	)
+
+
+def _run_task_edit(args: argparse.Namespace, database: Database) -> tuple[object, str]:
+	"""Run task edit while leaving omitted fields unchanged."""
+	return (
+		WriteStore(database).task_edit(
+			args.task_id,
+			overview=getattr(args, "overview", None),
+			contract=getattr(args, "contract", None),
+			files=getattr(args, "files", None),
+			split_rationale=getattr(args, "split_rationale", None),
+			verification=getattr(args, "verification", None),
+			clear_files=getattr(args, "clear_files", False),
+			clear_split_rationale=getattr(args, "clear_split_rationale", False),
+			clear_verification=getattr(args, "clear_verification", False),
+		),
+		"task edit",
+	)
+
+
+def _run_chunk_move(args: argparse.Namespace, database: Database) -> tuple[object, str]:
+	"""Run the relative chunk move command after validating its target flag."""
+	if (args.before is None) == (args.after is None):
+		raise CliUsageError("chunk move requires exactly one of --before or --after")
+
+	return (
+		WriteStore(database).chunk_move(
+			args.chunk_id,
+			before_chunk_id=args.before,
+			after_chunk_id=args.after,
+		),
+		"chunk move",
+	)
+
+
+def _run_chunk_edit(args: argparse.Namespace, database: Database) -> tuple[object, str]:
+	"""Run chunk edit while leaving the description unchanged when omitted."""
+	return (
+		WriteStore(database).chunk_edit(
+			args.chunk_id,
+			description=getattr(args, "description", None),
+		),
+		"chunk edit",
+	)
+
+
+def _run_task_dependency(
+	args: argparse.Namespace, database: Database
+) -> tuple[object, str]:
+	"""Run the nested task dependency command."""
+	if args.dependency_command == "remove":
+		return (
+			WriteStore(database).task_dependency_remove(
+				args.task_id, args.depends_on_task_id
+			),
+			"task dependency remove",
+		)
+
+	return (
+		WriteStore(database).task_dependency_add(args.task_id, args.depends_on_task_id),
+		"task dependency add",
+	)
+
+
+def _run_project(args: argparse.Namespace, database: Database) -> dict[str, object]:
+	"""Run the requested project binding subcommand."""
+	store = ProjectStore(database)
+	if args.project_command == "init":
+		project, already_initialised = store.init(args.slug, args.name)
+		data: dict[str, object] = project.to_dict()
+		if already_initialised:
+			data["already_initialised"] = True
+
+		return data
+	if args.project_command == "attach":
+		return store.attach(args.project_id).to_dict()
+	if args.project_command == "current":
+		return store.current().to_dict()
+
+	raise CliUsageError("unknown project command")
+
+
+def _page_number(value: str) -> int:
+	"""Parse --limit, rejecting anything outside the public 1..MAX_LIMIT bound."""
+	try:
+		number = int(value)
+	except ValueError as error:
+		raise argparse.ArgumentTypeError("limit must be an integer") from error
+	if not 1 <= number <= MAX_LIMIT:
+		raise argparse.ArgumentTypeError(f"limit must be between 1 and {MAX_LIMIT}")
+
+	return number
+
+
+def _offset_number(value: str) -> int:
+	"""Parse --offset, rejecting a negative value."""
+	try:
+		number = int(value)
+	except ValueError as error:
+		raise argparse.ArgumentTypeError("offset must be an integer") from error
+	if number < 0:
+		raise argparse.ArgumentTypeError("offset must be zero or greater")
+
+	return number
+
+
+def _write_error(
+	code: str,
+	message: str,
+	details: dict[str, object],
+	json_mode: bool,
+	status: int = 1,
+) -> int:
+	"""Write one error in the mode the caller asked for and return its exit status."""
+	if json_mode:
+		_write_json(
+			{
+				"ok": False,
+				"error": {"code": code, "message": message, "details": details},
+			}
+		)
+	else:
+		sys.stderr.write("\n" + render_status("failed", "Error", message) + "\n")
+
+	return status
+
+
+def _write_json(value: object) -> None:
+	"""Write one compact JSON value to stdout with no surrounding prose."""
+	sys.stdout.write(
+		json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n"
+	)
+
+
+def _human_hint(command: str, data: object) -> str | None:
+	"""Return one useful follow-up command without changing the JSON contract."""
+	if not isinstance(data, dict):
+		return None
+
+	object_id = data.get("id")
+	task_id = data.get("task_id")
+	hints = {
+		"release add": (
+			f"progress task add --release {object_id} --help" if object_id else None
+		),
+		"task add": (
+			f"progress chunk add --task {object_id} --help" if object_id else None
+		),
+		"task dependency add": (
+			f"progress task start {object_id}" if object_id else None
+		),
+		"task start": "progress next" if object_id else None,
+		"task complete": "progress next",
+		"task block": (f"progress task unblock {object_id}" if object_id else None),
+		"task unblock": (f"progress task start {object_id}" if object_id else None),
+		"chunk add": f"progress task start {task_id}" if task_id else None,
+		"chunk complete": "progress next",
+		"discovery add": "progress next",
+		"decision add": "progress next",
+		"context set": "progress next",
+	}
+	return hints.get(command)
+
+
+if __name__ == "__main__":
+	raise SystemExit(main())
