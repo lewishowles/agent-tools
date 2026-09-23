@@ -1,7 +1,9 @@
 """Tests for direct foreground command execution."""
 
+import os
 import signal
 import sys
+import time
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -64,35 +66,64 @@ def test_run_command_preserves_non_zero_exit_status(tmp_path: Path) -> None:
 
 
 def test_run_command_terminates_a_grandchild_on_timeout(tmp_path: Path) -> None:
-    """A timeout terminates the command and its grandchild process group."""
+    """A timeout ends the command's whole process group, leaving nothing running.
+
+    The grandchild records that it started and then outlives the timeout, so the
+    group disappears only if the timeout stops the grandchild as well.
+    """
     log_path = _create_log(tmp_path)
-    marker = tmp_path / "grandchild-alive"
+    started_marker = tmp_path / "grandchild-started"
+    group_id_file = tmp_path / "process-group-id"
     grandchild_code = (
         "import pathlib, sys, time; "
-        "time.sleep(0.5); pathlib.Path(sys.argv[1]).write_text('alive')"
+        "pathlib.Path(sys.argv[1]).write_text('started'); "
+        "time.sleep(10)"
     )
     command_code = (
-        "import subprocess, sys, time; "
+        "import os, pathlib, subprocess, sys, time; "
+        "pathlib.Path(sys.argv[3]).write_text(str(os.getpgrp())); "
         "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]]); "
         "time.sleep(10)"
     )
+    group_id = None
 
-    result = run_command(
-        [
-            sys.executable,
-            "-c",
-            command_code,
-            grandchild_code,
-            str(marker),
-        ],
-        tmp_path,
-        timeout=0.1,
-        log_path=log_path,
-    )
+    try:
+        result = run_command(
+            [
+                sys.executable,
+                "-c",
+                command_code,
+                grandchild_code,
+                str(started_marker),
+                str(group_id_file),
+            ],
+            tmp_path,
+            timeout=1,
+            log_path=log_path,
+        )
+        group_id = int(group_id_file.read_text())
 
-    assert result.timed_out is True
-    assert result.exit_status < 0
-    assert not marker.exists()
+        assert result.timed_out is True
+        assert result.exit_status < 0
+        assert started_marker.exists(), "The grandchild never started"
+
+        deadline = time.monotonic() + 2
+
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(group_id, 0)
+            except ProcessLookupError:
+                break
+
+            time.sleep(0.02)
+        else:
+            pytest.fail("The timed-out command left its process group alive")
+    finally:
+        if group_id is not None:
+            try:
+                os.killpg(group_id, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 def test_run_command_keeps_output_written_before_timeout(tmp_path: Path) -> None:
