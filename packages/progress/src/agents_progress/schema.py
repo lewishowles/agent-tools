@@ -11,7 +11,7 @@ from .errors import DatabaseBusyError, MigrationFailedError, StaleSchemaError
 Migration = Callable[[sqlite3.Connection], None]
 
 # the schema version this package writes when creating a database from empty
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 # the newest schema version this package knows how to migrate to
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION
 
@@ -371,6 +371,82 @@ def _migrate_to_version_5(connection: sqlite3.Connection) -> None:
 	connection.execute("ALTER TABLE tasks DROP COLUMN risks")
 
 
+def _migrate_to_version_6(connection: sqlite3.Connection) -> None:
+	"""Add the waiting status and move tasks held up only by unfinished dependencies to it.
+
+	SQLite cannot change a CHECK constraint in place, so the tasks table is rebuilt.
+	A task whose dependencies have all finished since it was blocked becomes ready.
+	"""
+	connection.execute(
+		"""
+		CREATE TABLE tasks_new (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			slug TEXT NOT NULL,
+			release_id TEXT,
+			title TEXT NOT NULL,
+			overview TEXT NOT NULL,
+			verification TEXT NOT NULL,
+			split_rationale TEXT,
+			status TEXT NOT NULL CHECK (
+				status IN ('ready', 'in-progress', 'waiting', 'blocked', 'needs-decision', 'done')
+			),
+			status_reason TEXT,
+			position INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
+			started_at TEXT,
+			completed_at TEXT,
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY (project_id) REFERENCES projects (id),
+			FOREIGN KEY (release_id) REFERENCES releases (id),
+			UNIQUE (project_id, slug)
+		)
+		"""
+	)
+	connection.execute(
+		"""
+		INSERT INTO tasks_new (
+			id, project_id, slug, release_id, title, overview, verification,
+			split_rationale, status, status_reason, position, created_at,
+			started_at, completed_at, updated_at
+		)
+		SELECT id, project_id, slug, release_id, title, overview, verification,
+			split_rationale, status, status_reason, position, created_at,
+			started_at, completed_at, updated_at
+		FROM tasks
+		"""
+	)
+	connection.execute("DROP TABLE tasks")
+	connection.execute("ALTER TABLE tasks_new RENAME TO tasks")
+	connection.execute(
+		"CREATE UNIQUE INDEX tasks_one_in_progress_per_project "
+		"ON tasks (project_id) WHERE status = 'in-progress'"
+	)
+	connection.execute(
+		"""
+		UPDATE tasks
+		SET status = CASE
+			WHEN EXISTS (
+				SELECT 1 FROM task_dependencies AS dependencies
+				JOIN tasks AS dependency ON dependency.id = dependencies.depends_on_task_id
+				WHERE dependencies.task_id = tasks.id AND dependency.status != 'done'
+			) THEN 'waiting'
+			ELSE 'ready'
+		END,
+		status_reason = CASE
+			WHEN EXISTS (
+				SELECT 1 FROM task_dependencies AS dependencies
+				JOIN tasks AS dependency ON dependency.id = dependencies.depends_on_task_id
+				WHERE dependencies.task_id = tasks.id AND dependency.status != 'done'
+			) THEN status_reason
+			ELSE NULL
+		END
+		WHERE status = 'blocked'
+			AND substr(status_reason, 1, 24) = 'unresolved dependencies:'
+		"""
+	)
+
+
 # maps each supported schema version to the migration that produces it
 MIGRATIONS: dict[int, Migration] = {
 	1: _create_schema,
@@ -378,6 +454,7 @@ MIGRATIONS: dict[int, Migration] = {
 	3: _migrate_to_version_3,
 	4: _migrate_to_version_4,
 	5: _migrate_to_version_5,
+	6: _migrate_to_version_6,
 }
 
 
@@ -414,6 +491,14 @@ def migrate(connection: sqlite3.Connection) -> None:
 			},
 		)
 
+	# the connection's foreign key setting, restored once the migration ends
+	foreign_keys_enabled = connection.execute("PRAGMA foreign_keys").fetchone()[0]
+	# Rebuilding the tasks table drops the table that chunks, dependencies, and
+	# notes point at, so foreign keys are switched off for the rebuild. SQLite
+	# ignores this setting inside a transaction, so it must be set first.
+	if current_version < 6:
+		connection.execute("PRAGMA foreign_keys = OFF")
+
 	try:
 		connection.execute("BEGIN IMMEDIATE")
 		connection.execute(
@@ -439,6 +524,10 @@ def migrate(connection: sqlite3.Connection) -> None:
 				"INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
 				(version, utc_timestamp()),
 			)
+
+		# with enforcement off, check every reference before saving the migration
+		if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+			raise sqlite3.IntegrityError("schema migration left invalid foreign keys")
 
 		connection.commit()
 	except (DatabaseBusyError, MigrationFailedError, StaleSchemaError):
@@ -469,3 +558,5 @@ def migrate(connection: sqlite3.Connection) -> None:
 			f"schema migration failed: {error}",
 			{"version": current_version + 1},
 		) from error
+	finally:
+		connection.execute(f"PRAGMA foreign_keys = {foreign_keys_enabled}")

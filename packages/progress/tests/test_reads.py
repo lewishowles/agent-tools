@@ -262,6 +262,7 @@ def test_next_reports_the_earliest_blocked_task_without_changing_it(
 		depends_on=[TASK_A],
 		position=3,
 	)
+	writer.task_block(blocked["id"], "Manual blocker")
 
 	with store.database.transaction() as connection:
 		connection.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (TASK_A,))

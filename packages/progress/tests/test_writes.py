@@ -15,7 +15,6 @@ from agents_progress.errors import (
 	PendingChunksError,
 	ProgressError,
 	StillReferencedError,
-	UnresolvedDependenciesError,
 	WrongObjectIdTypeError,
 )
 from agents_progress.projects import Project
@@ -835,9 +834,9 @@ def test_dependencies_block_and_complete_tasks(tmp_path: Path) -> None:
 		store, "dependent", "Dependent", depends_on=[dependency["id"]]
 	)
 
-	assert dependent["status"] == "blocked"
+	assert dependent["status"] == "waiting"
 	assert "unresolved dependencies" in dependent["status_reason"]
-	with pytest.raises(UnresolvedDependenciesError):
+	with pytest.raises(InvalidTransitionError):
 		store.task_unblock(dependent["id"])
 
 	store.task_start(dependency["id"])
@@ -848,6 +847,33 @@ def test_dependencies_block_and_complete_tasks(tmp_path: Path) -> None:
 
 	assert ready_dependent["status"] == "ready"
 	assert ready_dependent["status_reason"] is None
+
+
+def test_task_block_changes_a_waiting_task_to_a_manual_block(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	dependency = _add_task(store, "dependency", "Dependency")
+	waiting = _add_task(store, "waiting", "Waiting", depends_on=[dependency["id"]])
+
+	blocked = store.task_block(waiting["id"], "Needs a decision")
+
+	assert blocked["status"] == "blocked"
+	assert blocked["status_reason"] == "Needs a decision"
+
+
+def test_task_unblock_rejects_a_waiting_task(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	dependency = _add_task(store, "dependency", "Dependency")
+	waiting = _add_task(store, "waiting", "Waiting", depends_on=[dependency["id"]])
+
+	with pytest.raises(InvalidTransitionError, match="is not blocked"):
+		store.task_unblock(waiting["id"])
+
+	assert (
+		ReadStore(store.database, _ProjectStore(store.database)).task_get(
+			waiting["id"]
+		)["status"]
+		== "waiting"
+	)
 
 
 def test_task_complete_unblocks_dependents_and_reports_them(tmp_path: Path) -> None:
@@ -877,6 +903,36 @@ def test_task_complete_unblocks_dependents_and_reports_them(tmp_path: Path) -> N
 	]
 	assert ready_dependent["status"] == "ready"
 	assert ready_dependent["status_reason"] is None
+
+
+def test_removing_the_last_dependency_readies_only_waiting_tasks(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	dependency = _add_task(store, "dependency", "Dependency")
+	waiting = _add_task(store, "waiting", "Waiting", depends_on=[dependency["id"]])
+	blocked = _add_task(store, "blocked", "Blocked", depends_on=[dependency["id"]])
+	store.task_block(blocked["id"], "Needs a decision")
+
+	store.task_dependency_remove(waiting["id"], dependency["id"])
+	store.task_dependency_remove(blocked["id"], dependency["id"])
+	reads = ReadStore(store.database, _ProjectStore(store.database))
+
+	assert reads.task_get(waiting["id"])["status"] == "ready"
+	assert reads.task_get(blocked["id"])["status"] == "blocked"
+
+
+def test_completing_a_dependency_keeps_manual_blocks(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	dependency = _add_task(store, "dependency", "Dependency")
+	blocked = _add_task(store, "blocked", "Blocked", depends_on=[dependency["id"]])
+	store.task_block(blocked["id"], "Needs a decision")
+
+	store.task_complete(dependency["id"])
+	reads = ReadStore(store.database, _ProjectStore(store.database))
+
+	assert reads.task_get(blocked["id"])["status"] == "blocked"
+	assert store.task_unblock(blocked["id"])["status"] == "ready"
 
 
 def test_task_complete_applies_earlier_completion_to_a_later_id(
@@ -925,7 +981,7 @@ def test_task_complete_keeps_dependents_blocked_with_incomplete_dependencies(
 	).task_get(dependent["id"])
 
 	assert completed["unblocked_tasks"] == []
-	assert blocked_dependent["status"] == "blocked"
+	assert blocked_dependent["status"] == "waiting"
 	assert blocked_dependent["status_reason"] == status_reason
 
 
@@ -1009,7 +1065,7 @@ def test_late_unfinished_dependency_blocks_ready_and_rejects_active(
 
 	blocked = store.task_dependency_add(task["id"], dependency["id"])
 
-	assert blocked["status"] == "blocked"
+	assert blocked["status"] == "waiting"
 	with pytest.raises(InvalidTransitionError):
 		store.task_start(task["id"])
 

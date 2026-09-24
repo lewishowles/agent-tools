@@ -206,7 +206,7 @@ def test_first_connection_creates_the_schema_and_sqlite_safety_settings(
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 5
+			== 6
 		)
 		release_columns = {
 			row[1] for row in connection.execute("PRAGMA table_info(releases)")
@@ -221,6 +221,140 @@ def test_first_connection_creates_the_schema_and_sqlite_safety_settings(
 		}
 		assert "contract" not in task_columns
 		assert "files" not in task_columns
+
+
+def test_version_five_migration_preserves_task_references_and_classifies_blocks(
+	tmp_path,
+) -> None:
+	"""Keep linked rows while separating dependency waits from manual blocks."""
+	database_path = tmp_path / "progress.db"
+	with sqlite3.connect(database_path) as connection:
+		for version in range(1, 6):
+			schema.MIGRATIONS[version](connection)
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.execute(
+			"INSERT INTO schema_migrations VALUES (5, '2026-01-01T00:00:00+00:00')"
+		)
+		project_id = generate_object_id(PROJECT_PREFIX)
+		_insert_project(connection, project_id)
+		task_ids = [generate_object_id(TASK_PREFIX) for _ in range(4)]
+		for index, task_id in enumerate(task_ids):
+			_insert_current_task(connection, project_id, task_id, f"task-{index}")
+		connection.execute(
+			"UPDATE tasks SET status = 'blocked', status_reason = 'unresolved dependencies: old' WHERE id IN (?, ?)",
+			(task_ids[1], task_ids[2]),
+		)
+		connection.execute(
+			"UPDATE tasks SET status = 'blocked', status_reason = 'Manual decision' WHERE id = ?",
+			(task_ids[3],),
+		)
+		connection.execute(
+			"INSERT INTO task_dependencies VALUES (?, ?)", (task_ids[1], task_ids[0])
+		)
+		chunk_id = generate_object_id(CHUNK_PREFIX)
+		note_id = generate_object_id(NOTE_PREFIX)
+		connection.execute(
+			"INSERT INTO chunks (id, task_id, position, title, description, status) VALUES (?, ?, 1, 'Chunk', 'Description', 'pending')",
+			(chunk_id, task_ids[1]),
+		)
+		connection.execute(
+			"INSERT INTO task_contract_steps VALUES (?, 1, 'Step')", (task_ids[1],)
+		)
+		connection.execute(
+			"INSERT INTO notes (id, project_id, task_id, type, body, created_at) VALUES (?, ?, ?, 'discovery', 'Note', '2026-01-01T00:00:00+00:00')",
+			(note_id, project_id, task_ids[1]),
+		)
+
+	with Database(database_path).connection() as connection:
+		statuses = {
+			row[0]: row[1] for row in connection.execute("SELECT id, status FROM tasks")
+		}
+		assert statuses == dict(zip(task_ids, ["ready", "waiting", "ready", "blocked"]))
+		assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+		assert (
+			connection.execute(
+				"SELECT task_id FROM chunks WHERE id = ?", (chunk_id,)
+			).fetchone()[0]
+			== task_ids[1]
+		)
+		assert (
+			connection.execute(
+				"SELECT task_id FROM notes WHERE id = ?", (note_id,)
+			).fetchone()[0]
+			== task_ids[1]
+		)
+		assert (
+			connection.execute(
+				"SELECT task_id FROM task_contract_steps WHERE task_id = ?",
+				(task_ids[1],),
+			).fetchone()[0]
+			== task_ids[1]
+		)
+		assert (
+			connection.execute(
+				"SELECT task_id FROM task_dependencies WHERE task_id = ?",
+				(task_ids[1],),
+			).fetchone()[0]
+			== task_ids[1]
+		)
+
+
+def test_failed_version_six_migration_leaves_version_five_intact(
+	tmp_path, monkeypatch
+) -> None:
+	"""Roll back the table rebuild and preserve the earlier schema and rows."""
+	database_path = tmp_path / "progress.db"
+	with sqlite3.connect(database_path) as connection:
+		for version in range(1, 6):
+			schema.MIGRATIONS[version](connection)
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.execute(
+			"INSERT INTO schema_migrations VALUES (5, '2026-01-01T00:00:00+00:00')"
+		)
+		project_id = generate_object_id(PROJECT_PREFIX)
+		task_id = generate_object_id(TASK_PREFIX)
+		_insert_project(connection, project_id)
+		_insert_current_task(connection, project_id, task_id, "task", "blocked")
+
+	original_migration = schema.MIGRATIONS[6]
+
+	def broken_migration(connection: sqlite3.Connection) -> None:
+		original_migration(connection)
+		raise RuntimeError("deliberate version 6 migration failure")
+
+	monkeypatch.setitem(schema.MIGRATIONS, 6, broken_migration)
+	with sqlite3.connect(database_path) as connection:
+		connection.execute("PRAGMA foreign_keys = ON")
+		with pytest.raises(
+			MigrationFailedError, match="deliberate version 6 migration failure"
+		):
+			schema.migrate(connection)
+
+		assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+	with sqlite3.connect(database_path) as connection:
+		assert (
+			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
+				0
+			]
+			== 5
+		)
+		assert (
+			connection.execute(
+				"SELECT status FROM tasks WHERE id = ?", (task_id,)
+			).fetchone()[0]
+			== "blocked"
+		)
+		assert (
+			"waiting"
+			not in connection.execute(
+				"SELECT sql FROM sqlite_master WHERE name = 'tasks'"
+			).fetchone()[0]
+		)
 
 
 def test_an_older_schema_version_migrates_forward(tmp_path) -> None:
@@ -239,7 +373,7 @@ def test_an_older_schema_version_migrates_forward(tmp_path) -> None:
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 5
+			== 6
 		)
 		assert connection.execute("SELECT 1 FROM projects").fetchone() is None
 		assert (
@@ -331,7 +465,7 @@ def test_schema_version_two_migrates_task_notes_without_loss(tmp_path) -> None:
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 5
+			== 6
 		)
 		assert [
 			tuple(row)
@@ -508,7 +642,7 @@ def test_schema_version_four_moves_task_fields_into_existing_columns(tmp_path) -
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 5
+			== 6
 		)
 		assert (
 			connection.execute(

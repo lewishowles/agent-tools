@@ -351,7 +351,7 @@ class WriteStore(_StoreBase):
 			status = (
 				"ready"
 				if all(row["status"] == "done" for row in dependency_rows)
-				else "blocked"
+				else "waiting"
 			)
 			status_reason = (
 				None if status == "ready" else _dependency_reason(dependency_rows)
@@ -816,7 +816,7 @@ class WriteStore(_StoreBase):
 			)
 			if dependency["status"] != "done" and task["status"] == "ready":
 				connection.execute(
-					"UPDATE tasks SET status = 'blocked', status_reason = ?, updated_at = ? WHERE id = ?",
+					"UPDATE tasks SET status = 'waiting', status_reason = ?, updated_at = ? WHERE id = ?",
 					(_dependency_reason([dependency]), utc_timestamp(), task_id),
 				)
 
@@ -864,6 +864,11 @@ class WriteStore(_StoreBase):
 				"DELETE FROM task_dependencies WHERE task_id = ? AND depends_on_task_id = ?",
 				(task_id, depends_on_task_id),
 			)
+			task = _task_row(connection, task_id, project.id)
+			if task["status"] == "waiting" and not _unresolved_dependencies(
+				connection, task_id
+			):
+				_unblock_task(connection, task_id, project.id, allow_waiting=True)
 
 		return {
 			"task_id": task_id,
@@ -1196,7 +1201,7 @@ class WriteStore(_StoreBase):
 			task = _task_row(connection, task_id, project.id)
 			if task is None:
 				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
-			if task["status"] not in {"ready", "in-progress"}:
+			if task["status"] not in {"ready", "in-progress", "waiting"}:
 				raise InvalidTransitionError(
 					f"task {task_id} cannot be blocked from status {task['status']}",
 					{"id": task_id, "status": task["status"]},
@@ -1706,10 +1711,10 @@ def _remove_task(
 
 	for dependent_task_id in dependent_task_ids:
 		dependent_task = _task_row(connection, dependent_task_id, project_id)
-		if dependent_task is None or dependent_task["status"] != "blocked":
+		if dependent_task is None or dependent_task["status"] != "waiting":
 			continue
 		if not _unresolved_dependencies(connection, dependent_task_id):
-			_unblock_task(connection, dependent_task_id, project_id)
+			_unblock_task(connection, dependent_task_id, project_id, allow_waiting=True)
 			unblocked_tasks.append(dependent_task_id)
 
 	return {
@@ -1760,7 +1765,7 @@ def _complete_task(
 			ON task_dependencies.task_id = tasks.id
 		WHERE tasks.project_id = ?
 			AND task_dependencies.depends_on_task_id = ?
-			AND tasks.status = 'blocked'
+			AND tasks.status = 'waiting'
 		ORDER BY tasks.position, tasks.id
 		""",
 		(project_id, task_id),
@@ -1769,7 +1774,7 @@ def _complete_task(
 		if _unresolved_dependencies(connection, dependent["id"]):
 			continue
 
-		_unblock_task(connection, dependent["id"], project_id)
+		_unblock_task(connection, dependent["id"], project_id, allow_waiting=True)
 		unblocked_tasks.append(
 			{
 				"id": dependent["id"],
@@ -1936,13 +1941,24 @@ def _delete_notes(connection: sqlite3.Connection, notes: list[sqlite3.Row]) -> N
 
 
 def _unblock_task(
-	connection: sqlite3.Connection, task_id: str, project_id: str
+	connection: sqlite3.Connection,
+	task_id: str,
+	project_id: str,
+	*,
+	allow_waiting: bool = False,
 ) -> None:
-	"""Make one blocked task ready when all its dependencies are done."""
+	"""Make a blocked task ready.
+
+	Waiting tasks are accepted only with allow_waiting, which dependency completion
+	and removal pass, so task unblock still refuses a waiting task.
+	"""
 	task = _task_row(connection, task_id, project_id)
 	if task is None:
 		raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
-	if task["status"] not in {"blocked", "needs-decision"}:
+	allowed_statuses = {"blocked", "needs-decision"}
+	if allow_waiting:
+		allowed_statuses.add("waiting")
+	if task["status"] not in allowed_statuses:
 		raise InvalidTransitionError(
 			f"task {task_id} is not blocked",
 			{"id": task_id, "status": task["status"]},
