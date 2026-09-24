@@ -9,6 +9,7 @@ from agent_run.failures import (
     Failure,
     FailureReader,
     FailureReport,
+    shorten_fallback_line,
     summarise_output,
 )
 from agent_run.readers.pytest import PytestReader
@@ -68,7 +69,10 @@ def _fallback_report(log_text: str) -> FailureReport:
         more=(),
         hidden_count=0,
         truncated=False,
-        tail=tuple(log_text.splitlines()[-MAX_TAIL_LINES:]),
+        tail=tuple(
+            shorten_fallback_line(line)
+            for line in log_text.splitlines()[-MAX_TAIL_LINES:]
+        ),
     )
 
 

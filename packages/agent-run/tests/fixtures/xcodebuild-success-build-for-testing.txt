@@ -1,0 +1,13 @@
+SwiftCompile normal arm64 /project/LewTimerCore/Sources/LewTimerCore/AppModel.swift (in target 'LewTimerCore' from project 'LewTimer')
+    cd /project/LewTimer
+    builtin-SwiftPerFileCompile AppModel.swift
+
+SwiftDriver Compilation LewTimerCore normal arm64 com.apple.xcode.tools.swift.compiler (in target 'LewTimerCore' from project 'LewTimer')
+    cd /project/LewTimer
+    builtin-SwiftDriver -- /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc -module-name LewTimerCore -target arm64-apple-macos26.0 -sdk /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
+
+Touch /project/LewTimer/.build/DerivedData/Build/Products/Debug/LewTimerTests.xctest (in target 'LewTimerTests' from project 'LewTimer')
+    cd /project/LewTimer
+    /usr/bin/touch /project/LewTimer/.build/DerivedData/Build/Products/Debug/LewTimerTests.xctest
+
+** TEST BUILD SUCCEEDED **

@@ -17,6 +17,9 @@ MAX_TAIL_LINES = 15
 # Log lines shown after a successful run.
 MAX_SUMMARY_LINES = 8
 
+# Most characters shown from a fallback log line, including its ellipsis.
+MAX_FALLBACK_LINE_LENGTH = 300
+
 # Terminal colour escape sequences removed from captured output.
 ANSI_SGR_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -33,7 +36,15 @@ def summarise_output(log_text: str) -> list[str]:
         return ["No output."]
 
     lines = [line for line in clean.splitlines() if line.strip()]
-    return lines[-MAX_SUMMARY_LINES:]
+    return [shorten_fallback_line(line) for line in lines[-MAX_SUMMARY_LINES:]]
+
+
+def shorten_fallback_line(line: str) -> str:
+    """Cut a long fallback log line to the length limit, ending it with an ellipsis."""
+    if len(line) <= MAX_FALLBACK_LINE_LENGTH:
+        return line
+
+    return f"{line[: MAX_FALLBACK_LINE_LENGTH - 1]}…"
 
 
 @dataclass(frozen=True)

@@ -131,6 +131,14 @@ def test_summarise_output_keeps_only_the_last_eight_non_blank_lines() -> None:
     assert summarise_output(log_text) == [f"line {index}" for index in range(2, 10)]
 
 
+def test_summarise_output_shortens_long_fallback_lines() -> None:
+    """A long success log line cannot fill the bounded summary."""
+    summary = summarise_output(f"{'x' * 350}\nshort\n")
+
+    assert summary == [f"{'x' * 299}…", "short"]
+    assert len(summary[0]) == 300
+
+
 def test_read_failure_report_uses_the_first_matching_reader(monkeypatch) -> None:
     """Only the first matching reader parses a command log."""
     first_reader = _StubReader(
@@ -164,6 +172,16 @@ def test_read_failure_report_falls_back_to_the_last_15_lines(monkeypatch) -> Non
     assert report.first is None
     assert report.more == ()
     assert report.tail == tuple(f"line {index}" for index in range(5, 20))
+
+
+def test_read_failure_report_shortens_long_fallback_lines(monkeypatch) -> None:
+    """A long failure log line cannot fill the bounded tail."""
+    monkeypatch.setattr("agent_run.readers.FAILURE_READERS", ())
+
+    report = read_failure_report(["custom-check"], f"{'x' * 350}\nshort\n")
+
+    assert report.tail == (f"{'x' * 299}…", "short")
+    assert len(report.tail[0]) == 300
 
 
 def test_read_failure_report_falls_back_when_a_reader_finds_no_failure(

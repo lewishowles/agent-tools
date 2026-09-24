@@ -154,8 +154,14 @@ class XcodebuildReader:
         return FailureReport(True, failures[0], tuple(failures[1:]), 0, False, ())
 
     def summarise(self, log_text: str) -> list[str] | None:
-        """Report Xcode's passing build or combined test count and result bundle."""
+        """Summarise a passing Xcode build, test build, or test run.
+
+        A test run also reports its combined test count and result bundle path.
+        """
         lines = log_text.splitlines()
+        if "** TEST BUILD SUCCEEDED **" in lines:
+            return ["Test build succeeded"]
+
         is_test = "** TEST SUCCEEDED **" in lines
         if not is_test and "** BUILD SUCCEEDED **" not in lines:
             return None

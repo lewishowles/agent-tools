@@ -14,6 +14,10 @@ FIXTURES = Path(__file__).parent / "fixtures"
     [
         ("xcodebuild-success-build.txt", ["Build succeeded"]),
         (
+            "xcodebuild-success-build-for-testing.txt",
+            ["Test build succeeded"],
+        ),
+        (
             "xcodebuild-success-test.txt",
             [
                 "Tests passed: 2 tests",
