@@ -292,7 +292,14 @@ _COMMAND_SPECS = (
 			_argument(
 				"--status",
 				help="filter tasks by status and chunks by their parent task's status",
-				choices=("ready", "in-progress", "blocked", "needs-decision", "done"),
+				choices=(
+					"ready",
+					"waiting",
+					"in-progress",
+					"blocked",
+					"needs-decision",
+					"done",
+				),
 			),
 		),
 		page_options=True,
@@ -568,7 +575,7 @@ _COMMAND_SPECS = (
 			),
 			_CommandSpec(
 				"unblock",
-				"make a blocked task ready",
+				"make a blocked or needs-decision task ready",
 				arguments=(_argument("task_id"),),
 			),
 			_CommandSpec(

@@ -282,6 +282,38 @@ def test_next_reports_the_earliest_blocked_task_without_changing_it(
 	assert after["updated_at"] == before["updated_at"]
 
 
+def test_next_reports_the_earliest_waiting_task_and_its_unfinished_dependency(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	writer = WriteStore(store.database, _ProjectStore(store.database))
+	waiting = writer.task_add(
+		"waiting",
+		"Waiting",
+		overview="Waiting task overview",
+		contract=["Waiting task contract"],
+		release_id=RELEASE_A,
+		depends_on=[TASK_A, TASK_B],
+		position=0,
+	)
+
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (TASK_A,))
+
+	before = store.task_get(waiting["id"])
+
+	result = store.next()
+	after = store.task_get(waiting["id"])
+
+	assert result["task"]["id"] == waiting["id"]
+	assert result["task"]["status"] == "waiting"
+	assert result["dependency_ids"] == [TASK_A, TASK_B]
+	assert result["chunk"] is None
+	assert result["hint_command"] == f"progress task get {TASK_B}"
+	assert after["status"] == before["status"]
+	assert after["updated_at"] == before["updated_at"]
+
+
 def test_next_keeps_a_manually_blocked_task_without_dependencies_blocked(
 	tmp_path: Path,
 ) -> None:
@@ -332,6 +364,24 @@ def test_task_list_uses_position_then_object_id_and_pagination(
 	assert "release_title" not in result["items"][0]
 	assert with_titles["items"][0]["release_title"] == "Progress store"
 	assert result["has_more"] is True
+
+
+def test_task_list_filters_waiting_tasks(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	writer = WriteStore(store.database, _ProjectStore(store.database))
+	waiting = writer.task_add(
+		"waiting",
+		"Waiting",
+		overview="Waiting task overview",
+		contract=["Waiting task contract"],
+		release_id=RELEASE_A,
+		depends_on=[TASK_A],
+	)
+
+	result = store.task_list(status="waiting")
+
+	assert [task["id"] for task in result["items"]] == [waiting["id"]]
+	assert result["has_more"] is False
 
 
 def test_task_list_leaves_unassigned_tasks_without_release_titles(

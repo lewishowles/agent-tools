@@ -26,7 +26,9 @@ DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 
 # Task statuses accepted by the task list --status filter.
-TASK_STATUSES = frozenset({"ready", "in-progress", "blocked", "needs-decision", "done"})
+TASK_STATUSES = frozenset(
+	{"ready", "waiting", "in-progress", "blocked", "needs-decision", "done"}
+)
 
 # Columns selected from releases in list and single-row queries.
 _RELEASE_COLUMNS = "id, project_id, slug, title, overview, status, position"
@@ -321,6 +323,19 @@ def _task_response(
 		).fetchone()
 		if release_row is not None:
 			release_data = _release_public_data(connection, release_row)
+	# The first unfinished dependency of a waiting task, so the hint can show
+	# what the task is waiting for. IDs are sorted to keep the hint stable.
+	unfinished_dependency_id = None
+	if task is not None and task.status == "waiting":
+		unfinished_dependency = connection.execute(
+			"SELECT tasks.id FROM task_dependencies "
+			"JOIN tasks ON tasks.id = task_dependencies.depends_on_task_id "
+			"WHERE task_dependencies.task_id = ? AND tasks.status != 'done' "
+			"ORDER BY tasks.id LIMIT 1",
+			(task.id,),
+		).fetchone()
+		if unfinished_dependency is not None:
+			unfinished_dependency_id = unfinished_dependency["id"]
 
 	return {
 		"project": project.to_dict(),
@@ -328,7 +343,9 @@ def _task_response(
 		"task": task_data,
 		"chunk": chunk.to_dict() if chunk is not None else None,
 		"dependency_ids": list(dependency_ids),
-		"hint_command": ReadStore._next_hint(task, chunk, empty_hint),
+		"hint_command": ReadStore._next_hint(
+			task, chunk, empty_hint, unfinished_dependency_id
+		),
 	}
 
 
@@ -586,7 +603,7 @@ class ReadStore(_StoreBase):
 					"LEFT JOIN releases ON releases.id = tasks.release_id "
 					"AND releases.project_id = tasks.project_id "
 					"WHERE tasks.project_id = ? "
-					"AND tasks.status IN ('ready', 'blocked', 'needs-decision') "
+					"AND tasks.status IN ('ready', 'waiting', 'blocked', 'needs-decision') "
 					f"ORDER BY {_TASK_QUEUE_ORDER} LIMIT 1",
 					(project.id,),
 				).fetchone()
@@ -1193,13 +1210,22 @@ class ReadStore(_StoreBase):
 
 	@staticmethod
 	def _next_hint(
-		task: Task | None, chunk: Chunk | None, empty_hint: str
+		task: Task | None,
+		chunk: Chunk | None,
+		empty_hint: str,
+		unfinished_dependency_id: str | None,
 	) -> str | None:
-		"""Suggest the next useful command for the selected task and chunk state."""
+		"""Suggest the next useful command for the selected task and chunk state.
+
+		A waiting task points at unfinished_dependency_id, since task unblock
+		rejects waiting tasks.
+		"""
 		if task is None:
 			return empty_hint
 		if task.status == "ready":
 			return f"progress task start {task.id}"
+		if task.status == "waiting":
+			return f"progress task get {unfinished_dependency_id or task.id}"
 		if task.status in {"blocked", "needs-decision"}:
 			return f"progress task unblock {task.id}"
 		if chunk is not None:

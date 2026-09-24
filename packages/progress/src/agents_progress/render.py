@@ -35,6 +35,8 @@ _STATUS_RESULT_TYPES = {
 	"pending": "skipped",
 	"ready": "skipped",
 	"skipped": "skipped",
+	# Waiting is lighter than blocked, so real blockers stand out.
+	"waiting": "info",
 }
 
 # Maps a _STATUS_RESULT_TYPES result type to the span() tone that renders it.

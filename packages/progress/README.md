@@ -731,7 +731,8 @@ command that sets or changes it.
 | `release.status` | `done`           | `release add --status done`, or `release complete` from `planned` or `active`                                                                                     |
 | `task.status`    | `ready`          | `task add` when dependencies allow work, or `task unblock`                                                                                                        |
 | `task.status`    | `in-progress`    | `task start`                                                                                                                                                      |
-| `task.status`    | `blocked`        | `task add` when dependencies block work, `task dependency add` when an unfinished dependency is added to a ready task, or `task block` without `--needs-decision` |
+| `task.status`    | `waiting`        | `task add` or `task dependency add` when an unfinished dependency prevents work                                                                                   |
+| `task.status`    | `blocked`        | `task block` without `--needs-decision`; a manual block stays until `task unblock`, even when dependencies finish                                                  |
 | `task.status`    | `needs-decision` | `task block --needs-decision`                                                                                                                                     |
 | `task.status`    | `done`           | `task complete`                                                                                                                                                   |
 | `chunk.status`   | `pending`        | `chunk add`, `chunk start`/`task block`/`task start` demoting an active chunk to pending                                                                          |
@@ -746,6 +747,7 @@ The available transitions are:
 - `release complete`: one or more `planned` or `active` releases → `done`; `done` → rejected, with the failing ID and current status named in the error
 - `task start`: `ready` → `in-progress`; unfinished dependencies raise `UnresolvedDependenciesError`. The database enforces one in-progress task per project, so another `in-progress` task in the same project is demoted to `ready` (its active chunk, if any, returned to `pending`) in the same transaction, and named in the response's `demoted_task` field
 - `task block`: `ready` or `in-progress` → `blocked`, or → `needs-decision` with `--needs-decision`; an active chunk is returned to `pending`
+- Unfinished dependencies make a task `waiting`. Once every dependency is `done`, the task becomes `ready` automatically; a manual `blocked` status remains until `task unblock`
 - `task unblock`: `blocked` or `needs-decision` → `ready`; dependencies are re-checked, and unresolved dependencies reject the transition with `UnresolvedDependenciesError` naming the unfinished task IDs
 - `task complete`: one or more `ready` or `in-progress` tasks with no `pending` or `active` chunks become `done`; pending or active chunks raise `PendingChunksError` naming the failing task and blocking chunk IDs
 - `task start`: the first pending chunk becomes `active`
