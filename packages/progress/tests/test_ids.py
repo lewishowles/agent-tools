@@ -12,6 +12,7 @@ from agents_progress.ids import (
 	RELEASE_PREFIX,
 	TASK_PREFIX,
 	generate_object_id,
+	object_id_prefix,
 	validate_object_id,
 )
 
@@ -31,8 +32,39 @@ def test_generated_ids_have_a_type_prefix_and_128_bits_of_random_input(
 
 
 def test_validation_rejects_a_wrong_prefix_before_lookup() -> None:
-	with pytest.raises(WrongObjectIdTypeError, match="prj_"):
+	with pytest.raises(
+		WrongObjectIdTypeError,
+		match=r"expected a project \(prj_\) ID, got 'tsk_aaaaaaaaaaaaaaaaaaaaaa'",
+	):
 		validate_object_id("tsk_" + "a" * 22, PROJECT_PREFIX)
+
+
+def test_wrong_id_type_error_keeps_the_single_prefix_detail() -> None:
+	"""Keep the original single-prefix detail while listing all accepted prefixes."""
+	error = WrongObjectIdTypeError("tsk_", "rel_" + "a" * 22)
+
+	assert error.details == {
+		"expected_prefix": "tsk_",
+		"expected_prefixes": ["tsk_"],
+		"value": "rel_" + "a" * 22,
+	}
+
+
+@pytest.mark.parametrize(
+	"prefix",
+	[CHUNK_PREFIX, NOTE_PREFIX, PROJECT_PREFIX, RELEASE_PREFIX, TASK_PREFIX],
+)
+def test_object_id_prefix_recognises_every_object_type(prefix: str) -> None:
+	assert object_id_prefix(prefix + "a" * 22) == prefix
+
+
+@pytest.mark.parametrize(
+	"value",
+	[None, "", "a" * 22, "other_" + "a" * 22, "tsk_short", "tsk_" + "a" * 21 + "="],
+)
+def test_object_id_prefix_rejects_invalid_ids(value: object) -> None:
+	with pytest.raises(InvalidObjectIdError):
+		object_id_prefix(value)
 
 
 def test_validation_rejects_malformed_random_parts() -> None:

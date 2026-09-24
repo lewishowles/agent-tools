@@ -11,9 +11,11 @@ from agents_progress.database import Database
 from agents_progress.errors import (
 	AlreadyExistsError,
 	DuplicateDependencyError,
+	NotFoundError,
 	ProgressError,
 )
 from agents_progress.projects import Project, ProjectStore
+from agents_progress.reads import ReadStore
 from agents_progress.render import _status_result_type
 from agents_progress.writes import WriteStore
 
@@ -1475,6 +1477,164 @@ def test_other_add_commands_do_not_prompt(capsys, monkeypatch) -> None:
 	assert _stderr_error_message(capsys.readouterr().err) == (
 		"the following arguments are required: --slug, --title, --overview"
 	)
+
+
+@pytest.mark.parametrize(
+	("prefix", "method_name"),
+	[("tsk_", "task_complete"), ("chk_", "chunk_complete")],
+)
+def test_complete_dispatches_one_id_to_its_store_method(
+	tmp_path: Path, monkeypatch, capsys, prefix: str, method_name: str
+) -> None:
+	"""Send a task or chunk ID to the matching completion method."""
+	identifier = prefix + "a" * 22
+	calls = []
+	data = {"id": identifier, "title": "Completed"}
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def __getattr__(self, name):
+			def handler(value):
+				calls.append((name, value))
+				return data
+
+			return handler
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(["complete", identifier, "--database", str(tmp_path / "db"), "--json"])
+		== 0
+	)
+	assert calls == [(method_name, identifier)]
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+@pytest.fixture
+def complete_records(tmp_path: Path, monkeypatch) -> tuple[Path, dict, dict]:
+	"""Create a task with a pending chunk in a real project database."""
+	database_path = tmp_path / "progress.db"
+	project = Project(
+		"prj_" + "p" * 22,
+		"agents",
+		"Agent configuration",
+		"2026-01-01T00:00:00+00:00",
+	)
+	database = Database(database_path)
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(project.id, project.slug, project.name, project.created_at),
+		)
+
+	monkeypatch.setattr(ProjectStore, "current", lambda self, path=None: project)
+	writer = WriteStore(database)
+	task = writer.task_add(
+		"complete-command",
+		"Complete command",
+		overview="Complete a task or chunk by ID.",
+		contract=["Complete the requested record."],
+	)
+	chunk = writer.chunk_add(task["id"], "Implement completion", "Complete the chunk.")
+
+	return database_path, task, chunk
+
+
+def test_complete_finishes_a_real_chunk_by_id(complete_records, capsys) -> None:
+	"""Complete an active chunk through the public command."""
+	database_path, task, chunk = complete_records
+	writer = WriteStore(Database(database_path))
+	writer.task_start(task["id"])
+
+	assert (
+		cli.main(["complete", chunk["id"], "--database", str(database_path), "--json"])
+		== 0
+	)
+	assert json.loads(capsys.readouterr().out)["data"]["status"] == "done"
+	assert ReadStore(Database(database_path)).chunk_get(chunk["id"])["status"] == "done"
+
+
+def test_complete_keeps_a_task_with_pending_chunks_unchanged(
+	complete_records, capsys
+) -> None:
+	"""Refuse to complete a task until its pending chunk is done."""
+	database_path, task, _chunk = complete_records
+	reader = ReadStore(Database(database_path))
+	status_before = reader.task_get(task["id"])["status"]
+
+	assert (
+		cli.main(["complete", task["id"], "--database", str(database_path), "--json"])
+		== 1
+	)
+	assert json.loads(capsys.readouterr().out)["error"]["code"] == "pending-chunks"
+	assert reader.task_get(task["id"])["status"] == status_before
+
+
+@pytest.mark.parametrize(
+	("identifier", "expected_code"),
+	[
+		("plain", "invalid-id"),
+		("tsk_short", "invalid-id"),
+		("rel_" + "a" * 22, "wrong-id-type"),
+		("prj_" + "a" * 22, "wrong-id-type"),
+		("nte_" + "a" * 22, "wrong-id-type"),
+	],
+)
+def test_complete_rejects_invalid_or_unrelated_ids_without_writing(
+	tmp_path: Path, monkeypatch, capsys, identifier: str, expected_code: str
+) -> None:
+	"""Reject malformed and unrelated IDs before opening the write store."""
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pytest.fail("A rejected ID must not reach the write store")
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(["complete", identifier, "--database", str(tmp_path / "db"), "--json"])
+		== 1
+	)
+	response = json.loads(capsys.readouterr().out)
+	assert response["error"]["code"] == expected_code
+	if expected_code == "wrong-id-type":
+		assert response["error"]["message"] == (
+			f"expected a task (tsk_) or chunk (chk_) ID, got {identifier!r}"
+		)
+		assert response["error"]["details"]["expected_prefixes"] == ["tsk_", "chk_"]
+		assert "expected_prefix" not in response["error"]["details"]
+
+
+def test_complete_requires_exactly_one_id(capsys) -> None:
+	"""Require one ID for the public completion command."""
+	for arguments in ([], ["tsk_" + "a" * 22, "chk_" + "b" * 22]):
+		assert cli.main(["complete", *arguments, "--json"]) == 2
+		assert json.loads(capsys.readouterr().out)["error"]["code"] == "usage"
+
+
+def test_complete_preserves_not_found_for_an_unknown_valid_id(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	"""Report an unknown valid ID with the existing not-found error."""
+	identifier = "tsk_" + "a" * 22
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_complete(self, value):
+			assert value == identifier
+			raise NotFoundError("task does not exist")
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(["complete", identifier, "--database", str(tmp_path / "db"), "--json"])
+		== 1
+	)
+	assert json.loads(capsys.readouterr().out)["error"]["code"] == "not-found"
 
 
 def test_progress_error_renders_a_failed_status_on_stderr(

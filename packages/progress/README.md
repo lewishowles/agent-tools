@@ -393,6 +393,17 @@ reverts to `pending`; completed chunks are untouched) in the same
 transaction. The response's `demoted_task` field names the task that was
 demoted, or is `null` when nothing was.
 
+### `progress complete`
+
+Complete one task or chunk by ID:
+
+```text
+progress complete <task_or_chunk_id> [--json] [--database <path>]
+```
+
+Task and chunk completion follow the same rules as their commands below. Other
+object IDs are rejected without changing state.
+
 ### `progress task complete`
 
 Complete a task:

@@ -51,7 +51,21 @@ def validate_object_id(value: object, expected_prefix: str | None = None) -> str
 	if expected_prefix is not None and not value.startswith(expected_prefix):
 		raise WrongObjectIdTypeError(expected_prefix, value)
 
-	prefix = expected_prefix or next(
+	object_id_prefix(value)
+	return value
+
+
+def object_id_prefix(value: object) -> str:
+	"""Return the type prefix of a well-formed object ID without reading the database.
+
+	Raise InvalidObjectIdError when the value is not a valid object ID.
+	"""
+	if not isinstance(value, str):
+		raise InvalidObjectIdError(
+			f"object ID must be text, got {type(value).__name__}"
+		)
+
+	prefix = next(
 		(prefix for prefix in OBJECT_PREFIXES if value.startswith(prefix)),
 		None,
 	)
@@ -67,7 +81,7 @@ def validate_object_id(value: object, expected_prefix: str | None = None) -> str
 	):
 		raise InvalidObjectIdError(f"malformed object ID: {value!r}")
 
-	return value
+	return prefix
 
 
 def is_valid_object_id(value: object, expected_prefix: str | None = None) -> bool:

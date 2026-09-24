@@ -2,6 +2,15 @@
 
 # Error codes are stable identifiers used by the CLI's text and `--json` output.
 
+# Names used when an ID has a valid prefix for the wrong object type.
+_OBJECT_TYPE_NAMES = {
+	"tsk_": "task",
+	"chk_": "chunk",
+	"rel_": "release",
+	"prj_": "project",
+	"nte_": "note",
+}
+
 
 class ProgressError(Exception):
 	"""Represent a user-facing progress error with a stable code."""
@@ -26,12 +35,26 @@ class WrongObjectIdTypeError(ProgressError):
 
 	code = "wrong-id-type"
 
-	def __init__(self, expected_prefix: str, value: object) -> None:
-		"""Build the message from the expected prefix and the offending value."""
-		super().__init__(
-			f"expected an object ID beginning with {expected_prefix!r}, got {value!r}",
-			{"expected_prefix": expected_prefix, "value": value},
+	def __init__(
+		self,
+		expected_prefixes: str | tuple[str, ...],
+		value: object,
+	) -> None:
+		"""Build the message and details from the accepted object ID prefixes."""
+		if isinstance(expected_prefixes, tuple):
+			prefixes = list(expected_prefixes)
+		else:
+			prefixes = [expected_prefixes]
+
+		type_names = " or ".join(
+			f"{_OBJECT_TYPE_NAMES[prefix]} ({prefix})" for prefix in prefixes
 		)
+		message = f"expected a {type_names} ID, got {value!r}"
+		details: dict[str, object] = {"expected_prefixes": prefixes, "value": value}
+		if len(prefixes) == 1:
+			details["expected_prefix"] = prefixes[0]
+
+		super().__init__(message, details)
 
 
 class InvalidObjectIdError(ProgressError):

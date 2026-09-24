@@ -13,7 +13,8 @@ from prompt_toolkit import prompt
 
 from . import __version__
 from .database import Database
-from .errors import NotFoundError, ProgressError
+from .errors import NotFoundError, ProgressError, WrongObjectIdTypeError
+from .ids import CHUNK_PREFIX, TASK_PREFIX, object_id_prefix
 from .projects import ProjectStore
 from .reads import DEFAULT_LIMIT, MAX_LIMIT, ReadStore
 from .render import render
@@ -262,6 +263,11 @@ def _add_command_specs(
 # Every CLI command and its nested subcommands, in the order they should appear in --help.
 _COMMAND_SPECS = (
 	_CommandSpec("next", "show the next queued task and active chunk"),
+	_CommandSpec(
+		"complete",
+		"complete one task or chunk by ID",
+		arguments=(_argument("object_id", help="task or chunk ID to complete"),),
+	),
 	_CommandSpec("commands", "list every command and flag"),
 	_CommandSpec("doctor", "find blank required-in-practice fields"),
 	_CommandSpec(
@@ -1197,6 +1203,19 @@ def _render_human_output(command: str, data: object) -> str:
 	return "\n".join(lines) + ("\n" if lines else "")
 
 
+def _run_complete(args: argparse.Namespace, database: Database) -> tuple[object, str]:
+	"""Complete the task or chunk identified by one well-formed ID."""
+	prefix = object_id_prefix(args.object_id)
+
+	if prefix == TASK_PREFIX:
+		return WriteStore(database).task_complete(args.object_id), "task complete"
+
+	if prefix == CHUNK_PREFIX:
+		return WriteStore(database).chunk_complete(args.object_id), "chunk complete"
+
+	raise WrongObjectIdTypeError((TASK_PREFIX, CHUNK_PREFIX), args.object_id)
+
+
 def _run_command(
 	args: argparse.Namespace, *, include_release_titles: bool = False
 ) -> tuple[object, str]:
@@ -1212,6 +1231,7 @@ def _run_command(
 	# gates the human-only hidden-count hint on release list.
 	human_output = include_release_titles
 	dispatch = {
+		("complete", None): lambda: _run_complete(args, database),
 		("next", None): lambda: (
 			(
 				ReadStore(database).next(include_position_totals=True)
