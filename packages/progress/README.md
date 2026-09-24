@@ -573,7 +573,8 @@ If no task is selected, the command returns an error with a recovery hint.
 - `--limit <limit>`: maximum number of chunks to return
 - `--offset <offset>`: number of chunks to skip before returning results
 
-See [Listing](#listing) for pagination details.
+See [Listing](#listing) for pagination details. JSON output also includes a
+`task` object with the ID and title of the listed task.
 
 ### `progress chunk get`
 

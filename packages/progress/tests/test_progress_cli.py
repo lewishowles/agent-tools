@@ -65,6 +65,9 @@ def test_read_commands_resolve_only_omitted_identifiers(
 
 		def task_get(self, identifier):
 			calls.append(("task_get", identifier))
+			if method_name == "chunk_list":
+				return {"id": identifier, "title": "Progress task"}
+
 			return data
 
 		def chunk_get(self, identifier):
@@ -96,11 +99,25 @@ def test_read_commands_resolve_only_omitted_identifiers(
 	)
 
 	assert calls == ([("next",)] if use_selection else []) + (
-		[("chunk_list", selected_id if use_selection else explicit_id, 50, 0)]
+		[
+			("chunk_list", selected_id if use_selection else explicit_id, 50, 0),
+			("task_get", selected_id if use_selection else explicit_id),
+		]
 		if method_name == "chunk_list"
 		else [(method_name, selected_id if use_selection else explicit_id)]
 	)
-	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+	expected_data = (
+		{
+			**data,
+			"task": {
+				"id": selected_id if use_selection else explicit_id,
+				"title": "Progress task",
+			},
+		}
+		if method_name == "chunk_list"
+		else data
+	)
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": expected_data}
 
 
 @pytest.mark.parametrize(
@@ -2192,6 +2209,68 @@ def test_human_chunk_list_includes_task_header(
 	assert output.index("Chunks") < output.index("First chunk")
 
 
+@pytest.mark.parametrize(
+	("items", "limit", "offset", "has_more", "expected_body"),
+	[
+		([], 50, 0, False, "No chunks."),
+		(
+			[{"id": "chk_test", "title": "First chunk", "status": "pending"}],
+			1,
+			1,
+			True,
+			"More results: use --offset 2.",
+		),
+	],
+)
+def test_human_chunk_list_keeps_task_header_for_empty_and_paginated_results(
+	tmp_path: Path, monkeypatch, capsys, items, limit, offset, has_more, expected_body
+) -> None:
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def chunk_list(self, task_id, requested_limit, requested_offset):
+			assert (task_id, requested_limit, requested_offset) == (
+				"tsk_test",
+				limit,
+				offset,
+			)
+			return {
+				"items": items,
+				"limit": limit,
+				"offset": offset,
+				"has_more": has_more,
+			}
+
+		def task_get(self, task_id):
+			assert task_id == "tsk_test"
+			return {"id": "tsk_test", "title": "Progress task"}
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert (
+		cli.main(
+			[
+				"chunk",
+				"list",
+				"--task",
+				"tsk_test",
+				"--limit",
+				str(limit),
+				"--offset",
+				str(offset),
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+
+	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert "Progress task · tsk_test\n\nChunks" in output
+	assert output.index("Progress task · tsk_test") < output.index(expected_body)
+
+
 def test_human_note_list_shows_body_and_owner(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -2281,7 +2360,7 @@ def test_human_empty_note_list_shows_an_empty_state(
 	assert empty_label in output
 
 
-def test_json_chunk_list_does_not_add_task_header(
+def test_json_chunk_list_includes_task_and_pagination(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
 	data = {
@@ -2299,7 +2378,8 @@ def test_json_chunk_list_does_not_add_task_header(
 			return data
 
 		def task_get(self, task_id):
-			pytest.fail("JSON chunk list must not read the task")
+			assert task_id == "tsk_test"
+			return {"id": "tsk_test", "title": "Progress task"}
 
 	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
 
@@ -2318,7 +2398,13 @@ def test_json_chunk_list_does_not_add_task_header(
 		== 0
 	)
 
-	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+	assert json.loads(capsys.readouterr().out) == {
+		"ok": True,
+		"data": {
+			**data,
+			"task": {"id": "tsk_test", "title": "Progress task"},
+		},
+	}
 
 
 def test_search_dispatches_parsed_arguments(

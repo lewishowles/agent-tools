@@ -1368,7 +1368,7 @@ def _run_command(
 			"search",
 		),
 		("chunk", "list"): lambda: (
-			_run_chunk_list(args, database, human_output),
+			_run_chunk_list(args, database),
 			"chunk list",
 		),
 		("chunk", "get"): lambda: (
@@ -1472,17 +1472,15 @@ def _run_command(
 	return data, command
 
 
-def _run_chunk_list(
-	args: argparse.Namespace, database: Database, human_output: bool
-) -> object:
-	"""Load a task's chunks, using the selected task when --task is omitted.
+def _run_chunk_list(args: argparse.Namespace, database: Database) -> object:
+	"""Load a task's chunks with the task's title and ID.
 
-	Human output also gets the task title and ID for the heading.
+	Uses the task selected by progress next when --task is omitted.
 	"""
 	store = ReadStore(database)
 	task_id = _selected_id(store, args.task_id, "task")
 	data = store.chunk_list(task_id, args.limit, args.offset)
-	if not human_output or not isinstance(data, dict):
+	if not isinstance(data, dict):
 		return data
 
 	task = store.task_get(task_id)
