@@ -133,6 +133,8 @@ class _CommandSpec:
 	children: tuple["_CommandSpec", ...] = ()
 	destination: str | None = None
 	page_options: bool = False
+	# Whether the list command accepts --all to show every record without a page limit.
+	all_option: bool = False
 	# Flag names that argparse rejects together; empty when the command has no such pair.
 	exclusive_arguments: tuple[str, ...] = ()
 	# Whether one of the exclusive flags must be given.
@@ -174,16 +176,26 @@ def _page_argument_specs() -> tuple[_ArgumentSpec, ...]:
 		_argument(
 			"--limit",
 			type=_page_number,
+			action=_ExplicitPageOption,
 			default=DEFAULT_LIMIT,
 			help=f"maximum records to show, 1-{MAX_LIMIT} (default: {DEFAULT_LIMIT})",
 		),
 		_argument(
 			"--offset",
 			type=_offset_number,
+			action=_ExplicitPageOption,
 			default=0,
 			help="number of records to skip (default: 0)",
 		),
 	)
+
+
+class _ExplicitPageOption(argparse.Action):
+	"""Store a page option and record that the user typed it, so --all can reject an explicit --limit or --offset."""
+
+	def __call__(self, parser, namespace, values, option_string=None) -> None:
+		setattr(namespace, self.dest, values)
+		setattr(namespace, f"_{self.dest}_explicit", True)
 
 
 def _add_page_options(parser: argparse.ArgumentParser) -> None:
@@ -256,6 +268,15 @@ def _add_command_specs(
 
 		if spec.page_options:
 			_add_page_options(parser)
+		if spec.all_option:
+			# Release list has its own --all that still pages, so only commands with
+			# this marker reject --all alongside --limit or --offset.
+			parser.set_defaults(_all_unpaged=True)
+			parser.add_argument(
+				"--all",
+				action="store_true",
+				help="show all records without a page limit",
+			)
 
 		_add_output_options(parser)
 
@@ -588,6 +609,7 @@ _COMMAND_SPECS = (
 				"list tasks",
 				arguments=(_argument("--status"),),
 				page_options=True,
+				all_option=True,
 			),
 		),
 		destination="task_command",
@@ -1028,6 +1050,8 @@ def _manifest_flags(spec: _CommandSpec) -> list[dict[str, object]]:
 	argument_specs = list(spec.arguments)
 	if spec.page_options:
 		argument_specs.extend(_page_argument_specs())
+	if spec.all_option:
+		argument_specs.append(_argument("--all", action="store_true"))
 	argument_specs.extend(_output_argument_specs())
 
 	return [
@@ -1103,6 +1127,15 @@ def main(argv: list[str] | None = None) -> int:
 
 		args = parser.parse_args(arguments)
 		json_mode = bool(getattr(args, "json", json_mode))
+		if (
+			getattr(args, "_all_unpaged", False)
+			and args.all
+			and (
+				getattr(args, "_limit_explicit", False)
+				or getattr(args, "_offset_explicit", False)
+			)
+		):
+			raise CliUsageError("--all cannot be used with --limit or --offset")
 
 		# Handled before command dispatch so `progress --version` works with no
 		# subcommand and never touches the database.
@@ -1362,6 +1395,8 @@ def _run_command(
 				args.offset,
 				include_release_titles=include_release_titles,
 				include_queue_numbers=human_output,
+				collapse_done_tasks=human_output,
+				show_all=args.all,
 			),
 			"task list",
 		),

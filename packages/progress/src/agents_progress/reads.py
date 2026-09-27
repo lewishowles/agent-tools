@@ -142,14 +142,17 @@ def validate_page(limit: int = DEFAULT_LIMIT, offset: int = 0) -> tuple[int, int
 
 
 def page_response(
-	items: Sequence[dict[str, object]], limit: int, offset: int, total: int
+	items: Sequence[dict[str, object]], limit: int | None, offset: int, total: int
 ) -> dict[str, object]:
-	"""Build the bounded page response returned by list queries."""
+	"""Build the page response returned by list queries.
+
+	A limit of None means every matching record was returned, so has_more is false.
+	"""
 	return {
 		"items": list(items),
 		"limit": limit,
 		"offset": offset,
-		"has_more": offset + len(items) < total,
+		"has_more": limit is not None and offset + len(items) < total,
 	}
 
 
@@ -800,9 +803,18 @@ class ReadStore(_StoreBase):
 		*,
 		include_release_titles: bool = False,
 		include_queue_numbers: bool = False,
+		collapse_done_tasks: bool = False,
+		show_all: bool = False,
 	) -> dict[str, object]:
-		"""List tasks in the same release-priority order used by `next`."""
-		limit, offset = validate_page(limit, offset)
+		"""List tasks in the same release-priority order used by `next`.
+
+		collapse_done_tasks is for human output. Without a status filter it leaves
+		done tasks out of the page, so the page limit counts unfinished tasks, and it
+		adds the counts the list summary needs. show_all keeps done tasks and returns
+		every matching task without a page limit.
+		"""
+		if not show_all:
+			limit, offset = validate_page(limit, offset)
 		if status is not None and status not in TASK_STATUSES:
 			raise InvalidStatusError(
 				f"unknown task status {status!r}",
@@ -815,14 +827,18 @@ class ReadStore(_StoreBase):
 		if status is not None:
 			where += " AND tasks.status = ?"
 			parameters += (status,)
+		elif collapse_done_tasks and not show_all:
+			where += " AND tasks.status != 'done'"
 
 		with self.database.connection() as connection:
+			page_clause = "" if show_all else " LIMIT ? OFFSET ?"
+			page_parameters = parameters if show_all else (*parameters, limit, offset)
 			rows = connection.execute(
 				f"SELECT {_TASK_COLUMNS_QUALIFIED} FROM tasks "
 				"LEFT JOIN releases ON releases.id = tasks.release_id "
 				"AND releases.project_id = tasks.project_id "
-				f"WHERE {where} ORDER BY {_TASK_QUEUE_ORDER} LIMIT ? OFFSET ?",
-				(*parameters, limit, offset),
+				f"WHERE {where} ORDER BY {_TASK_QUEUE_ORDER}{page_clause}",
+				page_parameters,
 			).fetchall()
 			total = connection.execute(
 				f"SELECT COUNT(*) FROM tasks WHERE {where}", parameters
@@ -837,10 +853,18 @@ class ReadStore(_StoreBase):
 					).to_dict()
 					for row in rows
 				],
-				limit,
-				offset,
+				None if show_all else limit,
+				0 if show_all else offset,
 				total,
 			)
+			if collapse_done_tasks or include_queue_numbers:
+				summary, queue_numbers = self._task_list_summary(
+					connection,
+					project.id,
+					collapse_done=status is None and not show_all,
+				)
+			if collapse_done_tasks:
+				response.update(summary)
 			if include_release_titles:
 				items = response["items"]
 				if isinstance(items, list):
@@ -849,20 +873,6 @@ class ReadStore(_StoreBase):
 			# as the next task, so a filtered or later page still shows true positions.
 			# Only human output asks for this, which keeps the JSON shape unchanged.
 			if include_queue_numbers:
-				queue_rows = connection.execute(
-					"SELECT tasks.id FROM tasks "
-					"LEFT JOIN releases ON releases.id = tasks.release_id "
-					"AND releases.project_id = tasks.project_id "
-					"WHERE tasks.project_id = ? AND tasks.status != 'done' "
-					f"ORDER BY {_TASK_QUEUE_ORDER}",
-					(project.id,),
-				).fetchall()
-
-				# The queue number for each unfinished task ID.
-				queue_numbers = {
-					str(row["id"]): number for number, row in enumerate(queue_rows, 1)
-				}
-
 				items = response["items"]
 				if isinstance(items, list):
 					for item in items:
@@ -870,6 +880,60 @@ class ReadStore(_StoreBase):
 							item["queue_number"] = queue_numbers[item["id"]]
 
 			return response
+
+	def _task_list_summary(
+		self,
+		connection: sqlite3.Connection,
+		project_id: str,
+		*,
+		collapse_done: bool,
+	) -> tuple[dict[str, object], dict[str, int]]:
+		"""Count the project's tasks for the human list and number its queue.
+
+		Returns a pair. The first item holds the summary fields: counts by status,
+		done counts per release (empty unless collapse_done is set), every release
+		that has tasks in queue order, the releases that still have unfinished tasks,
+		and the title of the first unfinished task. The second item maps each
+		unfinished task's ID to its queue number, with 1 as the next task.
+		"""
+		all_rows = connection.execute(
+			"SELECT tasks.id, tasks.title, tasks.status, tasks.release_id, "
+			"releases.title AS release_title FROM tasks "
+			"LEFT JOIN releases ON releases.id = tasks.release_id "
+			"AND releases.project_id = tasks.project_id "
+			"WHERE tasks.project_id = ? "
+			f"ORDER BY {_TASK_QUEUE_ORDER}",
+			(project_id,),
+		).fetchall()
+		status_counts: dict[str, int] = {}
+		done_counts: dict[str | None, int] = {}
+		release_order: list[dict[str, object]] = []
+		seen_releases: set[str | None] = set()
+		releases_with_unfinished: set[str | None] = set()
+		queue_numbers: dict[str, int] = {}
+		next_task = None
+		for row in all_rows:
+			row_status = str(row["status"])
+			status_counts[row_status] = status_counts.get(row_status, 0) + 1
+			release_id = row["release_id"]
+			if release_id not in seen_releases:
+				release_order.append({"id": release_id, "title": row["release_title"]})
+				seen_releases.add(release_id)
+			if row_status == "done":
+				done_counts[release_id] = done_counts.get(release_id, 0) + 1
+			else:
+				releases_with_unfinished.add(release_id)
+				queue_numbers[str(row["id"])] = len(queue_numbers) + 1
+				if next_task is None:
+					next_task = str(row["title"])
+
+		return {
+			"status_counts": status_counts,
+			"done_counts": done_counts if collapse_done else {},
+			"release_order": release_order,
+			"releases_with_unfinished": releases_with_unfinished,
+			"next_task": next_task,
+		}, queue_numbers
 
 	def search(
 		self,

@@ -455,12 +455,19 @@ progress task block <task_id> --reason <reason> [--needs-decision] [--json] [--d
 List tasks for the current project:
 
 ```text
-progress task list [--status <status>] [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
+progress task list [--status <status>] [--all] [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
 ```
 
 - `--status <status>`: filter by task status
 - `--limit <limit>`: maximum number of tasks to return
 - `--offset <offset>`: number of tasks to skip before returning results
+- `--all`: show done tasks in full and remove the page limit; cannot be combined with `--limit` or `--offset`
+
+The human list collapses done tasks into a count for each release unless you
+filter by status or pass `--all`. Its page limit counts unfinished tasks, and
+the final line shows project-wide status counts and the next task. JSON keeps
+its usual list order and fields; with `--all`, `limit` is `null` and `has_more`
+is `false`.
 
 See [Listing](#listing) for pagination details.
 

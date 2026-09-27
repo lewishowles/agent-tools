@@ -947,25 +947,26 @@ def _render_chunk_item(item: dict[str, object]) -> str:
 
 
 def _render_task_list(data: dict[str, object]) -> str:
-	"""Render the task list: an empty-state line, or the release-grouped tables in reverse queue order, so the next task prints last, followed by the next-action line."""
-	task_groups = _group_task_items(data.get("items"))
-	if not task_groups:
-		return render_span("No tasks.", "muted", weight="normal")
+	"""Show releases and tasks in reverse queue order so the next task prints last.
 
-	get_command = render_span("progress task get TASK_ID", weight="bold")
-	move_command = render_span(
-		"progress task move TASK_ID --before/--after TASK_ID", weight="bold"
-	)
-	action_message = f"View a task with {get_command}; reorder with {move_command}."
+	A release shows its done count with its visible tasks, or on the final page
+	when it has only done tasks. The summary of counts and the next task is last.
+	"""
+	task_groups = _group_task_items(data.get("items"))
+	release_order = data["release_order"]
+	done_counts = data["done_counts"]
+	releases_with_unfinished = data["releases_with_unfinished"]
+
 	blocks = []
 
 	# The widest queue number on the page, so numbers line up across release tables.
 	number_width = max(
 		(
 			len(str(item.get("queue_number", "")))
-			for _, items in task_groups
+			for _, _, items in task_groups
 			for item in items
-		)
+		),
+		default=0,
 	)
 
 	columns = [
@@ -974,29 +975,78 @@ def _render_task_list(data: dict[str, object]) -> str:
 		{"key": "title", "label": "Title"},
 		{"key": "id", "label": "ID"},
 	]
-	for release_title, items in reversed(task_groups):
-		blocks.append(render_span(release_title, weight="normal"))
-		blocks.append(
-			render_table(
-				columns,
-				[_render_task_item(item, number_width) for item in reversed(items)],
+	items_by_release = {release_id: items for release_id, _, items in task_groups}
+	display_groups = []
+	for release in release_order:
+		release_id = release["id"]
+		items = items_by_release.get(release_id, [])
+		done_count = done_counts.get(release_id, 0)
+		if not items and (data["has_more"] or release_id in releases_with_unfinished):
+			done_count = 0
+
+		if items or done_count:
+			display_groups.append(
+				(str(release["title"] or "Unassigned"), items, done_count)
 			)
-		)
+
+	if not display_groups:
+		blocks.append(render_span("No tasks.", "muted", weight="normal"))
+
+	for release_title, items, done_count in reversed(display_groups):
+		blocks.append(render_span(release_title, weight="normal"))
+		if done_count:
+			blocks.append(render_span(f"{done_count} done", "muted", weight="normal"))
+		if items:
+			blocks.append(
+				render_table(
+					columns,
+					[_render_task_item(item, number_width) for item in reversed(items)],
+				)
+			)
 
 	if data.get("has_more"):
 		next_offset = int(data.get("offset", 0)) + int(data.get("limit", 0))
 		blocks.append(render_hint(f"More results: use --offset {next_offset}."))
 
-	blocks.append(render_labelled_line("Next action", action_message))
+	if display_groups:
+		get_command = render_span("progress task get TASK_ID", weight="bold")
+		move_command = render_span(
+			"progress task move TASK_ID --before/--after TASK_ID", weight="bold"
+		)
+		action_message = f"View a task with {get_command}; reorder with {move_command}."
+		blocks.append(render_labelled_line("Next action", action_message))
+	blocks.append(_render_task_summary(data))
 
 	return "\n\n".join(blocks)
 
 
+def _render_task_summary(data: dict[str, object]) -> str:
+	"""Show project-wide task counts and the first unfinished task."""
+	status_counts = data["status_counts"]
+	count_parts = [
+		f"{status_counts[status]} {status.replace('-', ' ')}"
+		for status in (
+			"in-progress",
+			"ready",
+			"waiting",
+			"blocked",
+			"needs-decision",
+			"done",
+		)
+		if status_counts.get(status)
+	]
+	counts = ", ".join(count_parts)
+	if counts:
+		return f"{sum(status_counts.values())} tasks: {counts}. Next: {data.get('next_task') or 'none'}."
+
+	return "0 tasks. Next: none."
+
+
 def _group_task_items(
 	items: object,
-) -> list[tuple[str, list[dict[str, object]]]]:
+) -> list[tuple[str | None, str, list[dict[str, object]]]]:
 	"""Group task rows by release while retaining each row's input order."""
-	groups: dict[str, tuple[str, list[dict[str, object]]]] = {}
+	groups: dict[str | None, tuple[str | None, str, list[dict[str, object]]]] = {}
 	if not isinstance(items, list):
 		return []
 
@@ -1004,12 +1054,12 @@ def _group_task_items(
 		if not isinstance(item, dict):
 			continue
 
-		release_id = str(item.get("release_id") or "unassigned")
+		release_id = item.get("release_id")
 		release_title = str(item.get("release_title") or "Unassigned")
 		if release_id not in groups:
-			groups[release_id] = (release_title, [])
+			groups[release_id] = (release_id, release_title, [])
 
-		groups[release_id][1].append(item)
+		groups[release_id][2].append(item)
 
 	return list(groups.values())
 

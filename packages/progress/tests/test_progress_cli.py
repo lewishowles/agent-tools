@@ -2110,6 +2110,15 @@ def test_human_task_list_groups_rows_and_renders_hints(
 		"limit": 4,
 		"offset": 0,
 		"has_more": True,
+		"release_order": [
+			{"id": "rel_first", "title": "First release"},
+			{"id": None, "title": None},
+			{"id": "rel_second", "title": "Second release"},
+		],
+		"done_counts": {},
+		"releases_with_unfinished": {"rel_first", None},
+		"status_counts": {"ready": 2, "blocked": 1, "done": 1},
+		"next_task": "Ready task",
 	}
 
 	class _ReadStore:
@@ -2124,12 +2133,16 @@ def test_human_task_list_groups_rows_and_renders_hints(
 			*,
 			include_release_titles,
 			include_queue_numbers,
+			collapse_done_tasks,
+			show_all,
 		):
 			assert status is None
 			assert limit == 4
 			assert offset == 0
 			assert include_release_titles is True
 			assert include_queue_numbers is True
+			assert collapse_done_tasks is True
+			assert show_all is False
 			return data
 
 	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
@@ -2177,6 +2190,218 @@ def test_human_task_list_groups_rows_and_renders_hints(
 	)
 	assert "i Hint: View a task with" not in output.out
 	assert "i Hint: More results: use --offset 4." in output.out
+
+
+def test_human_task_list_shows_done_counts_and_project_summary() -> None:
+	data = {
+		"items": [
+			{
+				"id": "tsk_next",
+				"title": "Next task",
+				"status": "ready",
+				"queue_number": 1,
+				"release_id": "rel_next",
+			},
+		],
+		"limit": 50,
+		"offset": 0,
+		"has_more": False,
+		"release_order": [
+			{"id": "rel_next", "title": "Next release"},
+			{"id": "rel_done", "title": "Finished release"},
+		],
+		"done_counts": {"rel_next": 2, "rel_done": 3},
+		"releases_with_unfinished": {"rel_next"},
+		"status_counts": {"ready": 1, "done": 5},
+		"next_task": "Next task",
+	}
+
+	output = render_module._render_task_list(data)
+
+	assert output.index("Finished release") < output.index("Next release")
+	assert output.index("2 done") < output.index("Next task")
+	assert output.index("Next action") < output.index(
+		"6 tasks: 1 ready, 5 done. Next: Next task."
+	)
+	assert "3 done" in output
+
+
+@pytest.fixture
+def task_list_pages(tmp_path: Path, monkeypatch) -> Path:
+	"""Create two releases split by a page and one release with only done tasks."""
+	database_path = tmp_path / "progress.db"
+	project = Project(
+		"prj_" + "p" * 22,
+		"agents",
+		"Agent configuration",
+		"2026-01-01T00:00:00+00:00",
+	)
+	database = Database(database_path)
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(project.id, project.slug, project.name, project.created_at),
+		)
+
+	monkeypatch.setattr(ProjectStore, "current", lambda self, path=None: project)
+	writer = WriteStore(database)
+	releases = [
+		writer.release_add(
+			"first", "First release", overview="First.", status="active"
+		),
+		writer.release_add("second", "Second release", overview="Second."),
+		writer.release_add("finished", "Finished release", overview="Finished."),
+	]
+	done_ids = []
+	for release, titles in zip(
+		releases,
+		(
+			("First ready one", "First ready two", "First ready three"),
+			("Second ready", "Second done one", "Second done two"),
+			("Finished done",),
+		),
+		strict=True,
+	):
+		for position, title in enumerate(titles, 1):
+			task = writer.task_add(
+				title.lower().replace(" ", "-"),
+				title,
+				overview=title,
+				contract=[title],
+				release_id=release["id"],
+				position=position,
+			)
+			if "done" in title:
+				done_ids.append(task["id"])
+	with database.transaction() as connection:
+		connection.executemany(
+			"UPDATE tasks SET status = 'done' WHERE id = ?",
+			[(task_id,) for task_id in done_ids],
+		)
+
+	return database_path
+
+
+def test_human_task_list_done_counts_follow_the_visible_page(
+	task_list_pages: Path, capsys
+) -> None:
+	assert (
+		cli.main(["task", "list", "--limit", "2", "--database", str(task_list_pages)])
+		== 0
+	)
+	first_page = capsys.readouterr().out
+	assert "First ready one" in first_page
+	assert "Second release" not in first_page
+	assert "Finished release" not in first_page
+	assert "More results: use --offset 2." in first_page
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"list",
+				"--limit",
+				"2",
+				"--offset",
+				"2",
+				"--database",
+				str(task_list_pages),
+			]
+		)
+		== 0
+	)
+	final_page = capsys.readouterr().out
+	assert "First ready three" in final_page
+	assert "Second ready" in final_page
+	assert "2 done" in final_page
+	assert "Finished release" in final_page
+	assert "1 done" in final_page
+	assert "More results" not in final_page
+
+
+def test_human_task_list_all_shows_done_rows_without_counts_or_paging(
+	task_list_pages: Path, capsys
+) -> None:
+	assert cli.main(["task", "list", "--all", "--database", str(task_list_pages)]) == 0
+	output = capsys.readouterr().out
+	assert "Second done one" in output
+	assert "Finished done" in output
+	assert "2 done" not in output
+	assert "More results" not in output
+
+
+def test_human_task_list_status_filter_keeps_done_rows(
+	task_list_pages: Path, capsys
+) -> None:
+	assert (
+		cli.main(
+			["task", "list", "--status", "done", "--database", str(task_list_pages)]
+		)
+		== 0
+	)
+	output = capsys.readouterr().out
+	assert "Second done one" in output
+	assert "Second ready" not in output
+	assert "2 done" not in output
+
+
+@pytest.mark.parametrize("page_flag", ["--limit", "--offset"])
+def test_task_list_all_rejects_explicit_paging(
+	tmp_path: Path, capsys, page_flag: str
+) -> None:
+	assert (
+		cli.main(
+			[
+				"task",
+				"list",
+				"--all",
+				page_flag,
+				"1",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 2
+	)
+	assert "--all cannot be used with --limit or --offset" in capsys.readouterr().err
+
+
+def test_json_task_list_all_removes_page_limit(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_list(
+			self,
+			status,
+			limit,
+			offset,
+			*,
+			include_release_titles,
+			include_queue_numbers,
+			collapse_done_tasks,
+			show_all,
+		):
+			assert show_all is True
+			assert collapse_done_tasks is False
+			return {"items": [], "limit": None, "offset": 0, "has_more": False}
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert (
+		cli.main(
+			["task", "list", "--all", "--json", "--database", str(tmp_path / "db")]
+		)
+		== 0
+	)
+	assert json.loads(capsys.readouterr().out)["data"] == {
+		"items": [],
+		"limit": None,
+		"offset": 0,
+		"has_more": False,
+	}
 
 
 def test_human_chunk_list_includes_task_header(
@@ -2903,6 +3128,11 @@ def test_task_list_action_styles_embedded_commands(monkeypatch) -> None:
 				}
 			],
 			"has_more": False,
+			"release_order": [{"id": None, "title": None}],
+			"done_counts": {},
+			"releases_with_unfinished": {None},
+			"status_counts": {"ready": 1},
+			"next_task": "Task",
 		}
 	)
 
@@ -2910,16 +3140,15 @@ def test_task_list_action_styles_embedded_commands(monkeypatch) -> None:
 		"<Unassigned>\n\n"
 		"table\n\n"
 		"View a task with <progress task get TASK_ID>; reorder with "
-		"<progress task move TASK_ID --before/--after TASK_ID>."
+		"<progress task move TASK_ID --before/--after TASK_ID>.\n\n"
+		"1 tasks: 1 ready. Next: Task."
 	)
-	assert spans[:2] == [
-		("progress task get TASK_ID", "info", "bold"),
-		(
-			"progress task move TASK_ID --before/--after TASK_ID",
-			"info",
-			"bold",
-		),
-	]
+	assert ("progress task get TASK_ID", "info", "bold") in spans
+	assert (
+		"progress task move TASK_ID --before/--after TASK_ID",
+		"info",
+		"bold",
+	) in spans
 	assert ("Unassigned", "info", "normal") in spans
 	assert tables == [
 		(
@@ -2956,7 +3185,18 @@ def test_task_list_renders_only_an_empty_state(monkeypatch) -> None:
 	)
 
 	assert (
-		render_module._render_task_list({"items": [], "has_more": True}) == "No tasks."
+		render_module._render_task_list(
+			{
+				"items": [],
+				"has_more": False,
+				"release_order": [],
+				"done_counts": {},
+				"releases_with_unfinished": set(),
+				"status_counts": {},
+				"next_task": None,
+			}
+		)
+		== "No tasks.\n\n0 tasks. Next: none."
 	)
 	assert span_calls == [("No tasks.", "muted", "normal")]
 
@@ -3601,7 +3841,10 @@ def test_json_task_list_does_not_request_release_titles(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
 	data = {
-		"items": [{"id": "tsk_test", "title": "Read surface", "status": "ready"}],
+		"items": [
+			{"id": "tsk_test", "title": "Read surface", "status": "ready"},
+			{"id": "tsk_done", "title": "Finished task", "status": "done"},
+		],
 		"limit": 50,
 		"offset": 0,
 		"has_more": False,
@@ -3619,12 +3862,16 @@ def test_json_task_list_does_not_request_release_titles(
 			*,
 			include_release_titles,
 			include_queue_numbers,
+			collapse_done_tasks,
+			show_all,
 		):
 			assert status is None
 			assert limit == 50
 			assert offset == 0
 			assert include_release_titles is False
 			assert include_queue_numbers is False
+			assert collapse_done_tasks is False
+			assert show_all is False
 			return data
 
 	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
@@ -3644,7 +3891,8 @@ def test_json_task_list_does_not_request_release_titles(
 
 	assert capsys.readouterr().out == (
 		'{"ok":true,"data":{"items":[{"id":"tsk_test","title":"Read surface",'
-		'"status":"ready"}],"limit":50,"offset":0,"has_more":false}}\n'
+		'"status":"ready"},{"id":"tsk_done","title":"Finished task",'
+		'"status":"done"}],"limit":50,"offset":0,"has_more":false}}\n'
 	)
 
 

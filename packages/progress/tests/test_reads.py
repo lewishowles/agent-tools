@@ -410,6 +410,46 @@ def test_task_list_numbers_unfinished_queue_independent_of_filters_and_pages(
 	assert all("queue_number" not in item for item in json_items)
 
 
+def test_task_list_collapses_done_tasks_only_for_human_unfiltered_pages(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (TASK_B,))
+
+	page = store.task_list(limit=1, collapse_done_tasks=True)
+	filtered = store.task_list(status="done", collapse_done_tasks=True)
+	all_tasks = store.task_list(limit=1, collapse_done_tasks=True, show_all=True)
+	json_page = store.task_list(limit=1)
+
+	assert [item["id"] for item in page["items"]] == [TASK_A]
+	assert page["has_more"] is False
+	assert page["done_counts"] == {RELEASE_A: 1}
+	assert page["status_counts"] == {"in-progress": 1, "done": 1}
+	assert page["next_task"] == "First task"
+	assert [item["id"] for item in filtered["items"]] == [TASK_B]
+	assert filtered["done_counts"] == {}
+	assert [item["id"] for item in all_tasks["items"]] == [TASK_A, TASK_B]
+	assert all_tasks["limit"] is None
+	assert all_tasks["has_more"] is False
+	assert "done_counts" not in json_page
+	assert json_page["has_more"] is True
+
+
+def test_task_list_keeps_unassigned_release_id_in_human_counts(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE tasks SET release_id = NULL, status = 'done' WHERE id = ?",
+			(TASK_B,),
+		)
+
+	result = store.task_list(collapse_done_tasks=True)
+
+	assert result["done_counts"] == {None: 1}
+	assert result["release_order"][-1] == {"id": None, "title": None}
+
+
 def test_task_list_filters_waiting_tasks(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	writer = WriteStore(store.database, _ProjectStore(store.database))
