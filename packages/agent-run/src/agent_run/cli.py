@@ -542,9 +542,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     show_parser = subparsers.add_parser(
         "show",
-        help="Show one saved run record.",
-        description="Show one saved run record without rerunning it.",
-        usage="agent-run show RUN_ID [--json]",
+        help="Show the latest run or a saved run by ID.",
+        description="Show the latest run or a saved run by ID without rerunning it.",
+        usage="agent-run show [RUN_ID] [--json]",
         add_help=False,
         json_mode=json_mode,
     )
@@ -561,13 +561,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=argparse.SUPPRESS,
         help="Write one structured JSON result to standard output.",
     )
-    show_parser.add_argument("run_id", nargs="?", help="ID of the saved run.")
+    show_parser.add_argument(
+        "run_id", nargs="?", help="ID of a saved run; defaults to the latest run."
+    )
 
     log_parser = subparsers.add_parser(
         "log",
-        help="Print the complete log for one saved run.",
-        description="Print the complete log for one saved run without rerunning it.",
-        usage="agent-run log RUN_ID [--json]",
+        help="Print the complete log for the latest run or a saved run by ID.",
+        description=(
+            "Print the complete log for the latest run or a saved run by ID "
+            "without rerunning it."
+        ),
+        usage="agent-run log [RUN_ID] [--json]",
         add_help=False,
         json_mode=json_mode,
     )
@@ -584,13 +589,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=argparse.SUPPRESS,
         help="Write one structured JSON result to standard output.",
     )
-    log_parser.add_argument("run_id", nargs="?", help="ID of the saved run.")
+    log_parser.add_argument(
+        "run_id", nargs="?", help="ID of a saved run; defaults to the latest run."
+    )
 
     failures_parser = subparsers.add_parser(
         "failures",
-        help="Show failure details from one saved run.",
-        description="Show failure details from one saved run without rerunning it.",
-        usage="agent-run failures RUN_ID [--json]",
+        help="Show failure details from the latest run or a saved run by ID.",
+        description=(
+            "Show failure details from the latest run or a saved run by ID "
+            "without rerunning it."
+        ),
+        usage="agent-run failures [RUN_ID] [--json]",
         add_help=False,
         json_mode=json_mode,
     )
@@ -607,7 +617,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=argparse.SUPPRESS,
         help="Write one structured JSON result to standard output.",
     )
-    failures_parser.add_argument("run_id", nargs="?", help="ID of the saved run.")
+    failures_parser.add_argument(
+        "run_id", nargs="?", help="ID of a saved run; defaults to the latest run."
+    )
 
     # Only the part before `--` is parsed, so argparse never reads stored command
     # arguments. Leftovers are reported here so add can give a message that
@@ -1552,21 +1564,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return render_success(json_mode=False, text=text)
 
     if parsed.command == "show":
-        if parsed.run_id is None or not parsed.run_id.strip():
+        if parsed.run_id is not None and not parsed.run_id.strip():
             show_parser.error(
-                "A run ID is required. Run `agent-run runs` to list saved run IDs."
+                "A run ID cannot be blank. Omit it to use the latest run, or run `agent-run runs` to list saved run IDs."
             )
 
         try:
             repository = identify_repository()
             connection = connect_database()
             try:
-                record = get_run(connection, parsed.run_id)
+                record = _resolve_run(connection, repository.id, parsed.run_id)
             finally:
                 connection.close()
-
-            if record.repository_id != repository.id:
-                raise RunNotFoundError(f'Run "{parsed.run_id}" was not found.')
         except RepositoryUninitialisedError as error:
             return _uninitialised_repository_error(json_mode=parsed.json, error=error)
         except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
@@ -1591,21 +1600,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return render_success(json_mode=False, text=text)
 
     if parsed.command == "log":
-        if parsed.run_id is None or not parsed.run_id.strip():
+        if parsed.run_id is not None and not parsed.run_id.strip():
             log_parser.error(
-                "A run ID is required. Run `agent-run runs` to list saved run IDs."
+                "A run ID cannot be blank. Omit it to use the latest run, or run `agent-run runs` to list saved run IDs."
             )
 
         try:
             repository = identify_repository()
             connection = connect_database()
             try:
-                record = get_run(connection, parsed.run_id)
+                record = _resolve_run(connection, repository.id, parsed.run_id)
             finally:
                 connection.close()
-
-            if record.repository_id != repository.id:
-                raise RunNotFoundError(f'Run "{parsed.run_id}" was not found.')
 
             log_text = record.log_path.read_bytes().decode("utf-8", errors="replace")
 
@@ -1636,21 +1642,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return render_success(json_mode=False, text=log_text)
 
     if parsed.command == "failures":
-        if parsed.run_id is None or not parsed.run_id.strip():
+        if parsed.run_id is not None and not parsed.run_id.strip():
             failures_parser.error(
-                "A run ID is required. Run `agent-run runs` to list saved run IDs."
+                "A run ID cannot be blank. Omit it to use the latest run, or run `agent-run runs` to list saved run IDs."
             )
 
         try:
             repository = identify_repository()
             connection = connect_database()
             try:
-                record = get_run(connection, parsed.run_id)
+                record = _resolve_run(connection, repository.id, parsed.run_id)
             finally:
                 connection.close()
-
-            if record.repository_id != repository.id:
-                raise RunNotFoundError(f'Run "{parsed.run_id}" was not found.')
         except RepositoryUninitialisedError as error:
             return _uninitialised_repository_error(json_mode=parsed.json, error=error)
         except (RepositoryError, NewerSchemaError, OSError, sqlite3.Error) as error:
@@ -1700,6 +1703,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             return render_success(json_mode=True, data=data)
 
         return render_success(json_mode=False, text=text)
+
+
+def _resolve_run(
+    connection: sqlite3.Connection, repository_id: str, run_id: str | None
+) -> RunRecord:
+    """Return the run with the given ID, or the latest run in the repository.
+
+    Raise RunNotFoundError when the ID is unknown or belongs to another
+    repository, or when no ID is given and the repository has no runs yet.
+    """
+    if run_id is None:
+        records = list_runs(connection, repository_id, limit=1)
+
+        if not records:
+            raise RunNotFoundError("No runs recorded in this repository.")
+
+        return records[0]
+
+    record = get_run(connection, run_id)
+
+    if record.repository_id != repository_id:
+        raise RunNotFoundError(f'Run "{run_id}" was not found.')
+
+    return record
 
 
 def _manual_command_error(

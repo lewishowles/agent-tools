@@ -1649,19 +1649,16 @@ def test_cli_retrieval_rejects_an_unknown_run_id(
 
 
 @pytest.mark.parametrize("command", ["show", "log", "failures"])
-@pytest.mark.parametrize("run_id", [None, "", "   "])
+@pytest.mark.parametrize("run_id", ["", "   "])
 @pytest.mark.parametrize("json_mode", [False, True])
 def test_cli_retrieval_rejects_a_blank_run_id(
     command: str,
-    run_id: str | None,
+    run_id: str,
     json_mode: bool,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Past-run commands explain how to find a missing or blank run ID."""
-    arguments = [command]
-
-    if run_id is not None:
-        arguments.append(run_id)
+    """Past-run commands reject an explicitly blank run ID."""
+    arguments = [command, run_id]
 
     if json_mode:
         arguments.append("--json")
@@ -1670,7 +1667,7 @@ def test_cli_retrieval_rejects_a_blank_run_id(
         main(arguments)
 
     captured = capsys.readouterr()
-    message = "A run ID is required. Run `agent-run runs` to list saved run IDs."
+    message = "A run ID cannot be blank. Omit it to use the latest run, or run `agent-run runs` to list saved run IDs."
 
     assert error.value.code == 2
 
@@ -1787,6 +1784,96 @@ def test_cli_runs_applies_a_limit(
     assert exit_code == 0
     assert len(result["data"]["runs"]) == 1
     assert result["data"]["runs"][0]["run_id"] == second_result["data"]["run_id"]
+
+
+@pytest.mark.parametrize("command", ["show", "log", "failures"])
+def test_cli_retrieval_without_an_id_reads_the_latest_run(
+    command: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Past-run commands default to the latest run in this repository."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    assert main(["run", "--json", "--", "echo", "first"]) == 0
+    capsys.readouterr()
+    assert main(["run", "--json", "--", "echo", "second"]) == 0
+    latest_run_id = json.loads(capsys.readouterr().out)["data"]["run_id"]
+
+    exit_code = main([command, "--json"])
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert result["data"]["run_id"] == latest_run_id
+    assert captured.err == ""
+
+    if command == "log":
+        assert "second" in result["data"]["log"]
+        assert "first" not in result["data"]["log"]
+
+
+@pytest.mark.parametrize("command", ["show", "log", "failures"])
+def test_cli_retrieval_without_an_id_ignores_newer_runs_in_another_repository(
+    command: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The latest run is chosen from the current repository only."""
+    first_root = _initialise_repository(tmp_path / "first-repository")
+    second_root = _initialise_repository(tmp_path / "second-repository")
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    monkeypatch.chdir(first_root)
+
+    assert main(["run", "--json", "--", "echo", "first-repository"]) == 0
+    first_run_id = json.loads(capsys.readouterr().out)["data"]["run_id"]
+    monkeypatch.chdir(second_root)
+    assert main(["run", "--json", "--", "echo", "second-repository"]) == 0
+    capsys.readouterr()
+    monkeypatch.chdir(first_root)
+
+    exit_code = main([command, "--json"])
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert result["data"]["run_id"] == first_run_id
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("command", ["show", "log", "failures"])
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_cli_retrieval_without_an_id_reports_no_runs(
+    command: str,
+    json_mode: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Past-run commands report a repository with no saved runs as not found."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    exit_code = main([command, "--json"] if json_mode else [command])
+    captured = capsys.readouterr()
+    message = "No runs recorded in this repository."
+
+    assert exit_code == 1
+
+    if json_mode:
+        assert json.loads(captured.out) == {
+            "ok": False,
+            "error": {"code": "not-found", "message": message},
+        }
+        assert captured.err == ""
+    else:
+        assert captured.out == ""
+        assert captured.err == f"Error: {message}\n"
 
 
 @pytest.mark.parametrize("command", ["show", "log", "failures"])

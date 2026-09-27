@@ -212,10 +212,13 @@ agent-run runs --limit 5
 agent-run runs --limit 5 --json
 ```
 
-Use the run ID from the list to inspect its record, complete log, or failure
-details:
+Omit the run ID to inspect the latest run in the current repository. Pass a run
+ID from the list to inspect a specific run instead:
 
 ```sh
+agent-run show
+agent-run log
+agent-run failures
 agent-run show RUN_ID
 agent-run log RUN_ID
 agent-run failures RUN_ID
