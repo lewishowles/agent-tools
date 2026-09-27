@@ -366,6 +366,50 @@ def test_task_list_uses_position_then_object_id_and_pagination(
 	assert result["has_more"] is True
 
 
+def test_task_list_numbers_unfinished_queue_independent_of_filters_and_pages(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	writer = WriteStore(store.database, _ProjectStore(store.database))
+	third = writer.task_add(
+		"third",
+		"Third task",
+		overview="Third task overview.",
+		contract=["Third task contract."],
+		release_id=RELEASE_A,
+		position=3,
+	)
+	fourth = writer.task_add(
+		"fourth",
+		"Fourth task",
+		overview="Fourth task overview.",
+		contract=["Fourth task contract."],
+		release_id=RELEASE_A,
+		position=4,
+	)
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (TASK_B,))
+
+	all_items = store.task_list(include_queue_numbers=True)["items"]
+	filtered_items = store.task_list(
+		status="ready", offset=1, include_queue_numbers=True
+	)["items"]
+	done_items = store.task_list(status="done", include_queue_numbers=True)["items"]
+	json_items = store.task_list()["items"]
+
+	assert [(item["id"], item.get("queue_number")) for item in all_items] == [
+		(TASK_A, 1),
+		(TASK_B, None),
+		(third["id"], 2),
+		(fourth["id"], 3),
+	]
+	assert [(item["id"], item["queue_number"]) for item in filtered_items] == [
+		(fourth["id"], 3)
+	]
+	assert "queue_number" not in done_items[0]
+	assert all("queue_number" not in item for item in json_items)
+
+
 def test_task_list_filters_waiting_tasks(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	writer = WriteStore(store.database, _ProjectStore(store.database))

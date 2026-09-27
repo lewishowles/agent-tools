@@ -799,6 +799,7 @@ class ReadStore(_StoreBase):
 		path: str | Path | None = None,
 		*,
 		include_release_titles: bool = False,
+		include_queue_numbers: bool = False,
 	) -> dict[str, object]:
 		"""List tasks in the same release-priority order used by `next`."""
 		limit, offset = validate_page(limit, offset)
@@ -844,6 +845,29 @@ class ReadStore(_StoreBase):
 				items = response["items"]
 				if isinstance(items, list):
 					_add_release_titles(connection, project.id, items)
+			# Number every unfinished task by its place in the whole project queue, with 1
+			# as the next task, so a filtered or later page still shows true positions.
+			# Only human output asks for this, which keeps the JSON shape unchanged.
+			if include_queue_numbers:
+				queue_rows = connection.execute(
+					"SELECT tasks.id FROM tasks "
+					"LEFT JOIN releases ON releases.id = tasks.release_id "
+					"AND releases.project_id = tasks.project_id "
+					"WHERE tasks.project_id = ? AND tasks.status != 'done' "
+					f"ORDER BY {_TASK_QUEUE_ORDER}",
+					(project.id,),
+				).fetchall()
+
+				# The queue number for each unfinished task ID.
+				queue_numbers = {
+					str(row["id"]): number for number, row in enumerate(queue_rows, 1)
+				}
+
+				items = response["items"]
+				if isinstance(items, list):
+					for item in items:
+						if item["status"] != "done":
+							item["queue_number"] = queue_numbers[item["id"]]
 
 			return response
 

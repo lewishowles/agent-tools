@@ -2080,6 +2080,15 @@ def test_human_task_list_groups_rows_and_renders_hints(
 				"id": "tsk_ready",
 				"title": "Ready task",
 				"status": "ready",
+				"queue_number": 1,
+				"release_id": "rel_first",
+				"release_title": "First release",
+			},
+			{
+				"id": "tsk_blocked",
+				"title": "Blocked task",
+				"status": "blocked",
+				"queue_number": 2,
 				"release_id": "rel_first",
 				"release_title": "First release",
 			},
@@ -2087,6 +2096,7 @@ def test_human_task_list_groups_rows_and_renders_hints(
 				"id": "tsk_unassigned",
 				"title": "Unassigned task",
 				"status": "ready",
+				"queue_number": 3,
 				"release_id": None,
 			},
 			{
@@ -2095,13 +2105,6 @@ def test_human_task_list_groups_rows_and_renders_hints(
 				"status": "done",
 				"release_id": "rel_second",
 				"release_title": "Second release",
-			},
-			{
-				"id": "tsk_blocked",
-				"title": "Blocked task",
-				"status": "blocked",
-				"release_id": "rel_first",
-				"release_title": "First release",
 			},
 		],
 		"limit": 4,
@@ -2113,11 +2116,20 @@ def test_human_task_list_groups_rows_and_renders_hints(
 		def __init__(self, database) -> None:
 			pass
 
-		def task_list(self, status, limit, offset, *, include_release_titles):
+		def task_list(
+			self,
+			status,
+			limit,
+			offset,
+			*,
+			include_release_titles,
+			include_queue_numbers,
+		):
 			assert status is None
 			assert limit == 4
 			assert offset == 0
 			assert include_release_titles is True
+			assert include_queue_numbers is True
 			return data
 
 	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
@@ -2147,7 +2159,7 @@ def test_human_task_list_groups_rows_and_renders_hints(
 	assert "Status" in output.out
 	assert "ID" in output.out
 	assert output.out.index("First release") < output.out.index("Ready task")
-	assert output.out.index("Ready task") < output.out.index("Blocked task")
+	assert output.out.index("Blocked task") < output.out.index("Ready task")
 	assert output.out.index("Second release") < output.out.index("Done task")
 	assert "Unassigned" in output.out
 	assert "Unassigned task" in output.out
@@ -2156,6 +2168,8 @@ def test_human_task_list_groups_rows_and_renders_hints(
 	assert "(tsk_done)" not in output.out
 	assert "tsk_ready" in output.out
 	assert "tsk_done" in output.out
+	assert output.out.index("Second release") < output.out.index("Unassigned")
+	assert output.out.index("Unassigned") < output.out.index("First release")
 	assert output.out.index("First release") < output.out.index("Next action")
 	assert output.out.index("Unassigned task") < output.out.index("Next action")
 	assert output.out.index("More results: use --offset 4.") < output.out.index(
@@ -2538,11 +2552,11 @@ def test_task_list_uses_release_priority_for_json_and_table_output(
 	assert cli.main(["task", "list", "--database", str(database_path)]) == 0
 	human_output = capsys.readouterr().out
 
-	assert human_output.index("Progress CLI read parity") < human_output.index(
-		"Project review context"
-	)
 	assert human_output.index("Project review context") < human_output.index(
-		"Unassigned task"
+		"Progress CLI read parity"
+	)
+	assert human_output.index("Unassigned task") < human_output.index(
+		"Project review context"
 	)
 
 
@@ -2880,7 +2894,14 @@ def test_task_list_action_styles_embedded_commands(monkeypatch) -> None:
 
 	output = render_module._render_task_list(
 		{
-			"items": [{"id": "tsk_test", "title": "Task", "status": "ready"}],
+			"items": [
+				{
+					"id": "tsk_test",
+					"title": "Task",
+					"status": "ready",
+					"queue_number": 1,
+				}
+			],
 			"has_more": False,
 		}
 	)
@@ -2903,12 +2924,14 @@ def test_task_list_action_styles_embedded_commands(monkeypatch) -> None:
 	assert tables == [
 		(
 			[
+				{"key": "number", "label": "#"},
 				{"key": "status", "label": "Status"},
 				{"key": "title", "label": "Title"},
 				{"key": "id", "label": "ID"},
 			],
 			[
 				{
+					"number": "1",
 					"id": "<tsk_test>",
 					"status": "skipped:ready   ",
 					"title": "Task",
@@ -3544,6 +3567,7 @@ def test_human_task_clean_separates_kept_task_blocks() -> None:
 	("status", "result_type"),
 	[
 		("in-progress", "info"),
+		("waiting", "info"),
 		("blocked", "failed"),
 		("needs-decision", "warning"),
 		("done", "success"),
@@ -3564,7 +3588,7 @@ def test_task_rows_use_distinct_cli_style_results(
 	)
 
 	row = render_module._render_task_item(
-		{"id": "tsk_test", "title": "Task", "status": status}
+		{"id": "tsk_test", "title": "Task", "status": status}, 1
 	)
 
 	assert _status_result_type(status) == result_type
@@ -3587,11 +3611,20 @@ def test_json_task_list_does_not_request_release_titles(
 		def __init__(self, database) -> None:
 			pass
 
-		def task_list(self, status, limit, offset, *, include_release_titles):
+		def task_list(
+			self,
+			status,
+			limit,
+			offset,
+			*,
+			include_release_titles,
+			include_queue_numbers,
+		):
 			assert status is None
 			assert limit == 50
 			assert offset == 0
 			assert include_release_titles is False
+			assert include_queue_numbers is False
 			return data
 
 	monkeypatch.setattr(cli, "ReadStore", _ReadStore)

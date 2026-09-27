@@ -1361,6 +1361,7 @@ def _run_command(
 				args.limit,
 				args.offset,
 				include_release_titles=include_release_titles,
+				include_queue_numbers=human_output,
 			),
 			"task list",
 		),

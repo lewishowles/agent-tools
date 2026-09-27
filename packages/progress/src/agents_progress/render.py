@@ -947,7 +947,7 @@ def _render_chunk_item(item: dict[str, object]) -> str:
 
 
 def _render_task_list(data: dict[str, object]) -> str:
-	"""Render the task list: an empty-state line, or the release-grouped tables followed by the next-action line."""
+	"""Render the task list: an empty-state line, or the release-grouped tables in reverse queue order, so the next task prints last, followed by the next-action line."""
 	task_groups = _group_task_items(data.get("items"))
 	if not task_groups:
 		return render_span("No tasks.", "muted", weight="normal")
@@ -958,15 +958,29 @@ def _render_task_list(data: dict[str, object]) -> str:
 	)
 	action_message = f"View a task with {get_command}; reorder with {move_command}."
 	blocks = []
+
+	# The widest queue number on the page, so numbers line up across release tables.
+	number_width = max(
+		(
+			len(str(item.get("queue_number", "")))
+			for _, items in task_groups
+			for item in items
+		)
+	)
+
 	columns = [
+		{"key": "number", "label": "#"},
 		{"key": "status", "label": "Status"},
 		{"key": "title", "label": "Title"},
 		{"key": "id", "label": "ID"},
 	]
-	for release_title, items in task_groups:
+	for release_title, items in reversed(task_groups):
 		blocks.append(render_span(release_title, weight="normal"))
 		blocks.append(
-			render_table(columns, [_render_task_item(item) for item in items])
+			render_table(
+				columns,
+				[_render_task_item(item, number_width) for item in reversed(items)],
+			)
 		)
 
 	if data.get("has_more"):
@@ -1000,11 +1014,15 @@ def _group_task_items(
 	return list(groups.values())
 
 
-def _render_task_item(item: dict[str, object]) -> dict[str, str]:
-	"""Build one task-list row, padding the status cell so titles align across releases."""
+def _render_task_item(item: dict[str, object], number_width: int) -> dict[str, str]:
+	"""Build one task-list row, padding the number and status cells so columns line up across releases.
+
+	Done tasks have a blank number.
+	"""
 	title = str(item.get("title") or item.get("id") or "item")
 	status = str(item.get("status", ""))
 	identifier = str(item.get("id", ""))
+	number = str(item.get("queue_number", ""))
 	rendered_status = render_status(_status_result_type(status), status)
 
 	# Each release group is rendered as its own table, so pad every status cell to
@@ -1014,6 +1032,7 @@ def _render_task_item(item: dict[str, object]) -> dict[str, str]:
 	padding = " " * max(0, _TASK_STATUS_COLUMN_WIDTH - status_width)
 
 	return {
+		"number": number.rjust(number_width),
 		"title": title,
 		"status": f"{rendered_status}{padding}",
 		"id": render_span(identifier, "muted", weight="normal"),
