@@ -571,7 +571,7 @@ when the description needs changing.
 List chunks for a task, or omit `--task` to use the task selected by `progress next`:
 
 ```text
-progress chunk list [--task <task_id>] [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
+progress chunk list [--task <task_id>] [--all] [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
 ```
 
 If no task is selected, the command returns an error with a recovery hint.
@@ -579,9 +579,15 @@ If no task is selected, the command returns an error with a recovery hint.
 - `--task <task_id>`: task whose chunks should be listed
 - `--limit <limit>`: maximum number of chunks to return
 - `--offset <offset>`: number of chunks to skip before returning results
+- `--all`: show done chunks in full and remove the page limit; cannot be combined with `--limit` or `--offset`
 
-See [Listing](#listing) for pagination details. JSON output also includes a
-`task` object with the ID and title of the listed task.
+The human list shows chunks in reverse position order, numbered by their
+stored position so the next chunk appears last. It collapses done chunks into
+one count line, counts only unfinished chunks towards the page limit, and ends
+with status counts and the next chunk. Pass `--all` to show done chunks in full.
+JSON keeps its usual list order and fields; with `--all`, `limit` is `null` and
+`has_more` is `false`. JSON output also includes a `task` object with the ID
+and title of the listed task. See [Listing](#listing) for pagination details.
 
 ### `progress chunk get`
 

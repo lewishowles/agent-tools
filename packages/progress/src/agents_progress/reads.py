@@ -1116,10 +1116,20 @@ class ReadStore(_StoreBase):
 		limit: int = DEFAULT_LIMIT,
 		offset: int = 0,
 		path: str | Path | None = None,
+		*,
+		collapse_done_chunks: bool = False,
+		show_all: bool = False,
 	) -> dict[str, object]:
-		"""List one current-project task's chunks in position order."""
+		"""List one current-project task's chunks in position order.
+
+		collapse_done_chunks is for human output. It leaves done chunks out of the
+		page, so the page limit counts unfinished chunks, and adds the counts and next
+		chunk title the list summary needs. show_all keeps done chunks and returns
+		every chunk without a page limit.
+		"""
 		validate_object_id(task_id, TASK_PREFIX)
-		limit, offset = validate_page(limit, offset)
+		if not show_all:
+			limit, offset = validate_page(limit, offset)
 		project = self.current_project(path)
 
 		with self.database.connection() as connection:
@@ -1130,18 +1140,62 @@ class ReadStore(_StoreBase):
 			if task_exists is None:
 				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
 
-			return self._paged_query(
-				connection,
-				f"SELECT {_CHUNK_COLUMNS} FROM chunks WHERE task_id = ? "
-				"ORDER BY position, id",
-				(task_id,),
-				Chunk.from_row,
-				limit,
-				offset,
-				"chunks",
-				"task_id = ?",
-				(task_id,),
+			where = "task_id = ?"
+			if collapse_done_chunks and not show_all:
+				where += " AND status != 'done'"
+			page_clause = "" if show_all else " LIMIT ? OFFSET ?"
+			parameters = (task_id,) if show_all else (task_id, limit, offset)
+			rows = connection.execute(
+				f"SELECT {_CHUNK_COLUMNS} FROM chunks WHERE {where} "
+				f"ORDER BY position, id{page_clause}",
+				parameters,
+			).fetchall()
+			total = connection.execute(
+				f"SELECT COUNT(*) FROM chunks WHERE {where}", (task_id,)
+			).fetchone()[0]
+			response = page_response(
+				[Chunk.from_row(row).to_dict() for row in rows],
+				None if show_all else limit,
+				0 if show_all else offset,
+				total,
 			)
+			if collapse_done_chunks:
+				response.update(self._chunk_list_summary(connection, task_id))
+				# With --all the done chunks are already in the rows, so no count line is needed.
+				if show_all:
+					response["done_count"] = 0
+
+			return response
+
+	def _chunk_list_summary(
+		self, connection: sqlite3.Connection, task_id: str
+	) -> dict[str, object]:
+		"""Count a task's chunks for the human list summary.
+
+		Returns the number of done chunks, counts by status, and the title of the
+		next chunk: the active chunk, or else the first pending one. The next chunk
+		title is None when neither exists.
+		"""
+		rows = connection.execute(
+			"SELECT title, status FROM chunks WHERE task_id = ? ORDER BY position, id",
+			(task_id,),
+		).fetchall()
+		status_counts: dict[str, int] = {}
+		next_active = None
+		next_pending = None
+		for row in rows:
+			status = str(row["status"])
+			status_counts[status] = status_counts.get(status, 0) + 1
+			if status == "active" and next_active is None:
+				next_active = str(row["title"])
+			elif status == "pending" and next_pending is None:
+				next_pending = str(row["title"])
+
+		return {
+			"done_count": status_counts.get("done", 0),
+			"status_counts": status_counts,
+			"next_chunk": next_active or next_pending,
+		}
 
 	def chunk_count_for_task(self, task_id: str, path: str | Path | None = None) -> int:
 		"""Count one task's chunks, scoped to the current project via its parent task."""

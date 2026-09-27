@@ -843,6 +843,8 @@ def _render_chunk_list(data: dict[str, object]) -> str:
 	"""Render chunk rows under a heading, opening with the task's title and ID.
 
 	The CLI adds the task for text output. Without it, the list starts at the heading.
+	Done chunks left out of the page show as one count line above the rows, and a
+	summary line with counts by status and the next chunk closes the list.
 	"""
 	# The task these chunks belong to, added by the CLI for text output.
 	task = data.get("task")
@@ -860,10 +862,14 @@ def _render_chunk_list(data: dict[str, object]) -> str:
 		)
 
 	blocks.append(render_span("Chunks"))
-	chunk_items = _render_chunk_items(data.get("items", []))
+	items = data.get("items", [])
+	done_count = data.get("done_count", 0)
+	if done_count:
+		blocks.append(render_span(f"{done_count} done", "muted", weight="normal"))
+	chunk_items = _render_chunk_items(items)
 	if chunk_items:
 		blocks.append(chunk_items)
-	else:
+	elif not done_count:
 		blocks.append(render_span("No chunks.", "muted", weight="normal"))
 
 	if data.get("has_more"):
@@ -875,21 +881,29 @@ def _render_chunk_list(data: dict[str, object]) -> str:
 				weight="normal",
 			)
 		)
+	blocks.append(_render_chunk_summary(data))
 
 	return "\n\n".join(blocks)
 
 
 def _render_chunk_items(items: object) -> str:
-	"""Render valid chunk items with a blank line between each row."""
+	"""Render the chunk rows so the next chunk prints last, nearest the prompt.
+
+	Rows print from the highest position down, and each row is numbered by its
+	stored position, so the numbers keep their meaning when done chunks are
+	collapsed. Returns an empty string when there are no rows to show.
+	"""
 	if not isinstance(items, list):
 		return ""
 
+	valid_items = [item for item in items if isinstance(item, dict)]
+	# The widest position number in the list, so the numbers line up.
+	number_width = max(
+		(len(str(item.get("position", ""))) for item in valid_items), default=0
+	)
 	blocks: list[str] = []
-	for item in items:
-		if not isinstance(item, dict):
-			continue
-
-		blocks.append(_render_chunk_item(item))
+	for item in reversed(valid_items):
+		blocks.append(_render_chunk_item(item, number_width))
 
 	if not blocks:
 		return ""
@@ -897,10 +911,11 @@ def _render_chunk_items(items: object) -> str:
 	return "\n\n".join(blocks)
 
 
-def _render_chunk_item(item: dict[str, object]) -> str:
+def _render_chunk_item(item: dict[str, object], number_width: int) -> str:
 	"""Render one chunk row: title, then status and ID, then the first description line for unfinished chunks.
 
-	Only the first line of the description is kept, so a long chunk record does not
+	The title starts with the chunk's position, padded to number_width so the rows
+	line up. Only the first line of the description is kept, so a long chunk record does not
 	swamp the list. Use chunk get to read the whole description.
 	"""
 	result_type = _status_result_type(item.get("status"))
@@ -910,9 +925,16 @@ def _render_chunk_item(item: dict[str, object]) -> str:
 	}.get(result_type, "active")
 	identifier = str(item.get("id", ""))
 	title = str(item.get("title") or item.get("id") or "item")
+	number = str(item.get("position", "")).rjust(number_width)
+	prefix = f"{number}. " if number.strip() else ""
 	# The title on the first line, wrapped like the description below it.
 	title_block = render_span(
-		textwrap.fill(title, _ROW_WRAP_WIDTH),
+		textwrap.fill(
+			title,
+			_ROW_WRAP_WIDTH,
+			initial_indent=prefix,
+			subsequent_indent=" " * len(prefix),
+		),
 		"text",
 		weight="normal",
 	)
@@ -944,6 +966,22 @@ def _render_chunk_item(item: dict[str, object]) -> str:
 		weight="normal",
 	)
 	return f"{row}\n\n{description_block}"
+
+
+def _render_chunk_summary(data: dict[str, object]) -> str:
+	"""Show task-wide chunk counts and the active or first pending chunk."""
+	status_counts = data.get("status_counts", {})
+	count_parts = _status_count_parts(
+		status_counts, ("active", "pending", "skipped", "done")
+	)
+	if count_parts:
+		chunk_count = _count_label(sum(status_counts.values()), "chunk", "chunks")
+		return (
+			f"{chunk_count}: {', '.join(count_parts)}. "
+			f"Next: {data.get('next_chunk') or 'none'}."
+		)
+
+	return "0 chunks. Next: none."
 
 
 def _render_task_list(data: dict[str, object]) -> str:
@@ -1023,23 +1061,37 @@ def _render_task_list(data: dict[str, object]) -> str:
 def _render_task_summary(data: dict[str, object]) -> str:
 	"""Show project-wide task counts and the first unfinished task."""
 	status_counts = data["status_counts"]
-	count_parts = [
-		f"{status_counts[status]} {status.replace('-', ' ')}"
-		for status in (
+	count_parts = _status_count_parts(
+		status_counts,
+		(
 			"in-progress",
 			"ready",
 			"waiting",
 			"blocked",
 			"needs-decision",
 			"done",
-		)
-		if status_counts.get(status)
-	]
+		),
+	)
 	counts = ", ".join(count_parts)
 	if counts:
-		return f"{sum(status_counts.values())} tasks: {counts}. Next: {data.get('next_task') or 'none'}."
+		task_count = _count_label(sum(status_counts.values()), "task", "tasks")
+		return f"{task_count}: {counts}. Next: {data.get('next_task') or 'none'}."
 
 	return "0 tasks. Next: none."
+
+
+def _status_count_parts(
+	status_counts: dict[str, int], statuses: tuple[str, ...]
+) -> list[str]:
+	"""List the counts for a list summary line, such as "2 done" or "1 in progress".
+
+	Statuses appear in the order given, and a status with no items is left out.
+	"""
+	return [
+		f"{status_counts[status]} {status.replace('-', ' ')}"
+		for status in statuses
+		if status_counts.get(status)
+	]
 
 
 def _group_task_items(

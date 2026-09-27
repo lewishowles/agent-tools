@@ -450,6 +450,64 @@ def test_task_list_keeps_unassigned_release_id_in_human_counts(tmp_path: Path) -
 	assert result["release_order"][-1] == {"id": None, "title": None}
 
 
+def test_chunk_list_collapses_done_chunks_before_paging(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	chunk_ids = ["chk_" + letter * 22 for letter in "bcd"]
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE chunks SET status = 'done' WHERE id = ?", (CHUNK_A,))
+		for position, chunk_id, status, title in (
+			(2, chunk_ids[0], "active", "Active work"),
+			(3, chunk_ids[1], "skipped", "Skipped work"),
+			(4, chunk_ids[2], "pending", "Pending work"),
+		):
+			connection.execute(
+				"INSERT INTO chunks (id, task_id, position, title, description, status) "
+				"VALUES (?, ?, ?, ?, ?, ?)",
+				(chunk_id, TASK_A, position, title, title, status),
+			)
+
+	first_page = store.chunk_list(TASK_A, limit=2, collapse_done_chunks=True)
+	second_page = store.chunk_list(TASK_A, limit=2, offset=2, collapse_done_chunks=True)
+	all_chunks = store.chunk_list(
+		TASK_A, limit=1, collapse_done_chunks=True, show_all=True
+	)
+	json_page = store.chunk_list(TASK_A, limit=2)
+
+	assert [item["id"] for item in first_page["items"]] == chunk_ids[:2]
+	assert first_page["has_more"] is True
+	assert first_page["done_count"] == 1
+	assert first_page["status_counts"] == {
+		"done": 1,
+		"active": 1,
+		"skipped": 1,
+		"pending": 1,
+	}
+	assert first_page["next_chunk"] == "Active work"
+	assert [item["id"] for item in second_page["items"]] == chunk_ids[2:]
+	assert second_page["has_more"] is False
+	assert [item["id"] for item in all_chunks["items"]] == [CHUNK_A, *chunk_ids]
+	assert all_chunks["done_count"] == 0
+	assert all_chunks["limit"] is None
+	assert all_chunks["offset"] == 0
+	assert all_chunks["has_more"] is False
+	assert [item["id"] for item in json_page["items"]] == [CHUNK_A, chunk_ids[0]]
+	assert "status_counts" not in json_page
+	assert "done_count" not in json_page
+	assert "next_chunk" not in json_page
+
+
+def test_chunk_list_uses_first_pending_when_no_chunk_is_active(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE chunks SET status = 'pending' WHERE id = ?", (CHUNK_A,)
+		)
+
+	result = store.chunk_list(TASK_A, collapse_done_chunks=True)
+
+	assert result["next_chunk"] == "Read surface"
+
+
 def test_task_list_filters_waiting_tasks(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	writer = WriteStore(store.database, _ProjectStore(store.database))

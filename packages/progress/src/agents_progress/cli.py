@@ -683,6 +683,7 @@ _COMMAND_SPECS = (
 				"list chunks for a task",
 				arguments=(_argument("--task", dest="task_id"),),
 				page_options=True,
+				all_option=True,
 			),
 		),
 		destination="chunk_command",
@@ -1518,11 +1519,19 @@ def _run_command(
 def _run_chunk_list(args: argparse.Namespace, database: Database) -> object:
 	"""Load a task's chunks with the task's title and ID.
 
-	Uses the task selected by progress next when --task is omitted.
+	Uses the task selected by progress next when --task is omitted. Human output
+	folds done chunks into a count; JSON lists every chunk. --all lists done chunks
+	in both and removes the page limit.
 	"""
 	store = ReadStore(database)
 	task_id = _selected_id(store, args.task_id, "task")
-	data = store.chunk_list(task_id, args.limit, args.offset)
+	data = store.chunk_list(
+		task_id,
+		args.limit,
+		args.offset,
+		collapse_done_chunks=not args.json,
+		show_all=args.all,
+	)
 	if not isinstance(data, dict):
 		return data
 

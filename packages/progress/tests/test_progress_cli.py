@@ -74,8 +74,9 @@ def test_read_commands_resolve_only_omitted_identifiers(
 			calls.append(("chunk_get", identifier))
 			return data
 
-		def chunk_list(self, identifier, limit, offset):
+		def chunk_list(self, identifier, limit, offset, **kwargs):
 			calls.append(("chunk_list", identifier, limit, offset))
+			assert kwargs == {"collapse_done_chunks": False, "show_all": False}
 			return data
 
 	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
@@ -2418,8 +2419,9 @@ def test_human_chunk_list_includes_task_header(
 		def __init__(self, database) -> None:
 			pass
 
-		def chunk_list(self, task_id, limit, offset):
+		def chunk_list(self, task_id, limit, offset, **kwargs):
 			assert (task_id, limit, offset) == ("tsk_test", 50, 0)
+			assert kwargs == {"collapse_done_chunks": True, "show_all": False}
 			return data
 
 		def task_get(self, task_id):
@@ -2468,12 +2470,13 @@ def test_human_chunk_list_keeps_task_header_for_empty_and_paginated_results(
 		def __init__(self, database) -> None:
 			pass
 
-		def chunk_list(self, task_id, requested_limit, requested_offset):
+		def chunk_list(self, task_id, requested_limit, requested_offset, **kwargs):
 			assert (task_id, requested_limit, requested_offset) == (
 				"tsk_test",
 				limit,
 				offset,
 			)
+			assert kwargs == {"collapse_done_chunks": True, "show_all": False}
 			return {
 				"items": items,
 				"limit": limit,
@@ -2613,7 +2616,8 @@ def test_json_chunk_list_includes_task_and_pagination(
 		def __init__(self, database) -> None:
 			pass
 
-		def chunk_list(self, task_id, limit, offset):
+		def chunk_list(self, task_id, limit, offset, **kwargs):
+			assert kwargs == {"collapse_done_chunks": False, "show_all": False}
 			return data
 
 		def task_get(self, task_id):
@@ -2643,6 +2647,69 @@ def test_json_chunk_list_includes_task_and_pagination(
 			**data,
 			"task": {"id": "tsk_test", "title": "Progress task"},
 		},
+	}
+
+
+@pytest.mark.parametrize("page_flag", ["--limit", "--offset"])
+def test_chunk_list_all_rejects_explicit_paging(
+	tmp_path: Path, capsys, page_flag: str
+) -> None:
+	assert (
+		cli.main(
+			[
+				"chunk",
+				"list",
+				"--all",
+				page_flag,
+				"1",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 2
+	)
+	assert "--all cannot be used with --limit or --offset" in capsys.readouterr().err
+
+
+def test_json_chunk_list_all_removes_page_limit(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def chunk_list(self, task_id, limit, offset, *, collapse_done_chunks, show_all):
+			assert (task_id, limit, offset) == ("tsk_test", 50, 0)
+			assert collapse_done_chunks is False
+			assert show_all is True
+			return {"items": [], "limit": None, "offset": 0, "has_more": False}
+
+		def task_get(self, task_id):
+			return {"id": task_id, "title": "Progress task"}
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert (
+		cli.main(
+			[
+				"chunk",
+				"list",
+				"--task",
+				"tsk_test",
+				"--all",
+				"--json",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+	assert json.loads(capsys.readouterr().out)["data"] == {
+		"items": [],
+		"limit": None,
+		"offset": 0,
+		"has_more": False,
+		"task": {"id": "tsk_test", "title": "Progress task"},
 	}
 
 
@@ -2814,72 +2881,79 @@ def test_chunk_list_renders_status_rows_and_descriptions(monkeypatch) -> None:
 			"items": [
 				{
 					"id": "chk_done",
+					"position": 1,
 					"title": "Done output",
 					"status": "done",
 					"description": "Done descriptions are hidden.",
 				},
 				{
 					"id": "chk_done_other",
+					"position": 2,
 					"title": "Other done output",
 					"status": "done",
 				},
 				{
 					"id": long_identifier,
+					"position": 3,
 					"title": "Active output",
 					"status": "active",
 					"description": active_description,
 				},
 				{
 					"id": "chk_active_other",
+					"position": 4,
 					"title": "Other active output",
 					"status": "active",
 				},
 				{
 					"id": "chk_pending",
+					"position": 5,
 					"title": "Pending output",
 					"status": "pending",
 					"description": pending_description,
 				},
 				{
 					"id": "chk_pending_other",
+					"position": 6,
 					"title": "Other pending output",
 					"status": "pending",
 				},
 			],
 			"has_more": False,
+			"status_counts": {"done": 2, "active": 2, "pending": 2},
+			"next_chunk": "Active output",
 		},
 	)
 
 	assert output == (
 		"Chunks\n\n"
-		"Done output\n"
-		"success:done · chk_done\n\n"
-		"Other done output\n"
-		"success:done · chk_done_other\n\n"
-		f"Active output\ninfo:active · {long_identifier}\n\n"
-		f"{active_description.splitlines()[0]}\n\n"
-		"Other active output\ninfo:active · chk_active_other\n\n"
-		"Pending output\nskipped:pending · chk_pending\n\n"
+		"6. Other pending output\nskipped:pending · chk_pending_other\n\n"
+		"5. Pending output\nskipped:pending · chk_pending\n\n"
 		f"{pending_description.splitlines()[0]}\n\n"
-		"Other pending output\nskipped:pending · chk_pending_other"
+		"4. Other active output\ninfo:active · chk_active_other\n\n"
+		f"3. Active output\ninfo:active · {long_identifier}\n\n"
+		f"{active_description.splitlines()[0]}\n\n"
+		"2. Other done output\nsuccess:done · chk_done_other\n\n"
+		"1. Done output\nsuccess:done · chk_done\n\n"
+		"6 chunks: 2 active, 2 pending, 2 done. Next: Active output."
 	)
 	assert "Done descriptions are hidden." not in output
 	assert "This line is hidden." not in output
 	assert "This line is hidden too." not in output
 	assert any(long_identifier in line for line in output.splitlines())
 	assert "Description" not in output
-	assert "Done output\nsuccess:done · chk_done" in output
+	assert "1. Done output\nsuccess:done · chk_done" in output
 	assert status_calls == [
-		("success", "done", ""),
-		("success", "done", ""),
-		("info", "active", ""),
-		("info", "active", ""),
 		("skipped", "pending", ""),
 		("skipped", "pending", ""),
+		("info", "active", ""),
+		("info", "active", ""),
+		("success", "done", ""),
+		("success", "done", ""),
 	]
-	assert ("Done output", "text", "normal") in span_calls
-	assert ("Active output", "text", "normal") in span_calls
-	assert ("Pending output", "text", "normal") in span_calls
+	assert ("1. Done output", "text", "normal") in span_calls
+	assert ("3. Active output", "text", "normal") in span_calls
+	assert ("5. Pending output", "text", "normal") in span_calls
 	assert ("·", "muted", "normal") in span_calls
 	assert (long_identifier, "muted", "normal") in span_calls
 	assert (active_description.splitlines()[0], "muted", "normal") in span_calls
@@ -2969,33 +3043,93 @@ def test_skipped_chunks_use_the_skipped_tone_and_pending_group(monkeypatch) -> N
 		"chunk list",
 		{
 			"items": [
-				{"id": "chk_active", "title": "Active output", "status": "active"},
+				{
+					"id": "chk_active",
+					"position": 1,
+					"title": "Active output",
+					"status": "active",
+				},
 				{
 					"id": "chk_skipped",
+					"position": 2,
 					"title": "Skipped output",
 					"status": "skipped",
 				},
 				{
 					"id": "chk_pending",
+					"position": 3,
 					"title": "Pending output",
 					"status": "pending",
 				},
 			],
 			"has_more": False,
+			"status_counts": {"active": 1, "skipped": 1, "pending": 1},
+			"next_chunk": "Active output",
 		},
 	)
 
 	assert output == (
 		"Chunks\n\n"
-		"Active output\ninfo:active · chk_active\n\n"
-		"Skipped output\nskipped:pending · chk_skipped\n\n"
-		"Pending output\nskipped:pending · chk_pending"
+		"3. Pending output\nskipped:pending · chk_pending\n\n"
+		"2. Skipped output\nskipped:pending · chk_skipped\n\n"
+		"1. Active output\ninfo:active · chk_active\n\n"
+		"3 chunks: 1 active, 1 pending, 1 skipped. Next: Active output."
 	)
 	assert status_calls == [
+		("skipped", "pending", ""),
+		("skipped", "pending", ""),
 		("info", "active", ""),
-		("skipped", "pending", ""),
-		("skipped", "pending", ""),
 	]
+
+
+def test_chunk_list_shows_done_count_above_reversed_rows(monkeypatch) -> None:
+	monkeypatch.setattr(
+		render_module, "render_span", lambda value, *args, **kwargs: value
+	)
+	monkeypatch.setattr(
+		render_module,
+		"render_status",
+		lambda result_type, label="", detail="": label,
+	)
+
+	output = render_module._render_chunk_list(
+		{
+			"items": [
+				{
+					"id": "chk_first",
+					"position": 1,
+					"title": "First",
+					"status": "active",
+				},
+				{
+					"id": "chk_second",
+					"position": 2,
+					"title": "Second",
+					"status": "pending",
+				},
+			],
+			"done_count": 3,
+			"status_counts": {"active": 1, "pending": 1, "done": 3},
+			"next_chunk": "First",
+		}
+	)
+
+	assert output.index("3 done") < output.index("2. Second") < output.index("1. First")
+	assert "5 chunks: 1 active, 1 pending, 3 done. Next: First." in output
+
+
+def test_chunk_list_with_only_done_count_omits_empty_message(monkeypatch) -> None:
+	monkeypatch.setattr(
+		render_module, "render_span", lambda value, *args, **kwargs: value
+	)
+
+	output = render_module._render_chunk_list(
+		{"items": [], "done_count": 2, "status_counts": {"done": 2}}
+	)
+
+	assert "2 done" in output
+	assert "No chunks." not in output
+	assert output.endswith("2 chunks: 2 done. Next: none.")
 
 
 def test_chunk_list_wraps_titles_before_status_rows(monkeypatch) -> None:
@@ -3015,9 +3149,11 @@ def test_chunk_list_wraps_titles_before_status_rows(monkeypatch) -> None:
 		"chunk list",
 		{
 			"items": [
-				{"id": "chk_test", "title": title, "status": "active"},
+				{"id": "chk_test", "position": 10, "title": title, "status": "active"},
 			],
 			"has_more": False,
+			"status_counts": {"active": 1},
+			"next_chunk": title,
 		},
 	)
 
@@ -3025,11 +3161,13 @@ def test_chunk_list_wraps_titles_before_status_rows(monkeypatch) -> None:
 	assert lines == [
 		"Chunks",
 		"",
-		"A chunk title that wraps across the terminal width before its status",
-		"line",
+		"10. A chunk title that wraps across the terminal width before its status",
+		"    line",
 		"active · chk_test",
+		"",
+		f"1 chunk: 1 active. Next: {title}.",
 	]
-	assert all(len(line) <= 72 for line in lines)
+	assert all(len(line) <= 72 for line in lines[2:4])
 
 
 @pytest.mark.parametrize("description", [None, ""])
@@ -3051,16 +3189,22 @@ def test_chunk_list_omits_empty_descriptions(description, monkeypatch) -> None:
 			"items": [
 				{
 					"id": "chk_test",
+					"position": 1,
 					"title": "Render output",
 					"status": "ready",
 					"description": description,
 				}
 			],
 			"has_more": False,
+			"status_counts": {"pending": 1},
+			"next_chunk": "Render output",
 		},
 	)
 
-	assert output == "Chunks\n\nRender output\nskipped · chk_test"
+	assert output == (
+		"Chunks\n\n1. Render output\nskipped · chk_test\n\n"
+		"1 chunk: 1 pending. Next: Render output."
+	)
 	assert "Description" not in output
 
 
@@ -3091,7 +3235,9 @@ def test_chunk_list_renders_pagination_without_hint(monkeypatch) -> None:
 		},
 	)
 
-	assert output == "Chunks\n\nNo chunks.\n\nMore results: use --offset 1."
+	assert output == (
+		"Chunks\n\nNo chunks.\n\nMore results: use --offset 1.\n\n0 chunks. Next: none."
+	)
 
 
 def test_task_list_action_styles_embedded_commands(monkeypatch) -> None:
@@ -3141,7 +3287,7 @@ def test_task_list_action_styles_embedded_commands(monkeypatch) -> None:
 		"table\n\n"
 		"View a task with <progress task get TASK_ID>; reorder with "
 		"<progress task move TASK_ID --before/--after TASK_ID>.\n\n"
-		"1 tasks: 1 ready. Next: Task."
+		"1 task: 1 ready. Next: Task."
 	)
 	assert ("progress task get TASK_ID", "info", "bold") in spans
 	assert (
