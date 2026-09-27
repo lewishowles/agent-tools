@@ -43,6 +43,11 @@ class RunRecord:
         log_path: File holding the command's combined output.
         status: Whether the command is still running or has finished.
         pid: Process ID of the agent-run process that owns the record.
+        command_name: The saved command the run used, empty for a direct run,
+            or None when the run was recorded before agent-run stored it.
+        targets: The target files passed to the saved command, empty when
+            there were none, or None when the run was recorded before
+            agent-run stored them.
     """
 
     run_id: str
@@ -57,6 +62,8 @@ class RunRecord:
     log_path: Path
     status: str = FINISHED_STATUS
     pid: int | None = None
+    command_name: str | None = None
+    targets: tuple[str, ...] | None = None
 
 
 def resolve_log_directory(database_path: str | Path | None = None) -> Path:
@@ -124,6 +131,8 @@ def start_run(
     started_at: str,
     log_path: str | Path,
     pid: int,
+    command_name: str = "",
+    targets: Sequence[str] = (),
 ) -> RunRecord:
     """Save a new running record, which ``finalise_run`` completes."""
     command_arguments = tuple(argv)
@@ -141,6 +150,8 @@ def start_run(
         log_path=resolved_log_path,
         status=RUNNING_STATUS,
         pid=pid,
+        command_name=command_name,
+        targets=tuple(targets),
     )
 
     connection.execute(
@@ -157,8 +168,10 @@ def start_run(
             timed_out,
             log_path,
             status,
-            pid
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            pid,
+            command_name,
+            targets
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.run_id,
@@ -173,6 +186,8 @@ def start_run(
             str(record.log_path),
             record.status,
             record.pid,
+            record.command_name,
+            json.dumps(record.targets),
         ),
     )
 
@@ -219,6 +234,8 @@ def _run_from_row(row: sqlite3.Row | tuple[object, ...]) -> RunRecord:
         log_path,
         status,
         pid,
+        command_name,
+        targets,
     ) = row
 
     return RunRecord(
@@ -236,6 +253,8 @@ def _run_from_row(row: sqlite3.Row | tuple[object, ...]) -> RunRecord:
         log_path=Path(str(log_path)),
         status=str(status),
         pid=None if pid is None else int(pid),
+        command_name=None if command_name is None else str(command_name),
+        targets=None if targets is None else tuple(json.loads(str(targets))),
     )
 
 
@@ -255,7 +274,9 @@ def get_run(connection: sqlite3.Connection, run_id: str) -> RunRecord:
             timed_out,
             log_path,
             status,
-            pid
+            pid,
+            command_name,
+            targets
         FROM runs
         WHERE run_id = ?
         """,
@@ -291,7 +312,9 @@ def list_runs(
             timed_out,
             log_path,
             status,
-            pid
+            pid,
+            command_name,
+            targets
         FROM runs
         WHERE repository_id = ?
         ORDER BY started_at DESC, rowid DESC
@@ -319,7 +342,9 @@ def list_all_runs(connection: sqlite3.Connection) -> tuple[RunRecord, ...]:
             timed_out,
             log_path,
             status,
-            pid
+            pid,
+            command_name,
+            targets
         FROM runs
         ORDER BY started_at ASC, rowid ASC
         """

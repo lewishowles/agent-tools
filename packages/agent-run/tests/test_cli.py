@@ -1017,6 +1017,28 @@ def test_cli_named_file_list_run_appends_relative_files(
     ]
     assert captured.err == ""
 
+    show_exit_code = main(["show", result["data"]["run_id"], "--json"])
+    show_output = capsys.readouterr()
+    show_result = json.loads(show_output.out)
+
+    assert show_exit_code == 0
+    assert show_result["data"]["command_name"] == "format"
+    assert show_result["data"]["targets"] == [
+        "../src/one.py",
+        "../src/two.py",
+        "../src/three.py",
+    ]
+
+    text_exit_code = main(["show", result["data"]["run_id"]])
+    text_output = capsys.readouterr()
+
+    assert text_exit_code == 0
+    assert "saved command      format" in text_output.out
+    assert (
+        'targets            ["../src/one.py", "../src/two.py", "../src/three.py"]'
+        in text_output.out
+    )
+
 
 def test_cli_file_targets_report_usage_errors(
     tmp_path: Path,
@@ -1433,6 +1455,8 @@ raise SystemExit(1)
 
     assert show_exit_code == 0
     assert show_result["data"]["run_id"] == run_id
+    assert show_result["data"]["command_name"] == ""
+    assert show_result["data"]["targets"] == []
     assert show_result["data"]["exit_status"] == 1
     assert show_result["data"]["duration_seconds"] >= 0
     assert show_result["data"]["log_path"] == run_result["error"]["data"]["log_path"]
@@ -1442,6 +1466,7 @@ raise SystemExit(1)
 
     assert show_text_exit_code == 0
     assert f"run ID             {run_id}" in show_text_output.out
+    assert "saved command      none (direct run)" in show_text_output.out
     assert command_path.name in show_text_output.out
     assert "exit status        1" in show_text_output.out
     assert "timeout" in show_text_output.out
@@ -1539,6 +1564,61 @@ def test_cli_shows_a_running_run_without_completion_fields(
     assert data["exit_status"] is None
     assert data["duration_seconds"] is None
     assert "pid" not in data
+
+
+def test_cli_shows_unknown_provenance_for_an_older_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Show prints unknown for the saved command and targets of an older run."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    connection = connect_database(database_path)
+    try:
+        connection.execute(
+            """
+            INSERT INTO runs (
+                run_id, repository_id, argv, working_directory,
+                timeout_seconds, started_at, duration_seconds, exit_status,
+                timed_out, log_path, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "older-run",
+                identify_repository().id,
+                '["echo"]',
+                ".",
+                5,
+                "2026-01-01T00:00:00+00:00",
+                0.25,
+                0,
+                0,
+                str(tmp_path / "older.log"),
+                "finished",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    json_exit_code = main(["show", "older-run", "--json"])
+    json_output = capsys.readouterr()
+    data = json.loads(json_output.out)["data"]
+
+    assert json_exit_code == 0
+    assert data["command_name"] is None
+    assert data["targets"] is None
+
+    text_exit_code = main(["show", "older-run"])
+    text_output = capsys.readouterr()
+
+    assert text_exit_code == 0
+    assert "saved command      unknown" in text_output.out
+    assert "targets            unknown" in text_output.out
 
 
 @pytest.mark.parametrize("command", ["show", "log", "failures"])

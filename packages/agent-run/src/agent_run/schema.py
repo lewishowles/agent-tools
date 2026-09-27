@@ -136,6 +136,16 @@ def _add_command_manual(connection: sqlite3.Connection) -> None:
     )
 
 
+def _add_run_provenance(connection: sqlite3.Connection) -> None:
+    """Store which saved command and target files each new run used.
+
+    Runs recorded before this migration keep NULL in both columns, which
+    readers show as unknown.
+    """
+    connection.execute("ALTER TABLE runs ADD COLUMN command_name TEXT")
+    connection.execute("ALTER TABLE runs ADD COLUMN targets TEXT")
+
+
 # Migrations in the order they run. A migration's version is its position,
 # starting at 1, so add new migrations to the end and never reorder them.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -146,6 +156,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _add_command_capability,
     _add_command_manual,
     _upgrade_runs,
+    _add_run_provenance,
 )
 # Newest schema version this release understands.
 LATEST_SCHEMA_VERSION = len(MIGRATIONS)

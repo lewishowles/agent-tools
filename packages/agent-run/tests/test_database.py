@@ -135,8 +135,8 @@ def test_existing_database_gains_new_command_and_run_fields(tmp_path: Path) -> N
         timeout, manual = connection.execute(
             "SELECT timeout_seconds, manual FROM commands WHERE name = 'test'"
         ).fetchone()
-        status, pid = connection.execute(
-            "SELECT status, pid FROM runs WHERE run_id = 'legacy-run'"
+        status, pid, command_name, targets = connection.execute(
+            "SELECT status, pid, command_name, targets FROM runs WHERE run_id = 'legacy-run'"
         ).fetchone()
     finally:
         connection.close()
@@ -145,6 +145,8 @@ def test_existing_database_gains_new_command_and_run_fields(tmp_path: Path) -> N
     assert manual == 0
     assert status == "finished"
     assert pid is None
+    assert command_name is None
+    assert targets is None
 
 
 def test_runs_table_is_created_by_third_migration(tmp_path: Path) -> None:
@@ -170,6 +172,8 @@ def test_runs_table_is_created_by_third_migration(tmp_path: Path) -> None:
         "log_path",
         "status",
         "pid",
+        "command_name",
+        "targets",
     ]
 
 

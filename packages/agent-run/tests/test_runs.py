@@ -61,12 +61,16 @@ def test_start_run_inserts_and_reads_all_record_fields(tmp_path: Path) -> None:
             started_at="2026-09-16T12:00:00+00:00",
             log_path=log_path,
             pid=1234,
+            command_name="test",
+            targets=("tests/one.py", "tests/two.py"),
         )
         stored_record = get_run(connection, run_id)
     finally:
         connection.close()
 
     assert stored_record == record
+    assert stored_record.command_name == "test"
+    assert stored_record.targets == ("tests/one.py", "tests/two.py")
 
 
 def test_finalise_run_updates_a_running_record(tmp_path: Path) -> None:

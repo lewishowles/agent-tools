@@ -926,6 +926,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 started_at=started_at,
                 log_path=log_path,
                 pid=os.getpid(),
+                command_name=parsed.name or "",
+                targets=resolved_file_paths,
             )
 
             try:
@@ -1983,6 +1985,8 @@ def _saved_run_record(record: RunRecord) -> dict[str, object]:
     return {
         "run_id": record.run_id,
         "argv": list(record.argv),
+        "command_name": record.command_name,
+        "targets": None if record.targets is None else list(record.targets),
         "working_directory": record.working_directory,
         "timeout_seconds": record.timeout_seconds,
         "started_at": record.started_at,
@@ -1999,6 +2003,18 @@ def _format_saved_run(record: RunRecord) -> str:
     row_data = [
         {"label": "run ID", "value": record.run_id},
         {"label": "command", "value": json.dumps(list(record.argv))},
+        {
+            "label": "saved command",
+            "value": "unknown"
+            if record.command_name is None
+            else record.command_name or "none (direct run)",
+        },
+        {
+            "label": "targets",
+            "value": json.dumps(list(record.targets))
+            if record.targets is not None
+            else "unknown",
+        },
         {"label": "working directory", "value": record.working_directory},
         {"label": "timeout", "value": _format_timeout(record.timeout_seconds)},
         {"label": "started at", "value": record.started_at},
