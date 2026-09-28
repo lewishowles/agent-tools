@@ -70,6 +70,7 @@ class Chunk:
 	status: str
 	started_at: str | None
 	completed_at: str | None
+	review_question: str | None
 
 	@classmethod
 	def from_row(cls, row: object) -> "Chunk":

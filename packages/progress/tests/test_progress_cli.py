@@ -762,6 +762,8 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 				"Chunk",
 				"--description",
 				"Chunk description",
+				"--review-question",
+				"Does it work?",
 			],
 			"chunk_add",
 			"write",
@@ -1274,7 +1276,9 @@ def test_chunk_add_prompts_for_required_and_optional_arguments(
 ) -> None:
 	data = {"id": "chk_test", "task_id": "tsk_test"}
 	arguments_seen: dict[str, object] = {}
-	prompt_values = iter(["tsk_test", "Chunk title", "Chunk description", ""])
+	prompt_values = iter(
+		["tsk_test", "Chunk title", "Chunk description", "Does it work?", ""]
+	)
 
 	class _WriteStore:
 		def __init__(self, database) -> None:
@@ -1299,6 +1303,7 @@ def test_chunk_add_prompts_for_required_and_optional_arguments(
 		"task_id": "tsk_test",
 		"title": "Chunk title",
 		"description": "Chunk description",
+		"review_question": "Does it work?",
 		"position": None,
 	}
 
@@ -1444,7 +1449,7 @@ def test_missing_add_arguments_keep_argparse_error_on_non_tty_stdin(
 	output = capsys.readouterr()
 	assert output.out == ""
 	assert _stderr_error_message(output.err) == (
-		"the following arguments are required: --task, --title, --description"
+		"the following arguments are required: --task, --title, --description, --review-question"
 	)
 
 
@@ -1555,7 +1560,12 @@ def complete_records(tmp_path: Path, monkeypatch) -> tuple[Path, dict, dict]:
 		overview="Complete a task or chunk by ID.",
 		contract=["Complete the requested record."],
 	)
-	chunk = writer.chunk_add(task["id"], "Implement completion", "Complete the chunk.")
+	chunk = writer.chunk_add(
+		task["id"],
+		"Implement completion",
+		"Complete the chunk.",
+		review_question="Does completion work?",
+	)
 
 	return database_path, task, chunk
 
@@ -4905,6 +4915,7 @@ def test_chunk_edit_dispatches_description(
 	assert arguments_seen == {
 		"chunk_id": "chk_test",
 		"description": "Updated",
+		"review_question": None,
 	}
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
@@ -4943,6 +4954,8 @@ def test_human_write_output_includes_a_next_command(
 				"First chunk",
 				"--description",
 				"Implement it.",
+				"--review-question",
+				"Does it work?",
 				"--database",
 				str(tmp_path / "db"),
 			]

@@ -532,6 +532,19 @@ def _render_chunk(chunk: dict[str, object]) -> str:
 	]
 	blocks.append(render_row_group(chunk_rows))
 
+	review_question = chunk.get("review_question")
+	if review_question:
+		blocks.extend(
+			[
+				render_span("Review question"),
+				render_span(
+					textwrap.fill(str(review_question), _ROW_WRAP_WIDTH),
+					"muted",
+					weight="normal",
+				),
+			]
+		)
+
 	description = chunk.get("description")
 	if description:
 		blocks.extend(
@@ -633,6 +646,18 @@ def _render_next(data: object) -> str:
 			blocks.append(
 				render_span(str(chunk.get("title", "")), "text", weight="bold")
 			)
+			review_question = chunk.get("review_question")
+			if review_question:
+				blocks.append(
+					render_span(
+						textwrap.fill(
+							f"Review question: {review_question}", _ROW_WRAP_WIDTH
+						),
+						"text",
+						weight="normal",
+					)
+				)
+
 			chunk_description = chunk.get("description")
 			if chunk_description:
 				blocks.append(

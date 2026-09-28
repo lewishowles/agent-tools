@@ -84,8 +84,8 @@ def _seed_store(tmp_path: Path) -> ReadStore:
 				(task_id, 1, f"Contract for {slug}."),
 			)
 		connection.execute(
-			"INSERT INTO chunks (id, task_id, position, title, description, status, started_at, completed_at) "
-			"VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			"INSERT INTO chunks (id, task_id, position, title, description, status, started_at, completed_at, review_question) "
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 			(
 				CHUNK_A,
 				TASK_A,
@@ -95,6 +95,7 @@ def _seed_store(tmp_path: Path) -> ReadStore:
 				"active",
 				"2026-01-01T00:00:00+00:00",
 				None,
+				"Do the read queries return the stored records?",
 			),
 		)
 		for note_id, task_id, note_type, body, created_at in (
@@ -159,13 +160,25 @@ def test_next_uses_live_totals_and_ranks_after_sibling_removals(
 		position=3,
 	)
 	first_chunk = writer.chunk_add(
-		task["id"], "First chunk", "First chunk description", position=1
+		task["id"],
+		"First chunk",
+		"First chunk description",
+		review_question="Does it work?",
+		position=1,
 	)
 	second_chunk = writer.chunk_add(
-		task["id"], "Second chunk", "Second chunk description", position=2
+		task["id"],
+		"Second chunk",
+		"Second chunk description",
+		review_question="Does it work?",
+		position=2,
 	)
 	third_chunk = writer.chunk_add(
-		task["id"], "Third chunk", "Third chunk description", position=3
+		task["id"],
+		"Third chunk",
+		"Third chunk description",
+		review_question="Does it work?",
+		position=3,
 	)
 
 	writer.discovery_remove(DISCOVERY_B)
@@ -794,7 +807,14 @@ def test_doctor_reports_blank_required_fields_across_all_pages(
 					"id": "chk_" + "d" * 22,
 					"title": "Blank chunk",
 					"description": "",
-				}
+					"status": "pending",
+				},
+				{
+					"id": "chk_" + "e" * 22,
+					"title": "Finished chunk",
+					"description": "Finished before review questions existed.",
+					"status": "done",
+				},
 			],
 			"limit": 1,
 			"offset": 0,
@@ -855,6 +875,12 @@ def test_doctor_reports_blank_required_fields_across_all_pages(
 			},
 			{
 				"field": "chunk.description",
+				"id": "chk_" + "d" * 22,
+				"noun": "chunk",
+				"title": "Blank chunk",
+			},
+			{
+				"field": "chunk.review_question",
 				"id": "chk_" + "d" * 22,
 				"noun": "chunk",
 				"title": "Blank chunk",

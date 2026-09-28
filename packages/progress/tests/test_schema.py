@@ -206,7 +206,7 @@ def test_first_connection_creates_the_schema_and_sqlite_safety_settings(
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 6
+			== schema.SCHEMA_VERSION
 		)
 		release_columns = {
 			row[1] for row in connection.execute("PRAGMA table_info(releases)")
@@ -301,6 +301,45 @@ def test_version_five_migration_preserves_task_references_and_classifies_blocks(
 		)
 
 
+def test_version_seven_migration_gives_existing_chunks_an_empty_review_question(
+	tmp_path,
+) -> None:
+	"""Keep existing chunks and leave their review question empty."""
+	database_path = tmp_path / "progress.db"
+	with sqlite3.connect(database_path) as connection:
+		for version in range(1, 7):
+			schema.MIGRATIONS[version](connection)
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.execute(
+			"INSERT INTO schema_migrations VALUES (6, '2026-01-01T00:00:00+00:00')"
+		)
+		project_id = generate_object_id(PROJECT_PREFIX)
+		task_id = generate_object_id(TASK_PREFIX)
+		chunk_id = generate_object_id(CHUNK_PREFIX)
+		_insert_project(connection, project_id)
+		_insert_current_task(connection, project_id, task_id, "task")
+		connection.execute(
+			"INSERT INTO chunks (id, task_id, position, title, description, status) VALUES (?, ?, 1, 'Chunk', 'Description', 'done')",
+			(chunk_id, task_id),
+		)
+
+	with Database(database_path).connection() as connection:
+		assert (
+			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
+				0
+			]
+			== 7
+		)
+		assert tuple(
+			connection.execute(
+				"SELECT description, review_question FROM chunks WHERE id = ?",
+				(chunk_id,),
+			).fetchone()
+		) == ("Description", None)
+
+
 def test_failed_version_six_migration_leaves_version_five_intact(
 	tmp_path, monkeypatch
 ) -> None:
@@ -373,7 +412,7 @@ def test_an_older_schema_version_migrates_forward(tmp_path) -> None:
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 6
+			== schema.SCHEMA_VERSION
 		)
 		assert connection.execute("SELECT 1 FROM projects").fetchone() is None
 		assert (
@@ -465,7 +504,7 @@ def test_schema_version_two_migrates_task_notes_without_loss(tmp_path) -> None:
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 6
+			== schema.SCHEMA_VERSION
 		)
 		assert [
 			tuple(row)
@@ -642,7 +681,7 @@ def test_schema_version_four_moves_task_fields_into_existing_columns(tmp_path) -
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 6
+			== schema.SCHEMA_VERSION
 		)
 		assert (
 			connection.execute(

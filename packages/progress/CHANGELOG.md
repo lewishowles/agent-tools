@@ -10,8 +10,15 @@ All notable changes to `progress` are documented here. The format is based on [K
   and release-owned notes in one transaction.
 - `task remove --force` removes a task and its owned rows, and makes dependants
   ready when they have no remaining unfinished dependencies.
+- `chunk edit --review-question` replaces a chunk's review question, and
+  `chunk get` and `next` show it.
+- `doctor` reports pending and active chunks that have no review question.
 
 ### Changed
+
+- Breaking: `chunk add` requires `--review-question`, the one question a
+  reviewer answers about the chunk. Upgrading the database leaves existing
+  chunks without one.
 
 - Breaking: abbreviated flags no longer work anywhere in the CLI.
 - Release, task and chunk remove and complete commands now accept multiple IDs,

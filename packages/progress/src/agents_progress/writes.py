@@ -43,7 +43,7 @@ _RELEASE_COLUMNS = "id, project_id, slug, title, overview, status, position"
 # Qualified chunk columns used by chunk write queries scoped to a task.
 _QUALIFIED_CHUNK_COLUMNS = (
 	"chunks.id, chunks.task_id, chunks.position, chunks.title, chunks.description, "
-	"chunks.status, chunks.started_at, chunks.completed_at"
+	"chunks.status, chunks.started_at, chunks.completed_at, chunks.review_question"
 )
 
 # Note columns returned by discovery and decision writes.
@@ -880,13 +880,18 @@ class WriteStore(_StoreBase):
 		task_id: str,
 		title: str,
 		description: str,
+		review_question: str,
 		position: int | None = None,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Create a pending chunk at the next position for a current-project task."""
+		"""Create a pending chunk at the next position for a current-project task.
+
+		The review question is the one question a reviewer answers about the chunk.
+		"""
 		validate_object_id(task_id, TASK_PREFIX)
 		_require_text(title, "chunk title")
 		_require_text(description, "chunk description")
+		_require_text(review_question, "chunk review question")
 		project = self.current_project(path)
 
 		with self.database.transaction() as connection:
@@ -901,10 +906,20 @@ class WriteStore(_StoreBase):
 			)
 			connection.execute(
 				"""
-				INSERT INTO chunks (id, task_id, position, title, description, status, started_at, completed_at)
-				VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL)
+				INSERT INTO chunks (
+					id, task_id, position, title, description, review_question, status,
+					started_at, completed_at
+				)
+				VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, NULL)
 				""",
-				(chunk_id, task_id, chunk_position, title, description),
+				(
+					chunk_id,
+					task_id,
+					chunk_position,
+					title,
+					description,
+					review_question,
+				),
 			)
 
 			return _chunk_dict(connection, chunk_id, project.id)
@@ -1057,21 +1072,31 @@ class WriteStore(_StoreBase):
 		self,
 		chunk_id: str,
 		description: str | None = None,
+		review_question: str | None = None,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Update a chunk description without changing chunk lifecycle data."""
+		"""Update a chunk's description, review question, or both, without changing chunk lifecycle data."""
 		validate_object_id(chunk_id, CHUNK_PREFIX)
-		if description is None:
+		values = {"description": description, "review_question": review_question}
+		if all(value is None for value in values.values()):
 			raise ProgressError(
-				"chunk edit requires --description",
+				"chunk edit requires --description or --review-question",
 				{"id": chunk_id},
 			)
-		if not isinstance(description, str):
-			raise ProgressError(
-				"chunk description must be text",
-				{"id": chunk_id, "field": "description"},
-			)
-		_require_text(description, "chunk description")
+
+		for field, value in values.items():
+			if value is None:
+				continue
+
+			label = field.replace("_", " ")
+			if not isinstance(value, str):
+				raise ProgressError(
+					f"chunk {label} must be text",
+					{"id": chunk_id, "field": field},
+				)
+			_require_text(value, f"chunk {label}")
+
+		updates = {field: value for field, value in values.items() if value is not None}
 
 		project = self.current_project(path)
 
@@ -1079,9 +1104,10 @@ class WriteStore(_StoreBase):
 			chunk = _chunk_row(connection, chunk_id, project.id)
 			if chunk is None:
 				raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
+			assignments = ", ".join(f"{field} = ?" for field in updates)
 			connection.execute(
-				"UPDATE chunks SET description = ? WHERE id = ?",
-				(description, chunk_id),
+				f"UPDATE chunks SET {assignments} WHERE id = ?",
+				(*updates.values(), chunk_id),
 			)
 			return _chunk_dict(connection, chunk_id, project.id)
 

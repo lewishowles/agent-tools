@@ -68,7 +68,8 @@ _IDENTIFIER_TABLES = {
 
 # Columns selected from chunks in list queries.
 _CHUNK_COLUMNS = (
-	"id, task_id, position, title, description, status, started_at, completed_at"
+	"id, task_id, position, title, description, status, started_at, completed_at, "
+	"review_question"
 )
 
 # Columns selected from notes in list queries.
@@ -91,6 +92,13 @@ REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
 	"task": ("overview", "contract", "split_rationale"),
 	"chunk": ("description",),
 }
+
+# Fields doctor checks only on pending and active chunks. Chunks finished before the review
+# question existed have none, and reporting them would bury the findings that matter.
+UNFINISHED_CHUNK_FIELDS = ("review_question",)
+
+# Chunk statuses that doctor treats as unfinished work.
+_UNFINISHED_CHUNK_STATUSES = frozenset({"pending", "active"})
 
 
 def validate_identifier(value: str, expected_prefix: str) -> str:
@@ -645,7 +653,7 @@ class ReadStore(_StoreBase):
 		return response
 
 	def doctor(self, path: str | Path | None = None) -> dict[str, object]:
-		"""Report records with blank fields from the required-in-practice list."""
+		"""Report records with blank required-in-practice fields, including unfinished chunks without a review question."""
 		# Bounded-list loader for each record type, used by the checks below.
 		page_loaders: dict[str, Callable[[int, int], dict[str, object]]] = {
 			"release": lambda limit, offset: self.release_list(
@@ -658,8 +666,15 @@ class ReadStore(_StoreBase):
 		}
 		findings: list[dict[str, object]] = []
 
-		for noun, fields in REQUIRED_FIELDS.items():
+		for noun, required_fields in REQUIRED_FIELDS.items():
 			for record in _all_pages(page_loaders[noun]):
+				fields = required_fields
+				if (
+					noun == "chunk"
+					and record.get("status") in _UNFINISHED_CHUNK_STATUSES
+				):
+					fields = (*required_fields, *UNFINISHED_CHUNK_FIELDS)
+
 				for field in fields:
 					if _is_blank(record.get(field)):
 						findings.append(

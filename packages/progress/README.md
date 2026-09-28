@@ -480,12 +480,16 @@ A chunk is a unit of work within a task.
 Add a pending chunk to a task:
 
 ```text
-progress chunk add --task <task_id> --title <title> --description <description> [--position <position>] [--json] [--database <path>]
+progress chunk add --task <task_id> --title <title> --description <description> --review-question <review_question> [--position <position>] [--json] [--database <path>]
 ```
 
 - `--task <task_id>`: task that owns the chunk
 - `--title <title>`: display title
 - `--description <description>`: non-empty chunk description
+- `--review-question <review_question>`: the one question a reviewer answers
+  about this chunk. A question that needs "and" to join two separate concerns
+  usually means the chunk should be split. Doctor reports pending and active
+  chunks that have no review question
 - `--position <position>`: optional ordering position; when omitted, the chunk
   uses the first unused positive position in its task
 
@@ -555,16 +559,17 @@ progress chunk rename <chunk_id> --title <title> [--json] [--database <path>]
 
 ### `progress chunk edit`
 
-Replace a chunk description:
+Replace a chunk description, review question, or both:
 
 ```text
-progress chunk edit <chunk_id> --description <description> [--json] [--database <path>]
+progress chunk edit <chunk_id> [--description <description>] [--review-question <review_question>] [--json] [--database <path>]
 ```
 
 - `--description <description>`: non-empty replacement description
+- `--review-question <review_question>`: non-empty replacement review question
 
-Chunk descriptions are required and cannot be cleared. Pass replacement text
-when the description needs changing.
+Pass at least one of the two. Chunk descriptions and review questions cannot be
+cleared; pass replacement text when one needs changing.
 
 ### `progress chunk list`
 

@@ -629,6 +629,12 @@ _COMMAND_SPECS = (
 						required=True,
 						type=_non_empty_text_argument("--description"),
 					),
+					_argument(
+						"--review-question",
+						required=True,
+						type=_non_empty_text_argument("--review-question"),
+						help="the one question a reviewer answers about this chunk",
+					),
 					_argument("--position", type=int),
 				),
 			),
@@ -670,6 +676,12 @@ _COMMAND_SPECS = (
 						"--description",
 						default=argparse.SUPPRESS,
 						type=_non_empty_text_argument("--description"),
+					),
+					_argument(
+						"--review-question",
+						default=argparse.SUPPRESS,
+						type=_non_empty_text_argument("--review-question"),
+						help="the one question a reviewer answers about this chunk",
 					),
 				),
 			),
@@ -847,6 +859,11 @@ _CHUNK_ADD_PROMPT_ARGUMENTS = (
 	_PromptArgument(("--task",), "task ID that owns the chunk", required=True),
 	_PromptArgument(("--title",), "display title", required=True),
 	_PromptArgument(("--description",), "non-empty chunk description", required=True),
+	_PromptArgument(
+		("--review-question",),
+		"the one question a reviewer answers about this chunk",
+		required=True,
+	),
 	_PromptArgument(("--position",), "optional ordering position"),
 )
 
@@ -1426,6 +1443,7 @@ def _run_command(
 				task_id=args.task_id,
 				title=args.title,
 				description=args.description,
+				review_question=args.review_question,
 				position=args.position,
 			),
 			"chunk add",
@@ -1630,11 +1648,12 @@ def _run_chunk_move(args: argparse.Namespace, database: Database) -> tuple[objec
 
 
 def _run_chunk_edit(args: argparse.Namespace, database: Database) -> tuple[object, str]:
-	"""Run chunk edit while leaving the description unchanged when omitted."""
+	"""Run chunk edit while leaving omitted fields unchanged."""
 	return (
 		WriteStore(database).chunk_edit(
 			args.chunk_id,
 			description=getattr(args, "description", None),
+			review_question=getattr(args, "review_question", None),
 		),
 		"chunk edit",
 	)

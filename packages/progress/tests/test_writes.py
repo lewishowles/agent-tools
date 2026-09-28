@@ -59,10 +59,17 @@ def _add_chunk(
 	task_id: str,
 	title: str,
 	description: str = "Chunk description",
+	review_question: str = "Does the chunk do its one job?",
 	**arguments,
 ):
-	"""Create a valid test chunk with a default description."""
-	return store.chunk_add(task_id, title, description=description, **arguments)
+	"""Create a valid test chunk with a default description and review question."""
+	return store.chunk_add(
+		task_id,
+		title,
+		description=description,
+		review_question=review_question,
+		**arguments,
+	)
 
 
 @pytest.mark.parametrize(
@@ -192,7 +199,9 @@ def test_chunk_add_rejects_a_blank_description(
 	task = _add_task(store, "task", "Task")
 
 	with pytest.raises(ProgressError, match="chunk description"):
-		store.chunk_add(task["id"], "Chunk", **arguments)
+		store.chunk_add(
+			task["id"], "Chunk", review_question="Does it work?", **arguments
+		)
 
 	chunks = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
 		task["id"]
@@ -1976,6 +1985,47 @@ def test_chunk_edit_rejects_blank_description(tmp_path: Path, description: str) 
 
 	with pytest.raises(ProgressError, match="chunk description"):
 		store.chunk_edit(chunk["id"], description=description)
+
+
+def test_chunk_edit_updates_only_the_review_question(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "task", "Task")
+	chunk = _add_chunk(store, task["id"], "Chunk", description="Original description")
+
+	updated = store.chunk_edit(
+		chunk["id"], review_question="Is the retry policy right?"
+	)
+
+	assert updated == {**chunk, "review_question": "Is the retry policy right?"}
+
+
+@pytest.mark.parametrize("review_question", ["", " \t"])
+def test_chunk_edit_rejects_a_blank_review_question(
+	tmp_path: Path, review_question: str
+) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "task", "Task")
+	chunk = _add_chunk(store, task["id"], "Chunk")
+
+	with pytest.raises(ProgressError, match="chunk review question"):
+		store.chunk_edit(chunk["id"], review_question=review_question)
+
+
+@pytest.mark.parametrize("review_question", ["", " \t"])
+def test_chunk_add_rejects_a_blank_review_question(
+	tmp_path: Path, review_question: str
+) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "task", "Task")
+
+	with pytest.raises(ProgressError, match="chunk review question"):
+		_add_chunk(store, task["id"], "Chunk", review_question=review_question)
+
+	chunks = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)
+
+	assert chunks["items"] == []
 
 
 def test_release_move_reorders_releases_and_normalises_positions(
