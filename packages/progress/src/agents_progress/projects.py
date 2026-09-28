@@ -1,6 +1,6 @@
 """Project records and their repository-local Git bindings."""
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -219,6 +219,44 @@ class ProjectStore:
 					""",
 					(str(root), project.id, utc_timestamp()),
 				)
+
+	def detach_checkouts(
+		self, paths: Sequence[str | Path] = (), *, stale: bool = False
+	) -> list[str]:
+		"""Remove the named checkout paths and, with stale, every recorded path that no longer exists.
+
+		Returns the detached paths, named paths first. Raises NotFoundError and detaches
+		nothing when a named path was never recorded.
+		"""
+		resolved_paths = list(
+			dict.fromkeys(
+				str(Path(path).expanduser().resolve(strict=False)) for path in paths
+			)
+		)
+
+		with self.database.transaction() as connection:
+			stored_paths = {
+				row["path"] for row in connection.execute("SELECT path FROM checkouts")
+			}
+			for path in resolved_paths:
+				if path not in stored_paths:
+					raise NotFoundError(
+						f"checkout {path} was not found", {"path": path}
+					)
+
+			if stale:
+				resolved_paths.extend(
+					path
+					for path in sorted(stored_paths - set(resolved_paths))
+					if not Path(path).exists()
+				)
+
+			connection.executemany(
+				"DELETE FROM checkouts WHERE path = ?",
+				[(path,) for path in resolved_paths],
+			)
+
+		return resolved_paths
 
 	def _resolve_bound_project(self, binding: str) -> Project:
 		"""Resolve binding to its project, raising OrphanedProjectError if it's malformed or has no matching row."""

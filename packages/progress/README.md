@@ -35,7 +35,7 @@ the database and another Git checkout needs to use it.
 The complete command shape is:
 
 ```text
-progress [--json] [--database <path>] {next,summary,project,release,task,chunk,discovery,decision,context}
+progress [--json] [--database <path>] {next,summary,checkout,project,release,task,chunk,discovery,decision,context}
 ```
 
 Throughout this reference, commands use:
@@ -90,6 +90,21 @@ list of the same per-project data.
 ```bash
 progress summary
 ```
+
+### `progress checkout detach`
+
+Remove named checkout paths from the summary, or remove every recorded path
+that no longer exists. Named paths accept `~` and relative paths; a path that
+was never recorded returns an error without removing any checkouts. Live paths
+can be detached and will be recorded again the next time a project command runs
+there. The command works outside a Git repository and does not record a checkout.
+`--json` returns the detached paths as a list.
+
+```text
+progress checkout detach [PATH...] [--stale] [--json] [--database <path>]
+```
+
+Provide at least one path or `--stale`. They can be used together.
 
 ## Projects
 

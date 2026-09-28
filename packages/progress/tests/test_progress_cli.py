@@ -5553,6 +5553,69 @@ def test_summary_marks_missing_checkout_paths_as_stale(tmp_path: Path, capsys) -
 	)
 
 
+def test_checkout_detach_runs_outside_a_repository_without_recording(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	database = tmp_path / "progress.db"
+	checkout = tmp_path / "checkout"
+	stale_checkout = tmp_path / "missing"
+	checkout.mkdir()
+	with Database(database).transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			("prj_" + "a" * 22, "agents", "Agents", "2026-01-01T00:00:00+00:00"),
+		)
+		connection.execute(
+			"INSERT INTO checkouts (path, project_id, last_seen_at) VALUES (?, ?, ?)",
+			(str(checkout), "prj_" + "a" * 22, "2026-01-02T00:00:00+00:00"),
+		)
+		connection.execute(
+			"INSERT INTO checkouts (path, project_id, last_seen_at) VALUES (?, ?, ?)",
+			(str(stale_checkout), "prj_" + "a" * 22, "2026-01-02T00:00:00+00:00"),
+		)
+	monkeypatch.chdir(tmp_path)
+	calls = []
+	monkeypatch.setattr(
+		ProjectStore, "record_checkout", lambda self: calls.append(True)
+	)
+
+	assert (
+		cli.main(
+			["checkout", "detach", "checkout", "--database", str(database), "--json"]
+		)
+		== 0
+	)
+	assert json.loads(capsys.readouterr().out)["data"] == [str(checkout)]
+	assert calls == []
+	assert cli.main(["checkout", "detach", "--stale", "--database", str(database)]) == 0
+	assert f"Detached checkout: {stale_checkout}" in capsys.readouterr().out
+	assert cli.main(["checkout", "detach", "--stale", "--database", str(database)]) == 0
+	assert capsys.readouterr().out.strip() == "No checkouts detached"
+	assert calls == []
+
+
+def test_checkout_detach_reports_unrecorded_paths_and_requires_a_selection(
+	tmp_path: Path, capsys
+) -> None:
+	database = tmp_path / "progress.db"
+	missing = tmp_path / "missing"
+
+	assert (
+		cli.main(
+			["checkout", "detach", str(missing), "--database", str(database), "--json"]
+		)
+		== 1
+	)
+	response = json.loads(capsys.readouterr().out)
+	assert response["error"] == {
+		"code": "not-found",
+		"message": f"checkout {missing} was not found",
+		"details": {"path": str(missing)},
+	}
+	assert cli.main(["checkout", "detach", "--database", str(database), "--json"]) == 2
+	assert json.loads(capsys.readouterr().out)["error"]["code"] == "usage"
+
+
 def test_human_summary_shows_rows_in_progress_check_order() -> None:
 	output = render_module._ANSI_ESCAPE_PATTERN.sub(
 		"",

@@ -201,6 +201,68 @@ def test_record_checkout_skips_an_unbound_repository(tmp_path) -> None:
 		assert connection.execute("SELECT COUNT(*) FROM checkouts").fetchone()[0] == 0
 
 
+def test_detach_checkouts_resolves_paths_and_removes_only_selected_records(
+	tmp_path, monkeypatch
+) -> None:
+	repository = _git_repository(tmp_path / "repository")
+	other = _git_repository(tmp_path / "other")
+	store = ProjectStore(Database(tmp_path / "progress.db"))
+	project, _ = store.init("agents", "Agents", repository)
+	store.attach(project.id, other)
+	store.record_checkout(repository)
+	store.record_checkout(other)
+	monkeypatch.chdir(tmp_path)
+
+	removed = store.detach_checkouts(["repository", repository])
+
+	assert removed == [str(repository)]
+	with store.database.connection() as connection:
+		paths = [
+			row["path"] for row in connection.execute("SELECT path FROM checkouts")
+		]
+	assert paths == [str(other)]
+
+
+def test_detach_checkouts_removes_stale_paths_and_keeps_live_paths(tmp_path) -> None:
+	repository = _git_repository(tmp_path / "repository")
+	missing = tmp_path / "missing"
+	store = ProjectStore(Database(tmp_path / "progress.db"))
+	project, _ = store.init("agents", "Agents", repository)
+	store.record_checkout(repository)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO checkouts (path, project_id, last_seen_at) VALUES (?, ?, ?)",
+			(str(missing), project.id, "2026-01-01T00:00:00+00:00"),
+		)
+
+	assert store.detach_checkouts(stale=True) == [str(missing)]
+	with store.database.connection() as connection:
+		paths = [
+			row["path"] for row in connection.execute("SELECT path FROM checkouts")
+		]
+	assert paths == [str(repository)]
+
+
+def test_detach_checkouts_detaches_nothing_when_a_named_path_was_never_recorded(
+	tmp_path,
+) -> None:
+	repository = _git_repository(tmp_path / "repository")
+	store = ProjectStore(Database(tmp_path / "progress.db"))
+	store.init("agents", "Agents", repository)
+	store.record_checkout(repository)
+	missing = tmp_path / "missing"
+
+	with pytest.raises(NotFoundError) as error:
+		store.detach_checkouts([repository, missing], stale=True)
+
+	assert error.value.details == {"path": str(missing)}
+	with store.database.connection() as connection:
+		paths = [
+			row["path"] for row in connection.execute("SELECT path FROM checkouts")
+		]
+	assert paths == [str(repository)]
+
+
 class _FakeRepository:
 	def __init__(self, clear_error: Exception | None = None) -> None:
 		self.binding: str | None = None

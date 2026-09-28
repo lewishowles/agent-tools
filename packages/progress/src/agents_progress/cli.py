@@ -287,6 +287,21 @@ _COMMAND_SPECS = (
 	_CommandSpec("next", "show the next queued task and active chunk"),
 	_CommandSpec("summary", "show current work across every stored project"),
 	_CommandSpec(
+		"checkout",
+		"manage recorded checkout paths",
+		children=(
+			_CommandSpec(
+				"detach",
+				"remove recorded checkout paths",
+				arguments=(
+					_argument("paths", nargs="*", metavar="PATH"),
+					_argument("--stale", action="store_true"),
+				),
+			),
+		),
+		destination="checkout_command",
+	),
+	_CommandSpec(
 		"complete",
 		"complete one task or chunk by ID",
 		arguments=(_argument("object_id", help="task or chunk ID to complete"),),
@@ -1177,6 +1192,14 @@ def main(argv: list[str] | None = None) -> int:
 			args._help_parser.print_help()
 			return 0
 
+		if (
+			args.command == "checkout"
+			and args.checkout_command == "detach"
+			and not args.paths
+			and not args.stale
+		):
+			raise CliUsageError("checkout detach needs a PATH or --stale")
+
 		data, command = _run_command(args, include_release_titles=not json_mode)
 	except CliUsageError as error:
 		return _write_error(
@@ -1301,6 +1324,10 @@ def _run_command(
 			"next",
 		),
 		("summary", None): lambda: (ReadStore(database).summary(), "summary"),
+		("checkout", "detach"): lambda: (
+			ProjectStore(database).detach_checkouts(args.paths, stale=args.stale),
+			"checkout detach",
+		),
 		("doctor", None): lambda: (ReadStore(database).doctor(), "doctor"),
 		("project", "init"): lambda: (_run_project(args, database), "project init"),
 		("project", "attach"): lambda: (_run_project(args, database), "project attach"),
@@ -1536,9 +1563,9 @@ def _run_command(
 		data, command = handler()
 	finally:
 		# Records where progress ran, even when the command fails. A failure to record is
-		# ignored so that it never changes the command's result. The summary covers every
-		# project rather than the current one, so running it records nothing.
-		if command_name != "summary":
+		# ignored so that it never changes the command's result. The summary and checkout
+		# detach are not about the current project, so running them records nothing.
+		if command_name not in {"summary", "checkout"}:
 			with suppress(Exception):
 				ProjectStore(database).record_checkout()
 

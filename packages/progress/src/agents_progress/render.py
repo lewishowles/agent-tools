@@ -90,6 +90,11 @@ def render(command: str, data: object) -> str:
 		return _render_next(data)
 	if command == "summary":
 		return _render_summary(data)
+	if command == "checkout detach" and isinstance(data, list):
+		if not data:
+			return "No checkouts detached\n"
+
+		return "\n".join(f"Detached checkout: {path}" for path in data) + "\n"
 	if command == "release get" and isinstance(data, dict):
 		return _render_release(data)
 	if command == "task get" and isinstance(data, dict):
