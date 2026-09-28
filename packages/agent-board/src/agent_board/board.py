@@ -16,6 +16,19 @@ ACTIVITY_LABELS = {
 # The roles the zsh team launcher adds to the end of every agent tag.
 ROLES = set(ACTIVITY_LABELS)
 
+# The symbol at the start of each board row, keyed by the row's status.
+# A blocked row is looked up without its wait time.
+STATUS_SYMBOLS = {
+    "needs you": "●",
+    "blocked": "✕",
+    "implementing": "▶",
+    "reviewing": "◎",
+    "checking": "◌",
+    "coordinating": "○",
+    "starting": "◇",
+    "working": "○",
+}
+
 # The terminal code that brightens the names of teams that need you.
 BRIGHT_WHITE_STYLE = "\x1b[97m"
 
@@ -38,7 +51,7 @@ def render_board(agents: list[dict], *, colour: bool = False) -> list[str]:
     The lines start with a blank line. Teams that need you come first:
     blocked teams with their longest wait, then teams whose agents are all
     waiting with nothing unread. Working teams follow after another blank
-    line. The colons line up with the longest team name, and an empty listing
+    line. Statuses line up across both sections, and an empty listing
     shows "No active teams". Stopped (inactive) agents are left out, so a team
     with one agent left shows as a partial team.
 
@@ -84,7 +97,7 @@ def render_board(agents: list[dict], *, colour: bool = False) -> list[str]:
             status = _working_status(members)
 
             if len(members) == 1:
-                status += " (partial team)"
+                label += " (partial team)"
 
             working.append((label, status))
         elif all(
@@ -106,26 +119,30 @@ def render_board(agents: list[dict], *, colour: bool = False) -> list[str]:
         lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
         return lines
 
-    labels = [label for _, label, _ in needs_you] + [label for label, _ in working]
-    label_width = max(len(label) for label in labels)
+    shown_statuses = [status for _, _, status in needs_you] + [
+        status for _, status in working
+    ]
+    status_width = max(len(status) for status in shown_statuses)
 
     for _, label, status in needs_you:
-        padded_label = f"{label:<{label_width}}"
+        symbol = STATUS_SYMBOLS[status.partition(" · ")[0]]
+        padded_status = f"{status:<{status_width}}"
 
         if colour:
             status_style = RED_STYLE if status.startswith("blocked") else MAGENTA_STYLE
             lines.append(
-                f"· {BRIGHT_WHITE_STYLE}{padded_label}{RESET_STYLE} : "
-                f"{status_style}{status}{RESET_STYLE}"
+                f"{status_style}{symbol} {padded_status}{RESET_STYLE}  "
+                f"{BRIGHT_WHITE_STYLE}{label}{RESET_STYLE}"
             )
         else:
-            lines.append(f"· {padded_label} : {status}")
+            lines.append(f"{symbol} {padded_status}  {label}")
 
     if needs_you and working:
         lines.append("")
 
     for label, status in working:
-        line = f"· {label:<{label_width}} : {status}"
+        symbol = STATUS_SYMBOLS[status]
+        line = f"{symbol} {status:<{status_width}}  {label}"
         lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
 
     return lines
