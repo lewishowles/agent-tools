@@ -7,25 +7,35 @@ from pathlib import Path
 # The roles the zsh team launcher adds to the end of every agent tag.
 ROLES = {"orchestrator", "reviewer", "implementer", "scout"}
 
-# The terminal code that dims the quiet line and the rows for lone agents.
+# The terminal code that brightens the names of teams that need you.
+BRIGHT_WHITE_STYLE = "\x1b[97m"
+
+# The terminal code that shows a blocked status in red.
+RED_STYLE = "\x1b[31m"
+
+# The terminal code that shows a "needs you" status in purple.
+MAGENTA_STYLE = "\x1b[35m"
+
+# The terminal code that dims working teams and the empty state.
 DIM_STYLE = "\x1b[2m"
 
-# The terminal code that ends dimmed text.
+# The terminal code that ends any of the styles above.
 RESET_STYLE = "\x1b[0m"
 
 
 def render_board(agents: list[dict], *, colour: bool = False) -> list[str]:
     """Build the board lines for one `hcom list --json` snapshot.
 
-    Blocked teams come first with their longest wait. Other teams needing the
-    human are sorted by name without a time, with lone agents after them.
-    Every other team is named on one quiet line at the end. Stopped (inactive)
-    agents are left out, so a team that has lost its orchestrator shows as
-    partly running.
+    The lines start with a blank line. Teams that need you come first:
+    blocked teams with their longest wait, then teams whose agents are all
+    waiting with nothing unread. Working teams follow after another blank
+    line. The colons line up with the longest team name, and an empty listing
+    shows "No active teams". Stopped (inactive) agents are left out, so a team
+    with one agent left shows as a partial team.
 
     Args:
         agents: The records from `hcom list --json`.
-        colour: Whether to dim the quiet line and lone-agent rows.
+        colour: Whether to colour attention rows and dim working rows.
     """
     teams = defaultdict(list)
 
@@ -44,7 +54,7 @@ def render_board(agents: list[dict], *, colour: bool = False) -> list[str]:
         teams[prefix].append((agent, role))
 
     needs_you = []
-    quiet = []
+    working = []
 
     for prefix, members in teams.items():
         label = _team_label(prefix, members)
@@ -55,60 +65,55 @@ def render_board(agents: list[dict], *, colour: bool = False) -> list[str]:
 
         # Only one reason is shown per team; a blocked agent matters most.
         if "blocked" in statuses:
-            reason = "blocked"
             age = max(
                 agent["status_age_seconds"]
                 for agent, _ in members
                 if agent["status"] == "blocked"
             )
+            needs_you.append(((0, -age, label), label, f"blocked · {_format_age(age)}"))
         elif partly_running:
-            reason = "partly running"
-            age = None
+            status = "working (partial team)" if len(members) == 1 else "working"
+            working.append((label, status))
         elif all(
             agent["status"] == "listening" and agent["unread_count"] == 0
             for agent, _ in members
         ):
-            reason = "idle"
-            age = None
+            needs_you.append(((1, 0, label), label, "needs you"))
         else:
-            quiet.append(label)
-            continue
+            working.append((label, "working"))
 
-        # Blocked teams sort by wait; other teams sort by name, with lone agents last.
-        lone_agent = len(members) == 1 and reason == "partly running"
-
-        if reason == "blocked":
-            sort_key = (0, -age, label)
-        elif lone_agent:
-            sort_key = (2, 0, label)
-        else:
-            sort_key = (1, 0, label)
-
-        needs_you.append((sort_key, label, reason, age, lone_agent))
-
+    # Blocked teams sort by longest wait; every other team sorts by name.
     needs_you.sort(key=lambda row: row[0])
-    lines = ["Needs you"]
+    working.sort(key=lambda row: row[0])
 
-    for _, label, reason, age, lone_agent in needs_you:
-        line = f"{label}: {reason}"
+    lines = [""]
 
-        if age is not None:
-            line += f" · {_format_age(age)}"
+    if not needs_you and not working:
+        line = "No active teams"
+        lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
+        return lines
 
-        if lone_agent and colour:
-            line = f"{DIM_STYLE}{line}{RESET_STYLE}"
+    labels = [label for _, label, _ in needs_you] + [label for label, _ in working]
+    label_width = max(len(label) for label in labels)
 
-        lines.append(line)
+    for _, label, status in needs_you:
+        padded_label = f"{label:<{label_width}}"
 
-    if len(lines) == 1:
-        lines.append("None")
+        if colour:
+            status_style = RED_STYLE if status.startswith("blocked") else MAGENTA_STYLE
+            lines.append(
+                f"· {BRIGHT_WHITE_STYLE}{padded_label}{RESET_STYLE} : "
+                f"{status_style}{status}{RESET_STYLE}"
+            )
+        else:
+            lines.append(f"· {padded_label} : {status}")
 
-    quiet_line = f"Quiet: {', '.join(sorted(quiet))}" if quiet else "Quiet: none"
+    if needs_you and working:
+        lines.append("")
 
-    if colour:
-        quiet_line = f"{DIM_STYLE}{quiet_line}{RESET_STYLE}"
-
-    lines.append(quiet_line)
+    for label, status in working:
+        line = f"· {label:<{label_width}} : {status}"
+        lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
 
     return lines
 
