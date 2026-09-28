@@ -151,6 +151,9 @@ def test_summary_uses_the_next_selection_and_lists_every_project(
 ) -> None:
 	store = _seed_store(tmp_path)
 	second_project_id = "prj_" + "q" * 22
+	live_checkout = tmp_path / "agents"
+	live_checkout.mkdir()
+	stale_checkout = tmp_path / "missing"
 	with store.database.transaction() as connection:
 		connection.execute(
 			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
@@ -158,7 +161,11 @@ def test_summary_uses_the_next_selection_and_lists_every_project(
 		)
 		connection.execute(
 			"INSERT INTO checkouts (path, project_id, last_seen_at) VALUES (?, ?, ?)",
-			("/work/agents", PROJECT_ID, "2026-01-02T12:00:00+00:00"),
+			(str(live_checkout), PROJECT_ID, "2026-01-02T12:00:00+00:00"),
+		)
+		connection.execute(
+			"INSERT INTO checkouts (path, project_id, last_seen_at) VALUES (?, ?, ?)",
+			(str(stale_checkout), PROJECT_ID, "2026-01-03T12:00:00+00:00"),
 		)
 		connection.execute(
 			"UPDATE tasks SET status_reason = ? WHERE id = ?",
@@ -175,7 +182,16 @@ def test_summary_uses_the_next_selection_and_lists_every_project(
 	assert result[0]["chunk"]["id"] == CHUNK_A
 	assert result[0]["hint_command"] == f"progress chunk complete {CHUNK_A}"
 	assert result[0]["checkouts"] == [
-		{"path": "/work/agents", "last_seen_at": "2026-01-02T12:00:00+00:00"}
+		{
+			"path": str(live_checkout),
+			"last_seen_at": "2026-01-02T12:00:00+00:00",
+			"stale": False,
+		},
+		{
+			"path": str(stale_checkout),
+			"last_seen_at": "2026-01-03T12:00:00+00:00",
+			"stale": True,
+		},
 	]
 	assert result[0]["commit_plan"] == {"done": 0, "total": 1}
 	assert result[0]["other_task_counts"] == {"ready": 1}

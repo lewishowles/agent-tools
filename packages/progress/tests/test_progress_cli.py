@@ -5516,6 +5516,43 @@ def test_summary_runs_outside_a_repository_without_recording_checkout(
 	assert calls == []
 
 
+def test_summary_marks_missing_checkout_paths_as_stale(tmp_path: Path, capsys) -> None:
+	database = tmp_path / "progress.db"
+	live_checkout = tmp_path / "agents"
+	live_checkout.mkdir()
+	stale_checkout = tmp_path / "missing"
+	with Database(database).transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			("prj_" + "a" * 22, "agents", "Agents", "2026-01-01T00:00:00+00:00"),
+		)
+		for checkout in (live_checkout, stale_checkout):
+			connection.execute(
+				"INSERT INTO checkouts (path, project_id, last_seen_at) VALUES (?, ?, ?)",
+				(str(checkout), "prj_" + "a" * 22, "2026-01-02T12:00:00+00:00"),
+			)
+
+	assert cli.main(["summary", "--database", str(database), "--json"]) == 0
+	response = json.loads(capsys.readouterr().out)
+	assert {
+		checkout["path"]: checkout["stale"]
+		for checkout in response["data"][0]["checkouts"]
+	} == {str(live_checkout): False, str(stale_checkout): True}
+
+	assert cli.main(["summary", "--database", str(database)]) == 0
+	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	# Remove whitespace, because long checkout paths wrap across lines in text output.
+	output_without_whitespace = "".join(output.split())
+	assert (
+		"".join(f"Checkout: {live_checkout} (last seen".split())
+		in output_without_whitespace
+	)
+	assert (
+		"".join(f"Checkout: {stale_checkout} (stale) (last seen".split())
+		in output_without_whitespace
+	)
+
+
 def test_human_summary_shows_rows_in_progress_check_order() -> None:
 	output = render_module._ANSI_ESCAPE_PATTERN.sub(
 		"",
@@ -5528,6 +5565,7 @@ def test_human_summary_shows_rows_in_progress_check_order() -> None:
 						{
 							"path": "/work/agents",
 							"last_seen_at": "2026-01-02T13:00:30.123456+01:00",
+							"stale": False,
 						}
 					],
 					"task": {"title": "Build summary", "status": "in-progress"},

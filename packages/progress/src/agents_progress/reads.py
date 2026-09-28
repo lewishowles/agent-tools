@@ -665,7 +665,8 @@ class ReadStore(_StoreBase):
 		Each entry holds the project's `progress next` response plus its recorded
 		checkouts, the commit plan for the current task, counts of its other tasks
 		by status, and the next action to show. Works from any directory, because
-		it reads only the database.
+		it reads only the database. A checkout is marked stale when its recorded
+		path no longer exists on disk.
 		"""
 		with self.database.connection() as connection:
 			projects = connection.execute(
@@ -706,7 +707,10 @@ class ReadStore(_StoreBase):
 				results.append(
 					{
 						**selection,
-						"checkouts": [dict(row) for row in checkouts],
+						"checkouts": [
+							{**dict(row), "stale": not Path(row["path"]).exists()}
+							for row in checkouts
+						],
 						"commit_plan": commit_plan,
 						"other_task_counts": {
 							row["status"]: row["total"] for row in status_rows

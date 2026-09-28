@@ -82,8 +82,10 @@ Show current work for every project stored in the database, sorted by project
 name. Each project shows its recorded checkout paths and last-seen times, current
 task and status, completed chunks in its commit plan, other task counts, release,
 next action, and suggested command. Projects with no recorded checkout show
-`none recorded`. The command works outside a Git repository and does not record
-a checkout. Use `--json` for a list of the same per-project data.
+`none recorded`. A checkout whose path no longer exists is marked `(stale)`;
+in JSON output, each checkout has a boolean `stale` field. The command works
+outside a Git repository and does not record a checkout. Use `--json` for a
+list of the same per-project data.
 
 ```bash
 progress summary

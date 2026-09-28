@@ -694,10 +694,11 @@ def _render_summary(data: object) -> str:
 
 		for row in checkouts:
 			last_seen = datetime.fromisoformat(row["last_seen_at"]).astimezone(UTC)
+			stale_label = " (stale)" if row["stale"] else ""
 			lines.append(
 				render_labelled_line(
 					"Checkout",
-					f"{row['path']} (last seen {last_seen:%Y-%m-%d %H:%M} UTC)",
+					f"{row['path']}{stale_label} (last seen {last_seen:%Y-%m-%d %H:%M} UTC)",
 				)
 			)
 
