@@ -4,8 +4,17 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
+# The board label for each role's work, in priority order: the first role
+# with an active agent names what a working team is doing.
+ACTIVITY_LABELS = {
+    "implementer": "implementing",
+    "reviewer": "reviewing",
+    "scout": "checking",
+    "orchestrator": "coordinating",
+}
+
 # The roles the zsh team launcher adds to the end of every agent tag.
-ROLES = {"orchestrator", "reviewer", "implementer", "scout"}
+ROLES = set(ACTIVITY_LABELS)
 
 # The terminal code that brightens the names of teams that need you.
 BRIGHT_WHITE_STYLE = "\x1b[97m"
@@ -72,7 +81,11 @@ def render_board(agents: list[dict], *, colour: bool = False) -> list[str]:
             )
             needs_you.append(((0, -age, label), label, f"blocked · {_format_age(age)}"))
         elif partly_running:
-            status = "working (partial team)" if len(members) == 1 else "working"
+            status = _working_status(members)
+
+            if len(members) == 1:
+                status += " (partial team)"
+
             working.append((label, status))
         elif all(
             agent["status"] == "listening" and agent["unread_count"] == 0
@@ -80,7 +93,7 @@ def render_board(agents: list[dict], *, colour: bool = False) -> list[str]:
         ):
             needs_you.append(((1, 0, label), label, "needs you"))
         else:
-            working.append((label, "working"))
+            working.append((label, _working_status(members)))
 
     # Blocked teams sort by longest wait; every other team sorts by name.
     needs_you.sort(key=lambda row: row[0])
@@ -116,6 +129,25 @@ def render_board(agents: list[dict], *, colour: bool = False) -> list[str]:
         lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
 
     return lines
+
+
+def _working_status(members: list[tuple[dict, str | None]]) -> str:
+    """Name the work of the highest-priority active role in a team.
+
+    A team with no active member in a known role is starting if anyone is
+    launching, or working otherwise.
+    """
+    for role, label in ACTIVITY_LABELS.items():
+        if any(
+            agent["status"] == "active" and member_role == role
+            for agent, member_role in members
+        ):
+            return label
+
+    if any(agent["status"] == "launching" for agent, _ in members):
+        return "starting"
+
+    return "working"
 
 
 def _normalise(value: str) -> str:

@@ -1,5 +1,6 @@
 """Check board decisions against representative HCOM listings."""
 
+import pytest
 from agent_board.board import render_board
 
 
@@ -65,8 +66,8 @@ def test_blocked_waits_sort_before_waiting_team_names() -> None:
     ]
 
 
-def test_active_and_unread_teams_are_working() -> None:
-    """Active or unread teams remain visible as working rows."""
+def test_active_and_unread_teams_remain_working_rows() -> None:
+    """Active roles name both teams, including one with unread messages."""
     agents = [
         agent("Agent-Tools", "orchestrator", status="active"),
         agent("Agent-Tools", "scout", unread=1),
@@ -77,7 +78,83 @@ def test_active_and_unread_teams_are_working() -> None:
 
     lines = render_board(agents)
 
-    assert lines == ["", "· Agent-Tools : working", "· Custom      : working"]
+    assert lines == ["", "· Agent-Tools : coordinating", "· Custom      : checking"]
+
+
+@pytest.mark.parametrize(
+    ("role", "label", "partner_role"),
+    [
+        ("implementer", "implementing", "orchestrator"),
+        ("reviewer", "reviewing", "orchestrator"),
+        ("scout", "checking", "orchestrator"),
+        ("orchestrator", "coordinating", "scout"),
+    ],
+)
+def test_active_role_names_working_team(
+    role: str, label: str, partner_role: str
+) -> None:
+    """Each recognised active role gives the team its activity label."""
+    agents = [
+        agent("Agent-Tools", role, status="active"),
+        agent("Agent-Tools", partner_role, status="listening"),
+    ]
+
+    assert render_board(agents)[1] == f"· Agent-Tools : {label}"
+
+
+@pytest.mark.parametrize(
+    ("roles", "label"),
+    [
+        (["orchestrator", "scout"], "checking"),
+        (["scout", "reviewer"], "reviewing"),
+        (["reviewer", "implementer"], "implementing"),
+    ],
+)
+def test_active_role_priority_names_working_team(roles: list[str], label: str) -> None:
+    """The highest-priority active role names a team with concurrent work."""
+    agents = [agent("Agent-Tools", role, status="active") for role in roles]
+
+    assert render_board(agents)[1] == f"· Agent-Tools : {label}"
+
+
+def test_launching_team_is_starting_without_active_members() -> None:
+    """Launching takes precedence over the working fallback."""
+    agents = [
+        agent("Agent-Tools", "orchestrator", status="launching"),
+        agent("Agent-Tools", "scout", status="listening"),
+    ]
+
+    assert render_board(agents)[1] == "· Agent-Tools : starting"
+
+
+def test_active_role_takes_priority_over_launching_member() -> None:
+    """An active role names the team while another member launches."""
+    agents = [
+        agent("Agent-Tools", "orchestrator", status="launching"),
+        agent("Agent-Tools", "scout", status="active"),
+    ]
+
+    assert render_board(agents)[1] == "· Agent-Tools : checking"
+
+
+def test_unrecognised_active_role_keeps_working_fallback() -> None:
+    """An active agent with no known role cannot choose the team label."""
+    untagged_agent = agent("Agent-Tools", None, status="active")
+    untagged_agent["name"] = "Agent-Tools"
+    untagged_agent["tag"] = None
+    agents = [
+        agent("Agent-Tools", "orchestrator"),
+        untagged_agent,
+    ]
+
+    assert render_board(agents)[1] == "· Agent-Tools : working"
+
+
+def test_active_partial_team_keeps_suffix() -> None:
+    """A lone active agent shows its work and remains marked as partial."""
+    agents = [agent("Agent-Tools", "implementer", status="active")]
+
+    assert render_board(agents)[1] == "· Agent-Tools : implementing (partial team)"
 
 
 def test_single_live_agent_joins_dimmed_working_group() -> None:
@@ -199,7 +276,7 @@ def test_working_rows_are_fully_dimmed_when_colour_is_on() -> None:
 
     assert render_board(agents, colour=True) == [
         "",
-        "\x1b[2m· Agent-Tools · active  : working\x1b[0m",
+        "\x1b[2m· Agent-Tools · active  : coordinating\x1b[0m",
         "\x1b[2m· Agent-Tools · unread  : working\x1b[0m",
         "\x1b[2m· Agent-Tools · workers : working\x1b[0m",
     ]
@@ -228,7 +305,7 @@ def test_no_active_teams_shows_one_dimmed_message() -> None:
 
 def test_unfamiliar_tag_without_role_keeps_raw_prefix() -> None:
     """An unfamiliar tag remains on the board as its own team."""
-    entry = agent("CustomTag", None, age=30)
+    entry = agent("CustomTag", None, status="active", age=30)
 
     assert render_board([entry])[1] == "· CustomTag : working (partial team)"
 
