@@ -2,7 +2,7 @@
 
 import re
 import textwrap
-from datetime import UTC, datetime
+from pathlib import Path
 
 from .style import (
 	divider as render_divider,
@@ -680,7 +680,7 @@ def _render_next(data: object) -> str:
 
 
 def _render_summary(data: object) -> str:
-	"""Show current work and recorded checkout paths for every stored project.
+	"""Show each project's current work as a block, projects with no task last.
 
 	Finished tasks are left out of the task counts, which only show work that
 	remains. The JSON output still includes them.
@@ -691,69 +691,105 @@ def _render_summary(data: object) -> str:
 		return render_span("No projects.", "muted", weight="normal")
 
 	blocks = []
-	for item in data:
+	active_projects = [item for item in data if isinstance(item["task"], dict)]
+	idle_projects = [item for item in data if not isinstance(item["task"], dict)]
+	for item in [*active_projects, *idle_projects]:
 		project = item["project"]
 		task = item["task"]
 		checkouts = item["checkouts"]
-		lines = [render_span(str(project["name"]), "accent", weight="bold")]
+		project_line = render_span(str(project["name"]), "accent", weight="bold")
 
 		for row in checkouts:
-			last_seen = datetime.fromisoformat(row["last_seen_at"]).astimezone(UTC)
 			stale_label = " (stale)" if row["stale"] else ""
-			lines.append(
-				render_labelled_line(
-					"Checkout",
-					f"{row['path']}{stale_label} (last seen {last_seen:%Y-%m-%d %H:%M} UTC)",
-				)
+			project_line += render_span(
+				f" · {_summary_checkout_path(row['path'])}{stale_label}",
+				"muted",
+				weight="normal",
 			)
 
-		if not checkouts:
-			lines.append(render_labelled_line("Checkouts", "none recorded"))
-
+		lines = [project_line, ""]
 		if isinstance(task, dict):
-			lines.append(render_labelled_line("Current task", str(task["title"])))
-			lines.append(
-				render_labelled_line("Status", str(task["status"]).replace("-", " "))
+			task_status = str(task["status"]).replace("-", " ")
+			task_line = (
+				render_span(str(task["title"]), "text", weight="normal")
+				+ render_span(" · ", "muted", weight="normal")
+				+ render_span(
+					task_status,
+					_STATUS_TONES.get(_status_result_type(task["status"]), "info"),
+					weight="normal",
+				)
 			)
 			commit_plan = item["commit_plan"]
-			if isinstance(commit_plan, dict):
+			chunk = item["chunk"]
+			if not isinstance(chunk, dict) and isinstance(commit_plan, dict):
+				task_line += render_span(
+					f" · {commit_plan['done']}/{commit_plan['total']} chunks",
+					"muted",
+					weight="normal",
+				)
+			lines.append(task_line)
+
+			if isinstance(chunk, dict):
+				chunk_status = str(chunk["status"]).replace("-", " ")
 				lines.append(
-					render_labelled_line(
-						"Commit plan",
-						f"{commit_plan['done']}/{commit_plan['total']} complete",
+					render_span(str(chunk["title"]), "info", weight="normal")
+					+ render_span(" · ", "muted", weight="normal")
+					+ render_span(
+						chunk_status,
+						_STATUS_TONES.get(_status_result_type(chunk["status"]), "info"),
+						weight="normal",
+					)
+					+ render_span(
+						f" · ({item['chunk_rank']}/{item['chunk_total']})",
+						"muted",
+						weight="normal",
 					)
 				)
-		else:
-			lines.append(render_labelled_line("Current task", "none"))
 
-		counts = item["other_task_counts"]
-		count_parts = _status_count_parts(
-			counts,
-			("in-progress", "ready", "waiting", "blocked", "needs-decision"),
-		)
-		lines.append(
-			render_labelled_line(
-				"Other tasks" if isinstance(task, dict) else "Tasks",
-				" · ".join(count_parts) if count_parts else "none",
-			)
-		)
-		release = item["release"]
-		if isinstance(release, dict):
-			lines.append(render_labelled_line("Release", str(release["title"])))
-
-		# As in progress:check, a project with nothing to work on has no next action.
-		if isinstance(task, dict):
-			lines.append(
-				render_labelled_line(
-					"Next action",
-					textwrap.fill(str(item["next_action"]), _ROW_WRAP_WIDTH),
+			release = item["release"]
+			if isinstance(release, dict):
+				lines.append(
+					render_span(
+						f"Release: {release['title']}", "muted", weight="normal"
+					)
 				)
-			)
-			lines.append(render_labelled_line("Hint", str(item["hint_command"])))
 
+			count_parts = _status_count_parts(
+				item["other_task_counts"],
+				("in-progress", "ready", "waiting", "blocked", "needs-decision"),
+			)
+			if count_parts:
+				lines.extend(
+					[
+						"",
+						render_span(
+							f"Other tasks: {' · '.join(count_parts)}",
+							"muted",
+							weight="normal",
+						),
+					]
+				)
+		else:
+			lines.append(render_span("No current tasks", "muted", weight="normal"))
+
+		lines.extend(["", render_divider(divider_colour="border")])
 		blocks.append("\n".join(lines))
 
 	return "\n\n".join(blocks)
+
+
+def _summary_checkout_path(path: str) -> str:
+	"""Show a checkout path with `~` in place of the user's home directory.
+
+	Paths outside the home directory, or any path when the home directory
+	cannot be found, are returned unchanged.
+	"""
+	try:
+		relative_path = Path(path).relative_to(Path.home())
+	except (RuntimeError, ValueError):
+		return path
+
+	return f"~/{relative_path}" if relative_path.parts else "~"
 
 
 def _render_next_position_line(

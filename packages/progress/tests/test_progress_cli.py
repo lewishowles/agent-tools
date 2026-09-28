@@ -5507,10 +5507,8 @@ def test_summary_runs_outside_a_repository_without_recording_checkout(
 
 	assert cli.main(["summary", "--database", str(database)]) == 0
 	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
-	assert "Agents" in output
-	assert "Checkouts: none recorded" in output
-	assert "Current task: none" in output
-	assert "Tasks: none" in output
+	assert "Agents\n\nNo current tasks\n" in output
+	assert "Checkouts:" not in output
 	assert "Next action:" not in output
 	assert "Hint:" not in output
 	assert calls == []
@@ -5541,16 +5539,9 @@ def test_summary_marks_missing_checkout_paths_as_stale(tmp_path: Path, capsys) -
 
 	assert cli.main(["summary", "--database", str(database)]) == 0
 	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
-	# Remove whitespace, because long checkout paths wrap across lines in text output.
-	output_without_whitespace = "".join(output.split())
-	assert (
-		"".join(f"Checkout: {live_checkout} (last seen".split())
-		in output_without_whitespace
-	)
-	assert (
-		"".join(f"Checkout: {stale_checkout} (stale) (last seen".split())
-		in output_without_whitespace
-	)
+	assert f"Agents · {live_checkout} · {stale_checkout} (stale)\n" in output
+	assert "last seen" not in output
+	assert "Checkout:" not in output
 
 
 def test_checkout_detach_runs_outside_a_repository_without_recording(
@@ -5616,7 +5607,118 @@ def test_checkout_detach_reports_unrecorded_paths_and_requires_a_selection(
 	assert json.loads(capsys.readouterr().out)["error"]["code"] == "usage"
 
 
-def test_human_summary_shows_rows_in_progress_check_order() -> None:
+def test_summary_checkout_path_shows_home_as_tilde_and_keeps_path_without_home(
+	monkeypatch,
+) -> None:
+	monkeypatch.setattr(Path, "home", lambda: Path("/work"))
+	assert render_module._summary_checkout_path("/work") == "~"
+
+	def raise_missing_home() -> Path:
+		"""Fail the way Path.home() does when HOME cannot be found."""
+		raise RuntimeError("Could not determine home directory.")
+
+	monkeypatch.setattr(Path, "home", raise_missing_home)
+	assert render_module._summary_checkout_path("/work/active") == "/work/active"
+
+
+def test_human_summary_shows_active_ready_chunkless_and_idle_projects(
+	monkeypatch,
+) -> None:
+	monkeypatch.setattr(Path, "home", lambda: Path("/work"))
+	output = render_module._ANSI_ESCAPE_PATTERN.sub(
+		"",
+		render_module.render(
+			"summary",
+			[
+				{
+					"project": {"name": "Idle first"},
+					"checkouts": [],
+					"task": None,
+				},
+				{
+					"project": {"name": "Active"},
+					"checkouts": [
+						{
+							"path": "/work/active",
+							"last_seen_at": "2026-01-02T13:00:30.123456+01:00",
+							"stale": False,
+						},
+						{"path": "/work/second", "stale": True},
+						{"path": "/workspace/other", "stale": False},
+					],
+					"task": {"title": "Build summary", "status": "in-progress"},
+					"chunk": {"title": "Lay out blocks", "status": "active"},
+					"chunk_rank": 2,
+					"chunk_total": 3,
+					"commit_plan": {"done": 1, "total": 3},
+					"other_task_counts": {"ready": 2, "blocked": 1, "done": 4},
+					"release": {"title": "Progress tools"},
+					"next_action": "Finish the summary after checking every project",
+					"hint_command": "progress chunk complete chk_example",
+				},
+				{
+					"project": {"name": "Ready"},
+					"checkouts": [],
+					"task": {"title": "Plan follow-up", "status": "ready"},
+					"chunk": None,
+					"commit_plan": {"done": 0, "total": 9},
+					"other_task_counts": {},
+					"release": None,
+				},
+				{
+					"project": {"name": "Chunkless"},
+					"checkouts": [],
+					"task": {"title": "Review notes", "status": "waiting"},
+					"chunk": None,
+					"commit_plan": None,
+					"other_task_counts": {},
+					"release": None,
+				},
+				{
+					"project": {"name": "Idle last"},
+					"checkouts": [],
+					"task": None,
+				},
+			],
+		),
+	)
+
+	assert output == (
+		"Active · ~/active · ~/second (stale) · /workspace/other\n"
+		"\n"
+		"Build summary · in progress\n"
+		"Lay out blocks · active · (2/3)\n"
+		"Release: Progress tools\n"
+		"\n"
+		"Other tasks: 2 ready · 1 blocked\n"
+		"\n"
+		"----------------------------------------\n\n"
+		"Ready\n"
+		"\n"
+		"Plan follow-up · ready · 0/9 chunks\n"
+		"\n"
+		"----------------------------------------\n\n"
+		"Chunkless\n"
+		"\n"
+		"Review notes · waiting\n"
+		"\n"
+		"----------------------------------------\n\n"
+		"Idle first\n"
+		"\n"
+		"No current tasks\n"
+		"\n"
+		"----------------------------------------\n\n"
+		"Idle last\n"
+		"\n"
+		"No current tasks\n"
+		"\n"
+		"----------------------------------------"
+	)
+
+
+def test_human_summary_keeps_long_release_title_on_one_line(monkeypatch) -> None:
+	monkeypatch.setenv("NO_COLOR", "1")
+	release_title = ("A long release title " * 7).rstrip()
 	output = render_module._ANSI_ESCAPE_PATTERN.sub(
 		"",
 		render_module.render(
@@ -5624,42 +5726,16 @@ def test_human_summary_shows_rows_in_progress_check_order() -> None:
 			[
 				{
 					"project": {"name": "Agents"},
-					"checkouts": [
-						{
-							"path": "/work/agents",
-							"last_seen_at": "2026-01-02T13:00:30.123456+01:00",
-							"stale": False,
-						}
-					],
-					"task": {"title": "Build summary", "status": "in-progress"},
-					"commit_plan": {"done": 1, "total": 3},
-					"other_task_counts": {"ready": 2, "blocked": 1, "done": 4},
-					"release": {"title": "Progress tools"},
-					"next_action": (
-						"Finish the summary after checking every project with a recorded "
-						"checkout path and its current task"
-					),
-					"hint_command": "progress chunk complete chk_example",
+					"checkouts": [],
+					"task": {"title": "Build summary", "status": "ready"},
+					"chunk": None,
+					"commit_plan": None,
+					"other_task_counts": {},
+					"release": {"title": release_title},
 				}
 			],
 		),
 	)
 
-	labels = (
-		"Current task:",
-		"Status:",
-		"Commit plan:",
-		"Other tasks:",
-		"Release:",
-		"Next action:",
-		"Hint:",
-	)
-	assert [output.index(label) for label in labels] == sorted(
-		output.index(label) for label in labels
-	)
-	assert "Checkout: /work/agents (last seen 2026-01-02 12:00 UTC)" in output
-	assert "Commit plan: 1/3 complete" in output
-	assert "Other tasks: 2 ready · 1 blocked" in output
-	assert "4 done" not in output
-	action_text = output.split("Next action: ", 1)[1].split("\nHint:", 1)[0]
-	assert "\n" in action_text
+	assert len(release_title) > 120
+	assert f"Release: {release_title}" in output.splitlines()

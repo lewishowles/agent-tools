@@ -78,14 +78,16 @@ progress next
 
 ### `progress summary`
 
-Show current work for every project stored in the database, sorted by project
-name. Each project shows its recorded checkout paths and last-seen times, current
-task and status, completed chunks in its commit plan, other task counts, release,
-next action, and suggested command. Projects with no recorded checkout show
-`none recorded`. A checkout whose path no longer exists is marked `(stale)`;
-in JSON output, each checkout has a boolean `stale` field. The command works
-outside a Git repository and does not record a checkout. Use `--json` for a
-list of the same per-project data.
+Show current work for every project stored in the database. Projects with a
+current task appear first, followed by projects with no current task. Each block
+shows any recorded checkout paths beside the project name, the task and its
+status, the active chunk and its position or completed chunk count, the release,
+and any other unfinished task counts. A checkout whose path no longer exists is
+marked `(stale)`. The command works outside a Git repository and does not record
+a checkout. Paths under your home directory start with `~` in human output. Use
+`--json` for per-project data. It includes full checkout paths, each checkout's
+boolean `stale` field and last-seen time, the next action, and the suggested
+command.
 
 ```bash
 progress summary
