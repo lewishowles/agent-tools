@@ -35,7 +35,7 @@ the database and another Git checkout needs to use it.
 The complete command shape is:
 
 ```text
-progress [--json] [--database <path>] {next,project,release,task,chunk,discovery,decision,context}
+progress [--json] [--database <path>] {next,summary,project,release,task,chunk,discovery,decision,context}
 ```
 
 Throughout this reference, commands use:
@@ -74,6 +74,19 @@ move, or revise the task.
 
 ```bash
 progress next
+```
+
+### `progress summary`
+
+Show current work for every project stored in the database, sorted by project
+name. Each project shows its recorded checkout paths and last-seen times, current
+task and status, completed chunks in its commit plan, other task counts, release,
+next action, and suggested command. Projects with no recorded checkout show
+`none recorded`. The command works outside a Git repository and does not record
+a checkout. Use `--json` for a list of the same per-project data.
+
+```bash
+progress summary
 ```
 
 ## Projects

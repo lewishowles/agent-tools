@@ -285,6 +285,7 @@ def _add_command_specs(
 # Every CLI command and its nested subcommands, in the order they should appear in --help.
 _COMMAND_SPECS = (
 	_CommandSpec("next", "show the next queued task and active chunk"),
+	_CommandSpec("summary", "show current work across every stored project"),
 	_CommandSpec(
 		"complete",
 		"complete one task or chunk by ID",
@@ -1299,6 +1300,7 @@ def _run_command(
 			),
 			"next",
 		),
+		("summary", None): lambda: (ReadStore(database).summary(), "summary"),
 		("doctor", None): lambda: (ReadStore(database).doctor(), "doctor"),
 		("project", "init"): lambda: (_run_project(args, database), "project init"),
 		("project", "attach"): lambda: (_run_project(args, database), "project attach"),
@@ -1534,9 +1536,11 @@ def _run_command(
 		data, command = handler()
 	finally:
 		# Records where progress ran, even when the command fails. A failure to record is
-		# ignored so that it never changes the command's result.
-		with suppress(Exception):
-			ProjectStore(database).record_checkout()
+		# ignored so that it never changes the command's result. The summary covers every
+		# project rather than the current one, so running it records nothing.
+		if command_name != "summary":
+			with suppress(Exception):
+				ProjectStore(database).record_checkout()
 
 	return data, command
 

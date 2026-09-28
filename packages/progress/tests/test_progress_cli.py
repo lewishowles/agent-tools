@@ -5481,3 +5481,84 @@ def test_checkout_recording_failure_does_not_change_command_result(
 
 	assert cli.main(["project", "current", "--database", str(database), "--json"]) == 0
 	assert json.loads(capsys.readouterr().out)["data"]["slug"] == "agents"
+
+
+def test_summary_runs_outside_a_repository_without_recording_checkout(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	database = tmp_path / "progress.db"
+	with Database(database).transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			("prj_" + "a" * 22, "agents", "Agents", "2026-01-01T00:00:00+00:00"),
+		)
+	monkeypatch.chdir(tmp_path)
+	calls = []
+	monkeypatch.setattr(
+		ProjectStore, "record_checkout", lambda self: calls.append(True)
+	)
+
+	assert cli.main(["summary", "--database", str(database), "--json"]) == 0
+	response = json.loads(capsys.readouterr().out)
+	assert response["ok"] is True
+	assert response["data"][0]["project"]["name"] == "Agents"
+	assert response["data"][0]["checkouts"] == []
+	assert calls == []
+
+	assert cli.main(["summary", "--database", str(database)]) == 0
+	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert "Agents" in output
+	assert "Checkouts: none recorded" in output
+	assert "Current task: none" in output
+	assert "Tasks: none" in output
+	assert "Next action:" not in output
+	assert "Hint:" not in output
+	assert calls == []
+
+
+def test_human_summary_shows_rows_in_progress_check_order() -> None:
+	output = render_module._ANSI_ESCAPE_PATTERN.sub(
+		"",
+		render_module.render(
+			"summary",
+			[
+				{
+					"project": {"name": "Agents"},
+					"checkouts": [
+						{
+							"path": "/work/agents",
+							"last_seen_at": "2026-01-02T13:00:30.123456+01:00",
+						}
+					],
+					"task": {"title": "Build summary", "status": "in-progress"},
+					"commit_plan": {"done": 1, "total": 3},
+					"other_task_counts": {"ready": 2, "blocked": 1, "done": 4},
+					"release": {"title": "Progress tools"},
+					"next_action": (
+						"Finish the summary after checking every project with a recorded "
+						"checkout path and its current task"
+					),
+					"hint_command": "progress chunk complete chk_example",
+				}
+			],
+		),
+	)
+
+	labels = (
+		"Current task:",
+		"Status:",
+		"Commit plan:",
+		"Other tasks:",
+		"Release:",
+		"Next action:",
+		"Hint:",
+	)
+	assert [output.index(label) for label in labels] == sorted(
+		output.index(label) for label in labels
+	)
+	assert "Checkout: /work/agents (last seen 2026-01-02 12:00 UTC)" in output
+	assert "Commit plan: 1/3 complete" in output
+	assert "Other tasks: 2 ready · 1 blocked" in output
+	assert "4 done" not in output
+	action_text = output.split("Next action: ", 1)[1].split("\nHint:", 1)[0]
+	assert "\n" in action_text

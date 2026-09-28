@@ -376,6 +376,40 @@ def _in_progress_task_and_chunk(
 	return task_row, chunk_row
 
 
+def _selected_task_response(
+	connection: sqlite3.Connection, project: Project
+) -> tuple[dict[str, object], sqlite3.Row | None, sqlite3.Row | None]:
+	"""Choose the task and chunk that `progress next` shows for a project.
+
+	Returns the `progress next` response along with the chosen task and chunk rows,
+	which are None when the project has nothing in progress or queued. Both
+	`progress next` and `progress summary` use this so they always agree.
+	"""
+	task_row, chunk_row = _in_progress_task_and_chunk(connection, project.id)
+	if task_row is None:
+		# An active release's tasks outrank a planned release's, and
+		# release position breaks ties before falling back to task order.
+		task_row = connection.execute(
+			f"SELECT {_TASK_COLUMNS_QUALIFIED} FROM tasks "
+			"LEFT JOIN releases ON releases.id = tasks.release_id "
+			"AND releases.project_id = tasks.project_id "
+			"WHERE tasks.project_id = ? "
+			"AND tasks.status IN ('ready', 'waiting', 'blocked', 'needs-decision') "
+			f"ORDER BY {_TASK_QUEUE_ORDER} LIMIT 1",
+			(project.id,),
+		).fetchone()
+		if task_row is not None:
+			chunk_row = _active_chunk(connection, task_row["id"])
+
+	dependency_ids = (
+		_dependency_ids(connection, task_row["id"]) if task_row is not None else []
+	)
+	response = _task_response(
+		connection, project, task_row, chunk_row, "progress task list", dependency_ids
+	)
+	return response, task_row, chunk_row
+
+
 def _active_chunk(connection: sqlite3.Connection, task_id: str) -> sqlite3.Row | None:
 	"""Fetch the first active chunk for a task."""
 	return connection.execute(
@@ -605,34 +639,7 @@ class ReadStore(_StoreBase):
 		project = self.current_project(path)
 
 		with self.database.connection() as connection:
-			task_row, chunk_row = _in_progress_task_and_chunk(connection, project.id)
-			if task_row is None:
-				# An active release's tasks outrank a planned release's, and
-				# release position breaks ties before falling back to task order.
-				task_row = connection.execute(
-					f"SELECT {_TASK_COLUMNS_QUALIFIED} FROM tasks "
-					"LEFT JOIN releases ON releases.id = tasks.release_id "
-					"AND releases.project_id = tasks.project_id "
-					"WHERE tasks.project_id = ? "
-					"AND tasks.status IN ('ready', 'waiting', 'blocked', 'needs-decision') "
-					f"ORDER BY {_TASK_QUEUE_ORDER} LIMIT 1",
-					(project.id,),
-				).fetchone()
-				if task_row is not None:
-					chunk_row = _active_chunk(connection, task_row["id"])
-			dependency_ids = (
-				_dependency_ids(connection, task_row["id"])
-				if task_row is not None
-				else []
-			)
-			response = _task_response(
-				connection,
-				project,
-				task_row,
-				chunk_row,
-				"progress task list",
-				dependency_ids,
-			)
+			response, task_row, chunk_row = _selected_task_response(connection, project)
 		if not include_position_totals or task_row is None:
 			return response
 
@@ -651,6 +658,68 @@ class ReadStore(_StoreBase):
 			)
 
 		return response
+
+	def summary(self) -> list[dict[str, object]]:
+		"""List the current work for every stored project, sorted by name.
+
+		Each entry holds the project's `progress next` response plus its recorded
+		checkouts, the commit plan for the current task, counts of its other tasks
+		by status, and the next action to show. Works from any directory, because
+		it reads only the database.
+		"""
+		with self.database.connection() as connection:
+			projects = connection.execute(
+				"SELECT id, slug, name, created_at FROM projects ORDER BY name, id"
+			).fetchall()
+			results = []
+
+			for project_row in projects:
+				project = Project.from_row(project_row)
+				selection, task_row, _ = _selected_task_response(connection, project)
+
+				checkouts = connection.execute(
+					"SELECT path, last_seen_at FROM checkouts "
+					"WHERE project_id = ? ORDER BY path",
+					(project.id,),
+				).fetchall()
+				status_rows = connection.execute(
+					"SELECT status, COUNT(*) AS total FROM tasks "
+					"WHERE project_id = ? AND id != COALESCE(?, '') GROUP BY status",
+					(project.id, task_row["id"] if task_row is not None else None),
+				).fetchall()
+
+				commit_plan = None
+				if task_row is not None:
+					chunk_count = connection.execute(
+						"SELECT COUNT(*) AS total, "
+						"SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done "
+						"FROM chunks WHERE task_id = ?",
+						(task_row["id"],),
+					).fetchone()
+					if chunk_count["total"]:
+						commit_plan = {
+							"done": chunk_count["done"],
+							"total": chunk_count["total"],
+						}
+
+				task = selection["task"]
+				results.append(
+					{
+						**selection,
+						"checkouts": [dict(row) for row in checkouts],
+						"commit_plan": commit_plan,
+						"other_task_counts": {
+							row["status"]: row["total"] for row in status_rows
+						},
+						"next_action": (
+							task.get("status_reason") or task["title"]
+							if isinstance(task, dict)
+							else None
+						),
+					}
+				)
+
+			return results
 
 	def doctor(self, path: str | Path | None = None) -> dict[str, object]:
 		"""Report records with blank required-in-practice fields, including unfinished chunks without a review question."""

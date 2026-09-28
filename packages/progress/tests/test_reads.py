@@ -146,6 +146,47 @@ def test_next_returns_the_task_chunk_and_next_command(tmp_path: Path) -> None:
 	assert result["hint_command"] == f"progress chunk complete {CHUNK_A}"
 
 
+def test_summary_uses_the_next_selection_and_lists_every_project(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	second_project_id = "prj_" + "q" * 22
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(second_project_id, "empty", "Empty project", "2026-01-01T00:00:00+00:00"),
+		)
+		connection.execute(
+			"INSERT INTO checkouts (path, project_id, last_seen_at) VALUES (?, ?, ?)",
+			("/work/agents", PROJECT_ID, "2026-01-02T12:00:00+00:00"),
+		)
+		connection.execute(
+			"UPDATE tasks SET status_reason = ? WHERE id = ?",
+			("Finish the read query", TASK_A),
+		)
+
+	result = store.summary()
+
+	assert [item["project"]["name"] for item in result] == [
+		"Agent configuration",
+		"Empty project",
+	]
+	assert result[0]["task"]["id"] == store.next()["task"]["id"]
+	assert result[0]["chunk"]["id"] == CHUNK_A
+	assert result[0]["hint_command"] == f"progress chunk complete {CHUNK_A}"
+	assert result[0]["checkouts"] == [
+		{"path": "/work/agents", "last_seen_at": "2026-01-02T12:00:00+00:00"}
+	]
+	assert result[0]["commit_plan"] == {"done": 0, "total": 1}
+	assert result[0]["other_task_counts"] == {"ready": 1}
+	assert result[0]["release"]["id"] == RELEASE_A
+	assert result[0]["next_action"] == "Finish the read query"
+	assert result[1]["checkouts"] == []
+	assert result[1]["task"] is None
+	assert result[1]["commit_plan"] is None
+	assert result[1]["hint_command"] == "progress task list"
+
+
 def test_next_uses_live_totals_and_ranks_after_sibling_removals(
 	tmp_path: Path,
 ) -> None:

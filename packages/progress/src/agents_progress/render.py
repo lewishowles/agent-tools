@@ -2,6 +2,7 @@
 
 import re
 import textwrap
+from datetime import UTC, datetime
 
 from .style import (
 	divider as render_divider,
@@ -87,6 +88,8 @@ def render(command: str, data: object) -> str:
 		return _render_commands(data)
 	if command in {"next", "current"}:
 		return _render_next(data)
+	if command == "summary":
+		return _render_summary(data)
 	if command == "release get" and isinstance(data, dict):
 		return _render_release(data)
 	if command == "task get" and isinstance(data, dict):
@@ -667,6 +670,82 @@ def _render_next(data: object) -> str:
 						weight="normal",
 					)
 				)
+
+	return "\n\n".join(blocks)
+
+
+def _render_summary(data: object) -> str:
+	"""Show current work and recorded checkout paths for every stored project.
+
+	Finished tasks are left out of the task counts, which only show work that
+	remains. The JSON output still includes them.
+	"""
+	if not isinstance(data, list):
+		return str(data)
+	if not data:
+		return render_span("No projects.", "muted", weight="normal")
+
+	blocks = []
+	for item in data:
+		project = item["project"]
+		task = item["task"]
+		checkouts = item["checkouts"]
+		lines = [render_span(str(project["name"]), "accent", weight="bold")]
+
+		for row in checkouts:
+			last_seen = datetime.fromisoformat(row["last_seen_at"]).astimezone(UTC)
+			lines.append(
+				render_labelled_line(
+					"Checkout",
+					f"{row['path']} (last seen {last_seen:%Y-%m-%d %H:%M} UTC)",
+				)
+			)
+
+		if not checkouts:
+			lines.append(render_labelled_line("Checkouts", "none recorded"))
+
+		if isinstance(task, dict):
+			lines.append(render_labelled_line("Current task", str(task["title"])))
+			lines.append(
+				render_labelled_line("Status", str(task["status"]).replace("-", " "))
+			)
+			commit_plan = item["commit_plan"]
+			if isinstance(commit_plan, dict):
+				lines.append(
+					render_labelled_line(
+						"Commit plan",
+						f"{commit_plan['done']}/{commit_plan['total']} complete",
+					)
+				)
+		else:
+			lines.append(render_labelled_line("Current task", "none"))
+
+		counts = item["other_task_counts"]
+		count_parts = _status_count_parts(
+			counts,
+			("in-progress", "ready", "waiting", "blocked", "needs-decision"),
+		)
+		lines.append(
+			render_labelled_line(
+				"Other tasks" if isinstance(task, dict) else "Tasks",
+				" · ".join(count_parts) if count_parts else "none",
+			)
+		)
+		release = item["release"]
+		if isinstance(release, dict):
+			lines.append(render_labelled_line("Release", str(release["title"])))
+
+		# As in progress:check, a project with nothing to work on has no next action.
+		if isinstance(task, dict):
+			lines.append(
+				render_labelled_line(
+					"Next action",
+					textwrap.fill(str(item["next_action"]), _ROW_WRAP_WIDTH),
+				)
+			)
+			lines.append(render_labelled_line("Hint", str(item["hint_command"])))
+
+		blocks.append("\n".join(lines))
 
 	return "\n\n".join(blocks)
 
