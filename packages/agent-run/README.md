@@ -169,7 +169,17 @@ agent-run run --timeout 30 -- pytest
 agent-run run --cwd tools --timeout 10 --json -- ruff check
 agent-run run lint-changed --file src/main.py --file src/cli.py
 agent-run run lint-changed --glob 'src/**/*.py'
+agent-run again
+agent-run again RUN_ID --json
 ```
+
+`again` repeats the latest run in this repository, or the run with the given ID.
+Saved commands use their current arguments, working directory, capability and
+timeout. Recorded file targets are checked again; a timeout supplied only to the
+original `run` is not reused. Direct runs repeat their recorded arguments,
+working directory and timeout. Manual-only commands and browser runners are
+still refused. Runs recorded before agent-run stored command provenance cannot
+be repeated with `again`; use `run NAME` or `run -- ARGV` instead.
 
 The command's combined standard output and standard error is written to a
 private log file. Text output reports the exit status, duration, run ID, and log
@@ -223,6 +233,9 @@ agent-run show RUN_ID
 agent-run log RUN_ID
 agent-run failures RUN_ID
 ```
+
+Use `agent-run again [RUN_ID]` to run one of these commands again. See
+[Run commands](#run-commands) for what is reused.
 
 `show` returns the stored command, status, duration, and log path. `log`
 returns the complete saved log. `failures` runs the log through the matching

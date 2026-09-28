@@ -371,6 +371,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     run_parser.add_argument("name", nargs="?", help="Name of a stored command to run.")
 
+    again_parser = subparsers.add_parser(
+        "again",
+        help="Rerun the latest or a named past run.",
+        description="Rerun the latest or a named past run.",
+        usage="agent-run again [RUN_ID] [--json]",
+        add_help=False,
+        json_mode=json_mode,
+    )
+    again_parser.add_argument(
+        "--help",
+        "-h",
+        action="store_true",
+        dest="again_help",
+        help="Show this help message and exit.",
+    )
+    again_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Write one structured JSON result to standard output.",
+    )
+    again_parser.add_argument(
+        "run_id", nargs="?", help="Run ID to repeat (default: latest)."
+    )
+
     rename_parser = subparsers.add_parser(
         "rename",
         help="Rename a named project command.",
@@ -693,6 +718,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         return render_success(json_mode=False, text=run_help_text)
 
+    if parsed.command == "again" and parsed.again_help:
+        again_help_text = again_parser.format_help()
+
+        if parsed.json:
+            return render_success(json_mode=True, data={"help": again_help_text})
+
+        return render_success(json_mode=False, text=again_help_text)
+
     if parsed.command == "rename" and parsed.rename_help:
         rename_help_text = rename_parser.format_help()
 
@@ -849,242 +882,88 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "file-list capability"
             )
 
-        connection: sqlite3.Connection | None = None
-        log_path: Path | None = None
-        run_lock: RunLock | None = None
-        record: RunRecord | None = None
-        # Set once the command has ended, so a failed save afterwards keeps the
-        # running record and its log for prune instead of deleting them.
-        finalising = False
+        return _execute_run(
+            json_mode=parsed.json,
+            name=parsed.name,
+            direct_arguments=direct_arguments,
+            cwd=parsed.cwd,
+            timeout=parsed.timeout,
+            file_paths=parsed.file,
+            globs=parsed.glob,
+        )
+
+    if parsed.command == "again":
+        if parsed.run_id is not None and not parsed.run_id.strip():
+            again_parser.error(
+                "A run ID cannot be blank. Omit it to use the latest run, or run `agent-run runs` to list saved run IDs."
+            )
 
         try:
             repository = identify_repository()
-            database_path = resolve_database_path()
-            connection = connect_database(database_path)
-            timeout_seconds = parsed.timeout
-            resolved_file_paths: tuple[str, ...] = ()
-            run_id = uuid4().hex
-
-            if parsed.name is None:
-                relative_working_directory = normalise_working_directory(
-                    repository, parsed.cwd
-                )
-                command_arguments = tuple(direct_arguments)
-
-                if starts_browser_runner(command_arguments):
-                    return _manual_command_error(
-                        json_mode=parsed.json,
-                        argv=command_arguments,
-                        cwd=repository.root / relative_working_directory,
-                    )
-            else:
-                command = find_command(connection, repository, parsed.name)
-
-                # A manual-only command stops here, before file targets are resolved
-                # or a log is opened, so nothing runs and no run record is saved.
-                if command.manual:
-                    return _manual_command_error(
-                        json_mode=parsed.json,
-                        argv=command.argv,
-                        cwd=repository.root / command.working_directory,
-                        name=command.name,
-                    )
-
-                run_lock = acquire_run_lock(
-                    database_path,
-                    repository.id,
-                    command.name,
-                    run_id=run_id,
-                )
-
-                relative_working_directory = normalise_working_directory(
-                    repository, command.working_directory
-                )
-                if timeout_seconds is None:
-                    timeout_seconds = command.timeout_seconds
-
-                if parsed.file or parsed.glob:
-                    if command.capability != FILE_LIST_CAPABILITY:
-                        raise CommandError(
-                            f'Command "{command.name}" has capability '
-                            f'"{command.capability}"; use agent-run edit '
-                            f"{command.name} --capability file-list to accept file targets."
-                        )
-
-                    resolved_file_paths = resolve_file_targets(
-                        repository,
-                        repository.root / relative_working_directory,
-                        parsed.file,
-                        parsed.glob,
-                    )
-
-                command_arguments = command.argv + resolved_file_paths
-
-            if timeout_seconds is None:
-                timeout_seconds = DEFAULT_TIMEOUT_SECONDS
-
-            run_id, log_path = create_run_log(database_path, run_id=run_id)
-
-            started_at = datetime.now(timezone.utc).isoformat()
-            started_monotonic = time.monotonic()
-            interrupted = False
-            record = start_run(
-                connection,
-                run_id=run_id,
-                repository_id=repository.id,
-                argv=command_arguments,
-                working_directory=relative_working_directory,
-                timeout_seconds=timeout_seconds,
-                started_at=started_at,
-                log_path=log_path,
-                pid=os.getpid(),
-                command_name=parsed.name or "",
-                targets=resolved_file_paths,
-            )
-
+            connection = connect_database()
             try:
-                result = run_command(
-                    command_arguments,
-                    repository.root / relative_working_directory,
-                    timeout_seconds,
-                    log_path,
-                )
-            except (KeyboardInterrupt, TerminateRequested) as error:
-                interrupted = True
-                interrupt_signal = (
-                    signal.SIGTERM
-                    if isinstance(error, TerminateRequested)
-                    else signal.SIGINT
-                )
-                result = RunResult(
-                    argv=tuple(command_arguments),
-                    working_directory=(
-                        repository.root / relative_working_directory
-                    ).resolve(),
-                    exit_status=-interrupt_signal,
-                    timed_out=False,
-                    duration_seconds=time.monotonic() - started_monotonic,
-                    log_path=log_path,
-                )
+                record = _resolve_run(connection, repository.id, parsed.run_id)
 
-            finalising = True
-            record = finalise_run(
-                connection,
-                run_id=run_id,
-                duration_seconds=result.duration_seconds,
-                exit_status=result.exit_status,
-                timed_out=result.timed_out,
-            )
-        except RunBusyError as error:
-            return _busy_command_error(
-                json_mode=parsed.json,
-                name=parsed.name,
-                run_id=error.run_id,
-            )
+                if record.command_name is None or record.targets is None:
+                    return render_error(
+                        json_mode=parsed.json,
+                        code="usage",
+                        message=(
+                            "This run predates saved command records. Use "
+                            "agent-run run NAME or agent-run run -- ARGV."
+                        ),
+                    )
+
+                if record.command_name:
+                    try:
+                        find_command(connection, repository, record.command_name)
+                    except CommandNotFoundError as error:
+                        return render_error(
+                            json_mode=parsed.json,
+                            code="not-found",
+                            message=(
+                                f"{error} Use agent-run run -- ARGV to run "
+                                "the recorded arguments directly."
+                            ),
+                        )
+            finally:
+                connection.close()
         except RepositoryUninitialisedError as error:
             return _uninitialised_repository_error(json_mode=parsed.json, error=error)
-        except (RepositoryError, NewerSchemaError, OSError, sqlite3.Error) as error:
-            if not finalising and connection is not None and log_path is not None:
-                try:
-                    discard_run(connection, run_id, log_path)
-                except (OSError, sqlite3.Error):
-                    # Report the original startup error, not the cleanup failure.
-                    pass
-
+        except (RepositoryError, NewerSchemaError, sqlite3.Error) as error:
             return render_error(
                 json_mode=parsed.json,
                 code="environment",
                 message=str(error),
             )
-        except CommandNotFoundError as error:
+        except RunNotFoundError as error:
             return render_error(
                 json_mode=parsed.json,
                 code="not-found",
                 message=str(error),
             )
-        except (CommandError, ValueError) as error:
-            return render_error(
+
+        if record.command_name:
+            # The recorded targets are relative to the original run's working
+            # directory. Absolute paths still point at the same files if the saved
+            # command's directory has changed since, and they are checked again.
+            file_paths = tuple(
+                str((repository.root / record.working_directory / target).resolve())
+                for target in record.targets
+            )
+
+            return _execute_run(
                 json_mode=parsed.json,
-                code="usage",
-                message=str(error),
-            )
-        finally:
-            if run_lock is not None:
-                run_lock.release()
-
-            if connection is not None:
-                connection.close()
-
-        failure_message = None
-
-        if interrupted:
-            failure_message = "Command interrupted."
-        elif result.timed_out:
-            failure_message = (
-                f"Command killed after {_format_timeout(timeout_seconds)}."
-            )
-        elif result.exit_status != 0:
-            failure_message = f"Command exited with status {result.exit_status}."
-
-        if failure_message is None:
-            try:
-                log_text = record.log_path.read_bytes().decode(
-                    "utf-8", errors="replace"
-                )
-            except OSError:
-                summary = ["Output could not be read."]
-            else:
-                summary = summarise_success(result.argv, log_text)
-
-            data = _run_record(result, record, resolved_file_paths)
-            data["summary"] = summary
-            text = _format_run(result, record, summary)
-
-            if parsed.json:
-                return render_success(json_mode=True, data=data)
-
-            return render_success(json_mode=False, text=text)
-
-        failure_message = (
-            f"{failure_message} run ID: {record.run_id}; log path: {record.log_path}"
-        )
-        failure_data = _run_record(result, record, resolved_file_paths)
-        # Interrupted runs stop part-way, so their output is not read for failures.
-        failure_text = None
-
-        if not interrupted:
-            try:
-                log_text = record.log_path.read_bytes().decode(
-                    "utf-8", errors="replace"
-                )
-            except OSError:
-                failure_report = FailureReport(
-                    recognised=False,
-                    first=None,
-                    more=(),
-                    hidden_count=0,
-                    truncated=False,
-                    tail=(),
-                )
-            else:
-                failure_report = read_failure_report(result.argv, log_text)
-
-            failure_data["failure"] = _failure_report_record(failure_report)
-            failure_text = (
-                f"Error: {failure_message}\n\n{_format_failure_report(failure_report)}"
+                name=record.command_name,
+                file_paths=file_paths,
             )
 
-        exit_code = render_error(
+        return _execute_run(
             json_mode=parsed.json,
-            code="check-failed",
-            message=failure_message,
-            data=failure_data,
-            text=failure_text,
+            direct_arguments=record.argv,
+            cwd=record.working_directory,
+            timeout=record.timeout_seconds,
         )
-
-        # The shell convention for a process ended by a signal is 128 plus
-        # the signal number, so 130 for Ctrl+C and 143 for SIGTERM.
-        return 128 + interrupt_signal if interrupted else exit_code
 
     if parsed.command == "add":
         # The name is optional to argparse only so `add --help` reaches the help
@@ -1705,6 +1584,255 @@ def main(argv: Sequence[str] | None = None) -> int:
         return render_success(json_mode=False, text=text)
 
 
+def _execute_run(
+    *,
+    json_mode: bool,
+    name: str | None = None,
+    direct_arguments: Sequence[str] = (),
+    cwd: str | None = None,
+    timeout: float | None = None,
+    file_paths: Sequence[str] = (),
+    globs: Sequence[str] = (),
+) -> int:
+    """Run a command, record the run, and return the exit code for agent-run.
+
+    With a name, run that saved command from its stored working directory, with
+    any file targets added; cwd is ignored. Without a name, run
+    direct_arguments from cwd. The timeout falls back to the saved command's
+    timeout, then the default. Both run and again use this, so the
+    one-at-a-time lock and the manual-only and browser-runner refusals apply to
+    each.
+    """
+    connection: sqlite3.Connection | None = None
+    log_path: Path | None = None
+    run_lock: RunLock | None = None
+    record: RunRecord | None = None
+    # Set once the command has ended, so a failed save afterwards keeps the
+    # running record and its log for prune instead of deleting them.
+    finalising = False
+
+    try:
+        repository = identify_repository()
+        database_path = resolve_database_path()
+        connection = connect_database(database_path)
+        timeout_seconds = timeout
+        resolved_file_paths: tuple[str, ...] = ()
+        run_id = uuid4().hex
+
+        if name is None:
+            relative_working_directory = normalise_working_directory(repository, cwd)
+            command_arguments = tuple(direct_arguments)
+
+            if starts_browser_runner(command_arguments):
+                return _manual_command_error(
+                    json_mode=json_mode,
+                    argv=command_arguments,
+                    cwd=repository.root / relative_working_directory,
+                )
+        else:
+            command = find_command(connection, repository, name)
+
+            # A manual-only command stops here, before file targets are resolved
+            # or a log is opened, so nothing runs and no run record is saved.
+            if command.manual:
+                return _manual_command_error(
+                    json_mode=json_mode,
+                    argv=command.argv,
+                    cwd=repository.root / command.working_directory,
+                    name=command.name,
+                )
+
+            run_lock = acquire_run_lock(
+                database_path,
+                repository.id,
+                command.name,
+                run_id=run_id,
+            )
+
+            relative_working_directory = normalise_working_directory(
+                repository, command.working_directory
+            )
+            if timeout_seconds is None:
+                timeout_seconds = command.timeout_seconds
+
+            if file_paths or globs:
+                if command.capability != FILE_LIST_CAPABILITY:
+                    raise CommandError(
+                        f'Command "{command.name}" has capability '
+                        f'"{command.capability}"; use agent-run edit '
+                        f"{command.name} --capability file-list to accept file targets."
+                    )
+
+                resolved_file_paths = resolve_file_targets(
+                    repository,
+                    repository.root / relative_working_directory,
+                    file_paths,
+                    globs,
+                )
+
+            command_arguments = command.argv + resolved_file_paths
+
+        if timeout_seconds is None:
+            timeout_seconds = DEFAULT_TIMEOUT_SECONDS
+
+        run_id, log_path = create_run_log(database_path, run_id=run_id)
+
+        started_at = datetime.now(timezone.utc).isoformat()
+        started_monotonic = time.monotonic()
+        interrupted = False
+        record = start_run(
+            connection,
+            run_id=run_id,
+            repository_id=repository.id,
+            argv=command_arguments,
+            working_directory=relative_working_directory,
+            timeout_seconds=timeout_seconds,
+            started_at=started_at,
+            log_path=log_path,
+            pid=os.getpid(),
+            command_name=name or "",
+            targets=resolved_file_paths,
+        )
+
+        try:
+            result = run_command(
+                command_arguments,
+                repository.root / relative_working_directory,
+                timeout_seconds,
+                log_path,
+            )
+        except (KeyboardInterrupt, TerminateRequested) as error:
+            interrupted = True
+            interrupt_signal = (
+                signal.SIGTERM
+                if isinstance(error, TerminateRequested)
+                else signal.SIGINT
+            )
+            result = RunResult(
+                argv=tuple(command_arguments),
+                working_directory=(
+                    repository.root / relative_working_directory
+                ).resolve(),
+                exit_status=-interrupt_signal,
+                timed_out=False,
+                duration_seconds=time.monotonic() - started_monotonic,
+                log_path=log_path,
+            )
+
+        finalising = True
+        record = finalise_run(
+            connection,
+            run_id=run_id,
+            duration_seconds=result.duration_seconds,
+            exit_status=result.exit_status,
+            timed_out=result.timed_out,
+        )
+    except RunBusyError as error:
+        return _busy_command_error(
+            json_mode=json_mode,
+            name=name,
+            run_id=error.run_id,
+        )
+    except RepositoryUninitialisedError as error:
+        return _uninitialised_repository_error(json_mode=json_mode, error=error)
+    except (RepositoryError, NewerSchemaError, OSError, sqlite3.Error) as error:
+        if not finalising and connection is not None and log_path is not None:
+            try:
+                discard_run(connection, run_id, log_path)
+            except (OSError, sqlite3.Error):
+                # Report the original startup error, not the cleanup failure.
+                pass
+
+        return render_error(
+            json_mode=json_mode,
+            code="environment",
+            message=str(error),
+        )
+    except CommandNotFoundError as error:
+        return render_error(
+            json_mode=json_mode,
+            code="not-found",
+            message=str(error),
+        )
+    except (CommandError, ValueError) as error:
+        return render_error(
+            json_mode=json_mode,
+            code="usage",
+            message=str(error),
+        )
+    finally:
+        if run_lock is not None:
+            run_lock.release()
+
+        if connection is not None:
+            connection.close()
+
+    failure_message = None
+
+    if interrupted:
+        failure_message = "Command interrupted."
+    elif result.timed_out:
+        failure_message = f"Command killed after {_format_timeout(timeout_seconds)}."
+    elif result.exit_status != 0:
+        failure_message = f"Command exited with status {result.exit_status}."
+
+    if failure_message is None:
+        try:
+            log_text = record.log_path.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            summary = ["Output could not be read."]
+        else:
+            summary = summarise_success(result.argv, log_text)
+
+        data = _run_record(result, record, resolved_file_paths)
+        data["summary"] = summary
+        text = _format_run(result, record, summary)
+
+        if json_mode:
+            return render_success(json_mode=True, data=data)
+
+        return render_success(json_mode=False, text=text)
+
+    failure_message = (
+        f"{failure_message} run ID: {record.run_id}; log path: {record.log_path}"
+    )
+    failure_data = _run_record(result, record, resolved_file_paths)
+    # Interrupted runs stop part-way, so their output is not read for failures.
+    failure_text = None
+
+    if not interrupted:
+        try:
+            log_text = record.log_path.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            failure_report = FailureReport(
+                recognised=False,
+                first=None,
+                more=(),
+                hidden_count=0,
+                truncated=False,
+                tail=(),
+            )
+        else:
+            failure_report = read_failure_report(result.argv, log_text)
+
+        failure_data["failure"] = _failure_report_record(failure_report)
+        failure_text = (
+            f"Error: {failure_message}\n\n{_format_failure_report(failure_report)}"
+        )
+
+    exit_code = render_error(
+        json_mode=json_mode,
+        code="check-failed",
+        message=failure_message,
+        data=failure_data,
+        text=failure_text,
+    )
+
+    # The shell convention for a process ended by a signal is 128 plus
+    # the signal number, so 130 for Ctrl+C and 143 for SIGTERM.
+    return 128 + interrupt_signal if interrupted else exit_code
+
+
 def _resolve_run(
     connection: sqlite3.Connection, repository_id: str, run_id: str | None
 ) -> RunRecord:
@@ -1750,9 +1878,10 @@ def _manual_command_error(
     )
 
 
-def _busy_command_error(*, json_mode: bool, name: str, run_id: str) -> int:
-    """Render the refusal for a named command that is already running."""
-    message = f'Command "{name}" is already running (run ID: {run_id}).'
+def _busy_command_error(*, json_mode: bool, name: str | None, run_id: str) -> int:
+    """Render the refusal for a command that is already running."""
+    command_label = "This command" if name is None else f'Command "{name}"'
+    message = f"{command_label} is already running (run ID: {run_id})."
 
     return render_error(
         json_mode=json_mode,

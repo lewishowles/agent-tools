@@ -1816,6 +1816,288 @@ def test_cli_retrieval_without_an_id_reads_the_latest_run(
         assert "first" not in result["data"]["log"]
 
 
+def test_cli_again_repeats_the_latest_or_a_given_direct_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Direct reruns keep their arguments, directory and timeout."""
+    root = _initialise_repository(tmp_path / "repository")
+    (root / "tools").mkdir()
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    assert main(["run", "--cwd", "tools", "--timeout", "7", "--json", "--", "pwd"]) == 0
+    first = json.loads(capsys.readouterr().out)["data"]
+    assert main(["run", "--json", "--", "echo", "latest"]) == 0
+    latest = json.loads(capsys.readouterr().out)["data"]
+
+    assert main(["again", "--json"]) == 0
+    repeated_latest = json.loads(capsys.readouterr().out)["data"]
+    assert repeated_latest["run_id"] != latest["run_id"]
+    assert repeated_latest["argv"] == ["echo", "latest"]
+
+    assert main(["again", first["run_id"], "--json"]) == 0
+    repeated_first = json.loads(capsys.readouterr().out)["data"]
+    assert repeated_first["run_id"] != first["run_id"]
+    assert repeated_first["argv"] == ["pwd"]
+    assert repeated_first["working_directory"] == str(root / "tools")
+    assert main(["show", repeated_first["run_id"], "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["data"]["timeout_seconds"] == 7
+
+
+def test_cli_again_uses_the_current_saved_command_and_recorded_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A saved rerun uses the current command and the same target from any directory."""
+    root = _initialise_repository(tmp_path / "repository")
+    (root / "tools").mkdir()
+    (root / "other").mkdir()
+    (root / "src").mkdir()
+    (root / "src" / "one.py").write_text("one")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    assert (
+        main(
+            [
+                "add",
+                "check",
+                "--cwd",
+                "tools",
+                "--timeout",
+                "5",
+                "--capability",
+                "file-list",
+                "--",
+                "echo",
+                "old",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert (
+        main(["run", "check", "--file", "src/one.py", "--timeout", "2", "--json"]) == 0
+    )
+    original = json.loads(capsys.readouterr().out)["data"]
+    assert original["files"] == ["../src/one.py"]
+
+    assert (
+        main(["edit", "check", "--cwd", ".", "--timeout", "8", "--", "echo", "new"])
+        == 0
+    )
+    capsys.readouterr()
+    monkeypatch.chdir(root / "other")
+
+    assert main(["again", original["run_id"], "--json"]) == 0
+    repeated = json.loads(capsys.readouterr().out)["data"]
+    assert repeated["run_id"] != original["run_id"]
+    assert repeated["argv"] == ["echo", "new", "src/one.py"]
+    assert repeated["files"] == ["src/one.py"]
+    assert repeated["working_directory"] == str(root)
+    assert main(["show", repeated["run_id"], "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["data"]["timeout_seconds"] == 8
+
+
+def test_cli_again_keeps_saved_command_refusals(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A saved rerun retains the lock, manual and target capability checks."""
+    root = _initialise_repository(tmp_path / "repository")
+    (root / "file.py").write_text("file")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    assert main(["add", "check", "--capability", "file-list", "--", "echo"]) == 0
+    capsys.readouterr()
+    assert main(["run", "check", "--file", "file.py", "--json"]) == 0
+    run_id = json.loads(capsys.readouterr().out)["data"]["run_id"]
+
+    active_lock = acquire_run_lock(
+        database_path, identify_repository().id, "check", run_id="active"
+    )
+    try:
+        assert main(["again", run_id, "--json"]) == 1
+        assert json.loads(capsys.readouterr().out)["error"]["code"] == "busy"
+    finally:
+        active_lock.release()
+
+    assert main(["edit", "check", "--manual"]) == 0
+    capsys.readouterr()
+    assert main(["again", run_id, "--json"]) == 1
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "manual"
+
+    assert main(["edit", "check", "--no-manual", "--capability", "none"]) == 0
+    capsys.readouterr()
+    assert main(["again", run_id, "--json"]) == 2
+    assert (
+        'capability "none"' in json.loads(capsys.readouterr().out)["error"]["message"]
+    )
+
+    assert main(["edit", "check", "--capability", "file-list"]) == 0
+    capsys.readouterr()
+    (root / "file.py").rename(root / "moved.py")
+    assert main(["again", run_id, "--json"]) == 2
+    assert "does not exist" in json.loads(capsys.readouterr().out)["error"]["message"]
+
+    connection = connect_database(database_path)
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+    finally:
+        connection.close()
+
+
+def test_cli_again_refuses_a_direct_browser_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A direct rerun still refuses recorded browser-runner arguments."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    assert main(["run", "--json", "--", "echo", "safe"]) == 0
+    run_id = json.loads(capsys.readouterr().out)["data"]["run_id"]
+
+    connection = connect_database(tmp_path / "agent-run.db")
+    try:
+        connection.execute(
+            "UPDATE runs SET argv = ? WHERE run_id = ?",
+            ('["playwright", "test"]', run_id),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    assert main(["again", run_id, "--json"]) == 1
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "manual"
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_cli_again_reports_a_removed_saved_command(
+    json_mode: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A missing saved command reports how to run its recorded arguments."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    assert main(["add", "check", "--", "echo", "ok"]) == 0
+    capsys.readouterr()
+    assert main(["run", "check", "--json"]) == 0
+    run_id = json.loads(capsys.readouterr().out)["data"]["run_id"]
+    assert main(["remove", "check"]) == 0
+    capsys.readouterr()
+
+    arguments = ["again", run_id, "--json"] if json_mode else ["again", run_id]
+    assert main(arguments) == 1
+    captured = capsys.readouterr()
+    message = (
+        json.loads(captured.out)["error"]["message"] if json_mode else captured.err
+    )
+    assert 'Command "check" was not found.' in message
+    assert "agent-run run -- ARGV" in message
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_cli_again_refuses_a_run_with_unknown_provenance(
+    json_mode: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A run recorded before saved-command names were stored is refused."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+    connection = connect_database(database_path)
+    try:
+        connection.execute(
+            """
+            INSERT INTO runs (
+                run_id, repository_id, argv, working_directory,
+                timeout_seconds, started_at, duration_seconds, exit_status,
+                timed_out, log_path, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "older-run",
+                identify_repository().id,
+                '["echo"]',
+                ".",
+                5,
+                "2026-01-01T00:00:00+00:00",
+                0.25,
+                0,
+                0,
+                str(tmp_path / "older.log"),
+                "finished",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    arguments = (
+        ["again", "older-run", "--json"] if json_mode else ["again", "older-run"]
+    )
+    assert main(arguments) == 2
+    captured = capsys.readouterr()
+    message = (
+        json.loads(captured.out)["error"]["message"] if json_mode else captured.err
+    )
+    assert "agent-run run NAME" in message
+    assert "agent-run run -- ARGV" in message
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_cli_again_reports_no_runs(
+    json_mode: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """With no runs in the repository, again reports the same error as show."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    assert main(["again", "--json"] if json_mode else ["again"]) == 1
+    captured = capsys.readouterr()
+    message = (
+        json.loads(captured.out)["error"]["message"] if json_mode else captured.err
+    )
+    assert "No runs recorded in this repository." in message
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_cli_again_rejects_a_blank_run_id(
+    json_mode: bool,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An explicitly blank ID is an error rather than a request for the latest run."""
+    arguments = ["again", " ", "--json"] if json_mode else ["again", " "]
+
+    with pytest.raises(SystemExit) as error:
+        main(arguments)
+
+    captured = capsys.readouterr()
+    message = (
+        json.loads(captured.out)["error"]["message"] if json_mode else captured.err
+    )
+    assert error.value.code == 2
+    assert "A run ID cannot be blank." in message
+
+
 @pytest.mark.parametrize("command", ["show", "log", "failures"])
 def test_cli_retrieval_without_an_id_ignores_newer_runs_in_another_repository(
     command: str,
