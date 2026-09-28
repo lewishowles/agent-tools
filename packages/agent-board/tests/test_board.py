@@ -159,6 +159,91 @@ def test_active_partial_team_keeps_suffix() -> None:
     assert render_board(agents)[1] == "▶ implementing  Agent-Tools (partial team)"
 
 
+@pytest.mark.parametrize(
+    ("tags", "expected_row"),
+    [
+        (
+            ("Agent-Tools-learner-claude", "Agent-Tools-scout-learn-claude"),
+            "▶ learning  Agent-Tools · learner-claude",
+        ),
+        (
+            (
+                "Agent-Tools-insights-review-peer-pair-1",
+                "Agent-Tools-scout-review-claude",
+            ),
+            "◎ reviewing  Agent-Tools · insights-review",
+        ),
+    ],
+)
+def test_learner_and_review_team_roles_share_one_complete_row(
+    tags: tuple[str, str], expected_row: str
+) -> None:
+    """Learner and review workers share a row with their matching scout."""
+    agents = [agent(tags[0], None, status="active"), agent(tags[1], None)]
+
+    assert render_board(agents) == ["", expected_row]
+
+
+@pytest.mark.parametrize(
+    ("tag", "expected_row"),
+    [
+        (
+            "Agent-Tools-learner-claude",
+            "▶ learning  Agent-Tools · learner-claude (partial team)",
+        ),
+        (
+            "Agent-Tools-scout-learn-claude",
+            "◌ checking  Agent-Tools · learner-claude (partial team)",
+        ),
+        (
+            "Agent-Tools-insights-review-peer-pair-1",
+            "◎ reviewing  Agent-Tools · insights-review (partial team)",
+        ),
+        (
+            "Agent-Tools-scout-review-claude",
+            "◌ checking  Agent-Tools · insights-review (partial team)",
+        ),
+    ],
+)
+def test_learner_and_review_team_without_matching_role_is_partial(
+    tag: str, expected_row: str
+) -> None:
+    """Each half of a learner or review team stays marked as incomplete."""
+    agents = [agent(tag, None, status="active")]
+
+    assert render_board(agents) == ["", expected_row]
+
+
+def test_standard_team_with_learner_in_its_label_stays_complete() -> None:
+    """A standard role suffix takes precedence over learner text in the label."""
+    agents = [
+        agent("Agent-Tools-learner-ui", "orchestrator"),
+        agent("Agent-Tools-learner-ui", "implementer"),
+    ]
+
+    assert render_board(agents) == ["", "● needs you  Agent-Tools · learner-ui"]
+
+
+def test_repository_name_containing_learner_keeps_standard_team_rule() -> None:
+    """A repository name cannot turn an ordinary team into a learner team."""
+    agents = [
+        agent("e-learner-app-board", "orchestrator", directory="/work/e-learner-app"),
+        agent("e-learner-app-board", "implementer", directory="/work/e-learner-app"),
+    ]
+
+    assert render_board(agents) == ["", "● needs you  e-learner-app · board"]
+
+
+def test_planning_scout_keeps_its_own_non_review_row() -> None:
+    """A planning scout does not join an insights review team."""
+    agents = [agent("Agent-Tools-scout-peer-claude", None, status="active")]
+
+    assert render_board(agents) == [
+        "",
+        "○ working  Agent-Tools · scout-peer-claude (partial team)",
+    ]
+
+
 def test_single_live_agent_joins_dimmed_working_group() -> None:
     """An incomplete one-agent team is marked as partial and dimmed."""
     agents = [

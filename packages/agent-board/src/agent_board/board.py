@@ -8,6 +8,7 @@ from pathlib import Path
 # with an active agent names what a working team is doing.
 ACTIVITY_LABELS = {
     "implementer": "implementing",
+    "learner": "learning",
     "reviewer": "reviewing",
     "scout": "checking",
     "orchestrator": "coordinating",
@@ -22,6 +23,7 @@ STATUS_SYMBOLS = {
     "needs you": "●",
     "blocked": "✕",
     "implementing": "▶",
+    "learning": "▶",
     "reviewing": "◎",
     "checking": "◌",
     "coordinating": "○",
@@ -68,22 +70,31 @@ def render_board(agents: list[dict], *, colour: bool = False) -> list[str]:
         tag = agent.get("tag")
 
         if tag:
-            prefix, role = _split_tag(tag)
+            prefix, role, kind = _split_tag(tag)
         else:
             # An untagged agent forms its own team so it stays on the board.
-            prefix, role = agent["name"], None
+            prefix, role, kind = agent["name"], None, "standard"
 
-        teams[prefix].append((agent, role))
+        teams[(prefix, kind)].append((agent, role))
 
     needs_you = []
     working = []
 
-    for prefix, members in teams.items():
+    for (prefix, kind), members in teams.items():
         label = _team_label(prefix, members)
         statuses = [agent["status"] for agent, _ in members]
-        has_orchestrator = any(role == "orchestrator" for _, role in members)
-        has_worker = any(role != "orchestrator" for _, role in members)
-        partly_running = not (has_orchestrator and has_worker)
+        roles = {role for _, role in members}
+
+        # A learner or review team has no orchestrator, so it counts as running
+        # once both halves of its pair are live.
+        if kind == "review":
+            partly_running = not {"reviewer", "scout"} <= roles
+        elif kind == "learner":
+            partly_running = not {"learner", "scout"} <= roles
+        else:
+            has_orchestrator = any(role == "orchestrator" for _, role in members)
+            has_worker = any(role != "orchestrator" for _, role in members)
+            partly_running = not (has_orchestrator and has_worker)
 
         # Only one reason is shown per team; a blocked agent matters most.
         if "blocked" in statuses:
@@ -176,17 +187,40 @@ def _normalise(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "-", value).rstrip("-")
 
 
-def _split_tag(tag: str) -> tuple[str, str | None]:
-    """Split a tag into its team prefix and role.
+def _split_tag(tag: str) -> tuple[str, str | None, str]:
+    """Split a tag into its team prefix, role, and team kind.
 
-    A tag that does not end in a known role comes back whole, with no role.
+    A tag ending in a standard role is read first, so a standard team whose
+    label contains "learner" is not mistaken for a learner pair. Both halves
+    of a learner or insights review pair share one prefix. Any other tag
+    stays whole in a standard team, with no role.
     """
     prefix, separator, role = tag.rpartition("-")
 
     if separator and role in ROLES:
-        return prefix, role
+        return prefix, role, "standard"
 
-    return tag, None
+    prefix, separator, provider = tag.rpartition("-scout-learn-")
+
+    if prefix and separator and provider and "-" not in provider:
+        return f"{prefix}-learner-{provider}", "scout", "learner"
+
+    prefix, separator, provider = tag.rpartition("-learner-")
+
+    if prefix and separator and provider and "-" not in provider:
+        return tag, "learner", "learner"
+
+    prefix, separator, peer = tag.rpartition("-insights-review-peer-")
+
+    if prefix and separator and peer:
+        return f"{prefix}-insights-review", "reviewer", "review"
+
+    prefix, separator, provider = tag.rpartition("-scout-review-")
+
+    if prefix and separator and provider and "-" not in provider:
+        return f"{prefix}-insights-review", "scout", "review"
+
+    return tag, None, "standard"
 
 
 def _team_label(prefix: str, members: list[tuple[dict, str | None]]) -> str:
