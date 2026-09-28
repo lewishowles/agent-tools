@@ -410,6 +410,20 @@ def _selected_task_response(
 	return response, task_row, chunk_row
 
 
+def _add_chunk_position_totals(
+	response: dict[str, object], chunk_row: sqlite3.Row
+) -> None:
+	"""Add the chunk's 1-based position and its task's chunk count to the response.
+
+	The chunk must belong to the task in the response.
+	"""
+	chunks = response["task"]["chunks"]
+	response["chunk_rank"] = next(
+		rank for rank, chunk in enumerate(chunks, 1) if chunk["id"] == chunk_row["id"]
+	)
+	response["chunk_total"] = len(chunks)
+
+
 def _active_chunk(connection: sqlite3.Connection, task_id: str) -> sqlite3.Row | None:
 	"""Fetch the first active chunk for a task."""
 	return connection.execute(
@@ -634,7 +648,8 @@ class ReadStore(_StoreBase):
 		"""Return the next queued task, its active chunk, and a next-command hint.
 
 		Set include_position_totals for human display: the response then
-		also carries task_total and, when a chunk is active, chunk_total.
+		also carries task_rank and task_total and, when a chunk is active,
+		chunk_rank and chunk_total.
 		"""
 		project = self.current_project(path)
 
@@ -650,12 +665,7 @@ class ReadStore(_StoreBase):
 			task_row["release_id"], path
 		)
 		if chunk_row is not None:
-			response["chunk_rank"] = self.chunk_rank_for_task(
-				chunk_row["id"], chunk_row["task_id"], path
-			)
-			response["chunk_total"] = self.chunk_count_for_task(
-				chunk_row["task_id"], path
-			)
+			_add_chunk_position_totals(response, chunk_row)
 
 		return response
 
@@ -663,10 +673,11 @@ class ReadStore(_StoreBase):
 		"""List the current work for every stored project, sorted by name.
 
 		Each entry holds the project's `progress next` response plus its recorded
-		checkouts, the commit plan for the current task, counts of its other tasks
-		by status, and the next action to show. Works from any directory, because
-		it reads only the database. A checkout is marked stale when its recorded
-		path no longer exists on disk.
+		checkouts, the active chunk's position in its task, the commit plan for
+		the current task, counts of its other tasks by status, and the next
+		action to show. Works from any directory, because it reads only the
+		database. A checkout is marked stale when its recorded path no longer
+		exists on disk.
 		"""
 		with self.database.connection() as connection:
 			projects = connection.execute(
@@ -676,7 +687,11 @@ class ReadStore(_StoreBase):
 
 			for project_row in projects:
 				project = Project.from_row(project_row)
-				selection, task_row, _ = _selected_task_response(connection, project)
+				selection, task_row, chunk_row = _selected_task_response(
+					connection, project
+				)
+				if chunk_row is not None:
+					_add_chunk_position_totals(selection, chunk_row)
 
 				checkouts = connection.execute(
 					"SELECT path, last_seen_at FROM checkouts "
@@ -1284,47 +1299,6 @@ class ReadStore(_StoreBase):
 			"status_counts": status_counts,
 			"next_chunk": next_active or next_pending,
 		}
-
-	def chunk_count_for_task(self, task_id: str, path: str | Path | None = None) -> int:
-		"""Count one task's chunks, scoped to the current project via its parent task."""
-		project = self.current_project(path)
-
-		with self.database.connection() as connection:
-			row = connection.execute(
-				"SELECT COUNT(*) AS total FROM chunks "
-				"WHERE task_id = ? AND EXISTS ("
-				"SELECT 1 FROM tasks WHERE tasks.id = chunks.task_id "
-				"AND tasks.project_id = ?)",
-				(task_id, project.id),
-			).fetchone()
-
-		return int(row["total"])
-
-	def chunk_rank_for_task(
-		self,
-		chunk_id: str,
-		task_id: str,
-		path: str | Path | None = None,
-	) -> int:
-		"""Rank a chunk 1-based among its task's chunks, ordered by position then id.
-
-		Scoped to the current project via its parent task, same as chunk_count_for_task.
-		"""
-		project = self.current_project(path)
-
-		with self.database.connection() as connection:
-			row = connection.execute(
-				"SELECT position_rank FROM ("
-				"SELECT id, ROW_NUMBER() OVER (ORDER BY position, id) AS position_rank "
-				"FROM chunks WHERE task_id = ? AND EXISTS ("
-				"SELECT 1 FROM tasks WHERE tasks.id = chunks.task_id "
-				"AND tasks.project_id = ?"
-				")"
-				") WHERE id = ?",
-				(task_id, project.id, chunk_id),
-			).fetchone()
-
-		return int(row["position_rank"])
 
 	def discovery_list(
 		self,

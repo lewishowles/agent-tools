@@ -151,6 +151,7 @@ def test_summary_uses_the_next_selection_and_lists_every_project(
 ) -> None:
 	store = _seed_store(tmp_path)
 	second_project_id = "prj_" + "q" * 22
+	completed_chunk_id = "chk_" + "b" * 22
 	live_checkout = tmp_path / "agents"
 	live_checkout.mkdir()
 	stale_checkout = tmp_path / "missing"
@@ -171,8 +172,25 @@ def test_summary_uses_the_next_selection_and_lists_every_project(
 			"UPDATE tasks SET status_reason = ? WHERE id = ?",
 			("Finish the read query", TASK_A),
 		)
+		connection.execute(
+			"INSERT INTO chunks (id, task_id, position, title, description, status, "
+			"started_at, completed_at, review_question) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			(
+				completed_chunk_id,
+				TASK_A,
+				2,
+				"Earlier chunk",
+				"Completed before the active chunk.",
+				"done",
+				"2026-01-01T00:00:00+00:00",
+				"2026-01-01T01:00:00+00:00",
+				"Was the earlier work reviewed?",
+			),
+		)
+		connection.execute("UPDATE chunks SET position = 3 WHERE id = ?", (CHUNK_A,))
 
 	result = store.summary()
+	next_result = store.next(include_position_totals=True)
 
 	assert [item["project"]["name"] for item in result] == [
 		"Agent configuration",
@@ -180,6 +198,9 @@ def test_summary_uses_the_next_selection_and_lists_every_project(
 	]
 	assert result[0]["task"]["id"] == store.next()["task"]["id"]
 	assert result[0]["chunk"]["id"] == CHUNK_A
+	assert result[0]["chunk_rank"] == next_result["chunk_rank"] == 2
+	assert result[0]["chunk_total"] == next_result["chunk_total"] == 2
+	assert "task_total" not in result[0]
 	assert result[0]["hint_command"] == f"progress chunk complete {CHUNK_A}"
 	assert result[0]["checkouts"] == [
 		{
@@ -193,12 +214,14 @@ def test_summary_uses_the_next_selection_and_lists_every_project(
 			"stale": True,
 		},
 	]
-	assert result[0]["commit_plan"] == {"done": 0, "total": 1}
+	assert result[0]["commit_plan"] == {"done": 1, "total": 2}
 	assert result[0]["other_task_counts"] == {"ready": 1}
 	assert result[0]["release"]["id"] == RELEASE_A
 	assert result[0]["next_action"] == "Finish the read query"
 	assert result[1]["checkouts"] == []
 	assert result[1]["task"] is None
+	assert "chunk_rank" not in result[1]
+	assert "chunk_total" not in result[1]
 	assert result[1]["commit_plan"] is None
 	assert result[1]["hint_command"] == "progress task list"
 
@@ -245,7 +268,6 @@ def test_next_uses_live_totals_and_ranks_after_sibling_removals(
 	writer.chunk_start(third_chunk["id"])
 
 	assert store.task_count_for_release(RELEASE_A) == 2
-	assert store.chunk_count_for_task(task["id"]) == 2
 
 	result = store.next(include_position_totals=True)
 
