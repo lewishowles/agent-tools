@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from agents_progress import projects as projects_module
 from agents_progress.database import Database
 from agents_progress.errors import (
 	NotAProjectError,
@@ -107,6 +108,97 @@ def test_non_git_paths_and_attach_validation_are_explicit(tmp_path) -> None:
 
 	with pytest.raises(NotFoundError):
 		store.attach(generate_object_id(PROJECT_PREFIX), tmp_path)
+
+
+def test_record_checkout_tracks_each_root_and_moves_a_rebound_path(
+	tmp_path, monkeypatch
+) -> None:
+	first_repository = _git_repository(tmp_path / "first")
+	second_repository = _git_repository(tmp_path / "second")
+	third_repository = _git_repository(tmp_path / "third")
+	(second_repository / "src").mkdir()
+	store = ProjectStore(Database(tmp_path / "progress.db"))
+	first_project, _ = store.init("first", "First project", first_repository)
+	second_project, _ = store.init("second", "Second project", third_repository)
+	store.attach(first_project.id, second_repository)
+	timestamps = iter(
+		[
+			"2026-01-01T00:00:00+00:00",
+			"2026-01-02T00:00:00+00:00",
+			"2026-01-03T00:00:00+00:00",
+			"2026-01-04T00:00:00+00:00",
+		]
+	)
+	monkeypatch.setattr(projects_module, "utc_timestamp", lambda: next(timestamps))
+
+	store.record_checkout(first_repository)
+	store.record_checkout(second_repository / "src")
+	store.record_checkout(second_repository)
+	store.attach(second_project.id, second_repository)
+	store.record_checkout(second_repository)
+
+	with store.database.connection() as connection:
+		rows = connection.execute(
+			"SELECT path, project_id, last_seen_at FROM checkouts ORDER BY path"
+		).fetchall()
+
+	assert [tuple(row) for row in rows] == [
+		(str(first_repository), first_project.id, "2026-01-01T00:00:00+00:00"),
+		(str(second_repository), second_project.id, "2026-01-04T00:00:00+00:00"),
+	]
+
+
+def test_record_checkout_tracks_a_linked_worktree_for_the_same_project(
+	tmp_path,
+) -> None:
+	repository = _git_repository(tmp_path / "repository")
+	store = ProjectStore(Database(tmp_path / "progress.db"))
+	project, _ = store.init("agents", "Agent configuration", repository)
+	subprocess.run(
+		[
+			"git",
+			"-C",
+			str(repository),
+			"-c",
+			"user.name=Test",
+			"-c",
+			"user.email=test@example.com",
+			"commit",
+			"--quiet",
+			"--allow-empty",
+			"-m",
+			"Initial commit",
+		],
+		check=True,
+	)
+	worktree = tmp_path / "linked-worktree"
+	subprocess.run(
+		["git", "-C", str(repository), "worktree", "add", "--detach", str(worktree)],
+		capture_output=True,
+		check=True,
+	)
+	(worktree / "src").mkdir()
+
+	store.record_checkout(repository)
+	store.record_checkout(worktree / "src")
+
+	with store.database.connection() as connection:
+		rows = connection.execute("SELECT path, project_id FROM checkouts").fetchall()
+
+	assert {tuple(row) for row in rows} == {
+		(str(repository), project.id),
+		(str(worktree), project.id),
+	}
+
+
+def test_record_checkout_skips_an_unbound_repository(tmp_path) -> None:
+	repository = _git_repository(tmp_path / "repository")
+	store = ProjectStore(Database(tmp_path / "progress.db"))
+
+	store.record_checkout(repository)
+
+	with store.database.connection() as connection:
+		assert connection.execute("SELECT COUNT(*) FROM checkouts").fetchone()[0] == 0
 
 
 class _FakeRepository:

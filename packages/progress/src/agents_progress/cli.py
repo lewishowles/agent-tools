@@ -6,6 +6,7 @@ import json
 import re
 import sys
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TextIO
 
@@ -1529,7 +1530,13 @@ def _run_command(
 	if handler is None:
 		raise CliUsageError("unknown progress command")
 
-	data, command = handler()
+	try:
+		data, command = handler()
+	finally:
+		# Records where progress ran, even when the command fails. A failure to record is
+		# ignored so that it never changes the command's result.
+		with suppress(Exception):
+			ProjectStore(database).record_checkout()
 
 	return data, command
 

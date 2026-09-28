@@ -844,6 +844,9 @@ def test_write_commands_dispatch_to_the_matching_store_method(
 		def __init__(self, database) -> None:
 			pass
 
+		def record_checkout(self) -> None:
+			pass
+
 		def __getattr__(self, name):
 			def handler(*arguments, **keyword_arguments):
 				calls.append(("project", name))
@@ -5410,3 +5413,71 @@ def test_project_init_reports_the_existing_project(
 		assert existing_output.out.strip().endswith(current_output.out.strip())
 		assert "already_initialised" not in existing_output.out
 		assert "Already initialised:" not in existing_output.out
+
+
+def test_dispatch_records_project_commands_once_and_skips_help_version_and_command_list(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+	monkeypatch.chdir(tmp_path)
+	database = tmp_path / "progress.db"
+	arguments = ["--database", str(database), "--json"]
+
+	assert (
+		cli.main(
+			["project", "init", "--slug", "agents", "--name", "Agents", *arguments]
+		)
+		== 0
+	)
+	capsys.readouterr()
+	with Database(database).connection() as connection:
+		row = connection.execute("SELECT path, project_id FROM checkouts").fetchone()
+		assert row is not None
+		assert row["path"] == str(tmp_path)
+		assert row["project_id"] == ProjectStore(Database(database)).current().id
+
+	with pytest.MonkeyPatch.context() as patch:
+		calls = []
+		patch.setattr(ProjectStore, "record_checkout", lambda self: calls.append(True))
+		assert cli.main(["project", "current", *arguments]) == 0
+		assert cli.main(["task", "get", "tsk_" + "a" * 22, *arguments]) == 1
+		assert calls == [True, True]
+		capsys.readouterr()
+
+		assert cli.main(["--version"]) == 0
+		assert cli.main(["commands", *arguments]) == 0
+		assert cli.main(["project"]) == 0
+		assert calls == [True, True]
+
+
+def test_checkout_recording_failure_does_not_change_command_result(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+	monkeypatch.chdir(tmp_path)
+	database = tmp_path / "progress.db"
+	assert (
+		cli.main(
+			[
+				"project",
+				"init",
+				"--slug",
+				"agents",
+				"--name",
+				"Agents",
+				"--database",
+				str(database),
+				"--json",
+			]
+		)
+		== 0
+	)
+	capsys.readouterr()
+
+	def fail_recording(self) -> None:
+		raise RuntimeError("checkout write failed")
+
+	monkeypatch.setattr(ProjectStore, "record_checkout", fail_recording)
+
+	assert cli.main(["project", "current", "--database", str(database), "--json"]) == 0
+	assert json.loads(capsys.readouterr().out)["data"]["slug"] == "agents"

@@ -195,6 +195,31 @@ class ProjectStore:
 
 			return self._resolve_bound_project(binding)
 
+	def record_checkout(self, path: str | Path | None = None) -> None:
+		"""Record the working tree root and the current time against the repository's bound project.
+
+		Does nothing when the repository has no binding. A path already recorded under another
+		project moves to the bound project, because the repository's binding is authoritative.
+		"""
+		with self._repository(path) as repository:
+			root = repository.root()
+			binding = repository.get_binding()
+			if binding is None:
+				return
+
+			project = self._resolve_bound_project(binding)
+			with self.database.transaction() as connection:
+				connection.execute(
+					"""
+					INSERT INTO checkouts (path, project_id, last_seen_at)
+					VALUES (?, ?, ?)
+					ON CONFLICT (path) DO UPDATE SET
+						project_id = excluded.project_id,
+						last_seen_at = excluded.last_seen_at
+					""",
+					(str(root), project.id, utc_timestamp()),
+				)
+
 	def _resolve_bound_project(self, binding: str) -> Project:
 		"""Resolve binding to its project, raising OrphanedProjectError if it's malformed or has no matching row."""
 		try:

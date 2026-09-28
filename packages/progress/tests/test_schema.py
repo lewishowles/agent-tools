@@ -198,6 +198,7 @@ def test_first_connection_creates_the_schema_and_sqlite_safety_settings(
 			"chunks",
 			"notes",
 			"context",
+			"checkouts",
 			"schema_migrations",
 		}.issubset(tables)
 		assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
@@ -330,7 +331,7 @@ def test_version_seven_migration_gives_existing_chunks_an_empty_review_question(
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 7
+			== schema.SCHEMA_VERSION
 		)
 		assert tuple(
 			connection.execute(
@@ -338,6 +339,40 @@ def test_version_seven_migration_gives_existing_chunks_an_empty_review_question(
 				(chunk_id,),
 			).fetchone()
 		) == ("Description", None)
+
+
+def test_version_eight_migration_adds_checkout_tracking_to_an_existing_database(
+	tmp_path,
+) -> None:
+	database_path = tmp_path / "progress.db"
+	with sqlite3.connect(database_path) as connection:
+		for version in range(1, 8):
+			schema.MIGRATIONS[version](connection)
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.execute(
+			"INSERT INTO schema_migrations VALUES (7, '2026-01-01T00:00:00+00:00')"
+		)
+		project_id = generate_object_id(PROJECT_PREFIX)
+		_insert_project(connection, project_id)
+
+	with Database(database_path).connection() as connection:
+		connection.execute(
+			"INSERT INTO checkouts (path, project_id, last_seen_at) VALUES (?, ?, ?)",
+			("/checkout", project_id, "2026-01-01T00:00:00+00:00"),
+		)
+		assert (
+			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
+				0
+			]
+			== 8
+		)
+		assert tuple(
+			connection.execute(
+				"SELECT project_id, last_seen_at FROM checkouts"
+			).fetchone()
+		) == (project_id, "2026-01-01T00:00:00+00:00")
 
 
 def test_failed_version_six_migration_leaves_version_five_intact(
