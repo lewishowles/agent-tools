@@ -718,6 +718,23 @@ _COMMAND_SPECS = (
 		destination="chunk_command",
 	),
 	_CommandSpec(
+		"inbox",
+		"save and list notes awaiting review",
+		children=(
+			_CommandSpec(
+				"add",
+				"add an inbox note",
+				arguments=(_argument("text", nargs="+"),),
+			),
+			_CommandSpec(
+				"list",
+				"list inbox notes, oldest first",
+				page_options=True,
+			),
+		),
+		destination="inbox_command",
+	),
+	_CommandSpec(
 		"discovery",
 		"record a discovery note",
 		children=(
@@ -1155,6 +1172,16 @@ def main(argv: list[str] | None = None) -> int:
 	arguments = list(sys.argv[1:] if argv is None else argv)
 	json_mode = "--json" in arguments
 
+	# A bare `progress inbox` lists notes, so a quick look needs no subcommand.
+	# Adding `list` to the arguments lets the list options, such as --limit,
+	# still parse. Help requests keep the normal group help. The last `inbox`
+	# is the command, since an earlier one can only be a --database value.
+	if _command_words(arguments) == ["inbox"] and not {"-h", "--help"}.intersection(
+		arguments
+	):
+		inbox_index = len(arguments) - 1 - arguments[::-1].index("inbox")
+		arguments.insert(inbox_index + 1, "list")
+
 	try:
 		parser = build_parser()
 		if _should_prompt_add_arguments(arguments):
@@ -1496,6 +1523,14 @@ def _run_command(
 			"chunk rename",
 		),
 		("chunk", "edit"): lambda: _run_chunk_edit(args, database),
+		("inbox", "add"): lambda: (
+			WriteStore(database).inbox_add(" ".join(args.text)),
+			"inbox add",
+		),
+		("inbox", "list"): lambda: (
+			ReadStore(database).inbox_list(args.limit, args.offset),
+			"inbox list",
+		),
 		("discovery", "add"): lambda: (
 			WriteStore(database).discovery_add(
 				args.task_id,

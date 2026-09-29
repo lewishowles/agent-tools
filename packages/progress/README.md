@@ -35,7 +35,7 @@ the database and another Git checkout needs to use it.
 The complete command shape is:
 
 ```text
-progress [--json] [--database <path>] {next,summary,checkout,project,release,task,chunk,discovery,decision,context}
+progress [--json] [--database <path>] {next,summary,checkout,project,release,task,chunk,inbox,discovery,decision,context}
 ```
 
 Throughout this reference, commands use:
@@ -650,6 +650,38 @@ progress search <term> [--in <field>]... [--status <status>] [--limit <limit>] [
 - `--offset <offset>`: number of results to skip before returning matches
 
 The human output says "No matches." when nothing hits; otherwise, it shows one block per task or chunk with the type, status, title, ID, and parent task for chunks, followed by one line per matched field with a short snippet and the term in bold. The `--json` form returns the same rows with plain-text snippets.
+
+## Inbox
+
+Save thoughts for the current project without choosing a task or release.
+
+### `progress inbox add`
+
+Add an inbox note:
+
+```text
+progress inbox add <text>... [--json] [--database <path>]
+```
+
+- `<text>...`: note text made from the remaining arguments
+
+The command returns the new note ID.
+
+### `progress inbox list`
+
+List inbox notes, oldest first:
+
+```text
+progress inbox list [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
+```
+
+- `--limit <limit>`: maximum number of notes to return
+- `--offset <offset>`: number of notes to skip before returning results
+
+Bare `progress inbox` does the same and accepts the same options.
+The human output shows each note's text, ID and creation time, and says
+"No inbox notes." when the inbox is empty. The `--json` form returns the
+paginated note rows. See [Listing](#listing) for pagination details.
 
 ## Notes
 

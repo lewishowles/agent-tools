@@ -86,6 +86,8 @@ def render(command: str, data: object) -> str:
 		)
 	if command == "commands":
 		return _render_commands(data)
+	if command == "inbox add" and isinstance(data, dict):
+		return render_status("success", "Added inbox note", str(data.get("id", "")))
 	if command in {"next", "current"}:
 		return _render_next(data)
 	if command == "summary":
@@ -821,6 +823,8 @@ def _render_list(command: str, data: dict[str, object]) -> str:
 		return _render_search(data)
 	if command in {"discovery list", "decision list"}:
 		return _render_note_list(command, data)
+	if command == "inbox list":
+		return _render_inbox_list(data)
 
 	items = data.get("items", [])
 	labels = {
@@ -885,6 +889,39 @@ def _render_note_list(command: str, data: dict[str, object]) -> str:
 				[
 					str(note.get("body", "")),
 					render_span(f"{owner_type} {owner_id}", "muted", weight="normal"),
+				]
+			)
+		)
+
+	if data.get("has_more"):
+		next_offset = int(data.get("offset", 0)) + int(data.get("limit", 0))
+		blocks.append(render_hint(f"More results: use --offset {next_offset}."))
+
+	return "\n\n".join(blocks)
+
+
+def _render_inbox_list(data: dict[str, object]) -> str:
+	"""Show each inbox note with its ID and creation time, so it can be dismissed by ID, or an empty-state line when there are none."""
+	items = data.get("items", [])
+	notes = (
+		[item for item in items if isinstance(item, dict)]
+		if isinstance(items, list)
+		else []
+	)
+	if not notes:
+		return render_span("No inbox notes.", "muted", weight="normal")
+
+	blocks = [render_span("Inbox notes")]
+	for note in notes:
+		blocks.append(
+			"\n".join(
+				[
+					str(note.get("text", "")),
+					render_span(
+						f"{note.get('id', '')} · {note.get('created_at', '')}",
+						"muted",
+						weight="normal",
+					),
 				]
 			)
 		)

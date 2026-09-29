@@ -236,6 +236,18 @@ def test_group_without_subcommand_prints_its_help_and_succeeds(
 	assert output.out == help_output.out
 
 
+def test_inbox_help_names_add_and_list(capsys) -> None:
+	with pytest.raises(SystemExit) as help_exit:
+		cli.main(["inbox", "-h"])
+
+	output = capsys.readouterr()
+
+	assert help_exit.value.code == 0
+	assert output.err == ""
+	assert "progress inbox" in output.out
+	assert "{add,list}" in output.out
+
+
 @pytest.mark.parametrize(
 	("arguments", "token", "expected_suggestions", "expected_message"),
 	[
@@ -246,6 +258,7 @@ def test_group_without_subcommand_prints_its_help_and_succeeds(
 				"progress release list",
 				"progress task list",
 				"progress chunk list",
+				"progress inbox list",
 				"progress discovery list",
 				"progress decision list",
 			],
@@ -259,6 +272,7 @@ def test_group_without_subcommand_prints_its_help_and_succeeds(
 				"progress task add",
 				"progress task dependency add",
 				"progress chunk add",
+				"progress inbox add",
 				"progress discovery add",
 				"progress decision add",
 			],
@@ -2524,6 +2538,107 @@ def test_human_chunk_list_keeps_task_header_for_empty_and_paginated_results(
 	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
 	assert "Progress task · tsk_test\n\nChunks" in output
 	assert output.index("Progress task · tsk_test") < output.index(expected_body)
+
+
+def test_inbox_add_shows_the_new_id_and_preserves_json(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	note = {
+		"id": "ibx_test",
+		"project_id": "prj_test",
+		"text": "Remember this",
+		"created_at": "2026-09-29T12:00:00+00:00",
+	}
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def inbox_add(self, text):
+			assert text == "Remember this"
+			return note
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+	arguments = ["inbox", "add", "Remember", "this", "--database", str(tmp_path / "db")]
+
+	assert cli.main(arguments) == 0
+	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert "Added inbox note" in output
+	assert "ibx_test" in output
+
+	assert cli.main([*arguments, "--json"]) == 0
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": note}
+
+
+@pytest.mark.parametrize("bare", [False, True])
+def test_inbox_list_shows_notes_and_pagination(
+	tmp_path: Path, monkeypatch, capsys, bare: bool
+) -> None:
+	data = {
+		"items": [
+			{
+				"id": "ibx_first",
+				"text": "First note",
+				"created_at": "2026-09-29T12:00:00+00:00",
+			},
+			{
+				"id": "ibx_second",
+				"text": "Second note",
+				"created_at": "2026-09-29T12:01:00+00:00",
+			},
+		],
+		"limit": 2,
+		"offset": 3,
+		"has_more": True,
+	}
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def inbox_list(self, limit, offset):
+			assert (limit, offset) == (2, 3)
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+	arguments = [
+		"inbox",
+		*([] if bare else ["list"]),
+		"--limit",
+		"2",
+		"--offset",
+		"3",
+		"--database",
+		str(tmp_path / "db"),
+	]
+
+	assert cli.main(arguments) == 0
+	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert output.index("First note") < output.index("Second note")
+	assert "ibx_first · 2026-09-29T12:00:00+00:00" in output
+	assert "ibx_second · 2026-09-29T12:01:00+00:00" in output
+	assert "More results: use --offset 5." in output
+
+	assert cli.main([*arguments, "--json"]) == 0
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+def test_empty_inbox_list_shows_an_empty_state(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def inbox_list(self, limit, offset):
+			assert (limit, offset) == (50, 0)
+			return {"items": [], "limit": limit, "offset": offset, "has_more": False}
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert cli.main(["inbox", "--database", str(tmp_path / "db")]) == 0
+	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert "No inbox notes." in output
 
 
 def test_human_note_list_shows_body_and_owner(
