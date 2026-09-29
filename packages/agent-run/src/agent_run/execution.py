@@ -83,7 +83,12 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
 
 
 def run_command(
-    argv: Sequence[str], cwd: str | Path, timeout: float, log_path: str | Path
+    argv: Sequence[str],
+    cwd: str | Path,
+    timeout: float,
+    log_path: str | Path,
+    *,
+    json_mode: bool = False,
 ) -> RunResult:
     """Run an argument-array command in the foreground.
 
@@ -92,6 +97,8 @@ def run_command(
         cwd: Directory in which the command process starts.
         timeout: Positive number of seconds allowed before termination.
         log_path: File that receives combined standard output and standard error.
+        json_mode: When true, the command runs with ``NO_COLOR=1`` so tools that
+            respect it write plain text for agents to read.
 
     Raises:
         ValueError: If ``argv`` is empty or ``timeout`` is not a finite positive
@@ -128,6 +135,7 @@ def run_command(
             process = subprocess.Popen(
                 command_arguments,
                 cwd=working_directory,
+                env={**os.environ, "NO_COLOR": "1"} if json_mode else None,
                 start_new_session=True,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,

@@ -10,6 +10,7 @@ from agent_run.failures import (
     FailureReader,
     FailureReport,
     shorten_fallback_line,
+    strip_ansi,
     summarise_output,
 )
 from agent_run.readers.pytest import PytestReader
@@ -29,13 +30,17 @@ FAILURE_READERS: tuple[FailureReader, ...] = (
 
 
 def summarise_success(argv: Sequence[str], log_text: str) -> list[str]:
-    """Use a matching reader's success lines, or keep the bounded log tail."""
+    """Use a matching reader's success lines, or keep the bounded log tail.
+
+    The lines are plain text: terminal colour codes are removed first.
+    """
+    clean_text = strip_ansi(log_text)
     reader = next(
         (candidate for candidate in FAILURE_READERS if candidate.matches(argv)),
         None,
     )
-    summary = reader.summarise(log_text) if reader is not None else None
-    return summary or summarise_output(log_text)
+    summary = reader.summarise(clean_text) if reader is not None else None
+    return summary or summarise_output(clean_text)
 
 
 def read_failure_report(argv: Sequence[str], log_text: str) -> FailureReport:
@@ -43,20 +48,22 @@ def read_failure_report(argv: Sequence[str], log_text: str) -> FailureReport:
 
     The first reader that matches the command reads the log. When no reader
     matches, or the reader finds no failure, the report holds the last log lines
-    and is marked as not recognised.
+    and is marked as not recognised. Terminal colour codes are removed before
+    reading, so coloured output is still recognised and the report is plain text.
     """
+    clean_text = strip_ansi(log_text)
     reader = next(
         (candidate for candidate in FAILURE_READERS if candidate.matches(argv)),
         None,
     )
 
     if reader is None:
-        return _fallback_report(log_text)
+        return _fallback_report(clean_text)
 
-    report = reader.read(log_text)
+    report = reader.read(clean_text)
 
     if report is None or report.first is None:
-        return _fallback_report(log_text)
+        return _fallback_report(clean_text)
 
     return _bound_report(report, reader)
 

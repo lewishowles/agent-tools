@@ -196,6 +196,10 @@ A successful pytest, Ruff, Vitest, `vp check`, or xcodebuild run shows its final
 passing totals or confirmation in one or two lines. Other commands, and reader
 output without a recognised success line, show the last eight non-blank lines.
 JSON output returns the same lines as `summary` in `data`.
+With `--json`, the child command receives `NO_COLOR=1`. JSON summaries and
+failure reports contain plain text even if the command still prints colour.
+Text summaries and failure excerpts are plain too. The saved log keeps the
+command's original output.
 
 Failures from pytest, ruff, Vitest, and xcodebuild include the first failure's
 source location, title, and bounded detail. Up to 20 further failures are shown
@@ -242,6 +246,8 @@ returns the complete saved log. `failures` runs the log through the matching
 failure reader and returns only the failure detail. A passed run reports that
 it has no failures. Add `--json` to any of these commands for the shared JSON
 envelope.
+`log` without `--json` prints the saved log with its colour. `log --json`
+returns plain text in `data.log`.
 
 A run that is still going shows status `running` without an exit status or duration.
 

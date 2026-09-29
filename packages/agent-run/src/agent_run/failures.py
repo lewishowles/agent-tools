@@ -20,8 +20,20 @@ MAX_SUMMARY_LINES = 8
 # Most characters shown from a fallback log line, including its ellipsis.
 MAX_FALLBACK_LINE_LENGTH = 300
 
-# Terminal colour escape sequences removed from captured output.
-ANSI_SGR_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
+# Terminal escape codes that tools write into their output: colour and cursor
+# codes, character-set changes, hyperlinks, and other two-character escapes.
+# An incomplete hyperlink stops at the line end so later output is kept.
+ANSI_ESCAPE_PATTERN = re.compile(
+    r"(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]"
+    r"|(?:\x1b\]|\x9d)[^\x07\x1b\x9c\n]*(?:\x07|\x1b\\|\x9c|(?=\n|$))"
+    r"|\x1b[ -/]+[0-~]"
+    r"|\x1b[@-_]"
+)
+
+
+def strip_ansi(text: str) -> str:
+    """Return the text with terminal colour, cursor, character-set and hyperlink codes removed."""
+    return ANSI_ESCAPE_PATTERN.sub("", text)
 
 
 def summarise_output(log_text: str) -> list[str]:
@@ -31,7 +43,7 @@ def summarise_output(log_text: str) -> list[str]:
     how many tests ran. Empty or whitespace-only output returns
     ["No output."].
     """
-    clean = ANSI_SGR_PATTERN.sub("", log_text).strip()
+    clean = strip_ansi(log_text).strip()
     if not clean:
         return ["No output."]
 

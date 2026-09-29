@@ -49,6 +49,7 @@ from agent_run.execution import (
 from agent_run.failures import (
     Failure,
     FailureReport,
+    strip_ansi,
 )
 from agent_run.locking import RunBusyError, RunLock, acquire_run_lock
 from agent_run.output import (
@@ -1512,7 +1513,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         data = {
             "run_id": record.run_id,
             "log_path": str(record.log_path),
-            "log": log_text,
+            # People see the log as saved, colour included; agents get plain text.
+            "log": strip_ansi(log_text) if parsed.json else log_text,
         }
 
         if parsed.json:
@@ -1700,6 +1702,7 @@ def _execute_run(
                 repository.root / relative_working_directory,
                 timeout_seconds,
                 log_path,
+                json_mode=json_mode,
             )
         except (KeyboardInterrupt, TerminateRequested) as error:
             interrupted = True

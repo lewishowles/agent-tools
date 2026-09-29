@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 
 import pytest
-from agent_run.failures import Failure, FailureReport, summarise_output
+from agent_run.failures import Failure, FailureReport, strip_ansi, summarise_output
 from agent_run.readers import read_failure_report, summarise_success
 
 
@@ -18,6 +18,31 @@ def test_read_failure_report_selects_xcodebuild_reader() -> None:
     assert report.first is not None
     assert report.first.path == "File.swift"
     assert report.first.title == "broken"
+
+
+def test_strip_ansi_removes_colour_cursor_character_set_and_hyperlink_codes() -> None:
+    """Colour, cursor, character-set and hyperlink codes leave only their text."""
+    text = (
+        "\x1b[31mred\x1b[0m "
+        "\x1b[2K"
+        "\x1b]8;;https://example.test\x07linked\x1b]8;;\x07 "
+        "\x1b]8;;https://example.test\x1b\\more\x1b]8;;\x1b\\ "
+        "\x1b(Bplain"
+    )
+
+    assert strip_ansi(text) == "red linked more plain"
+
+
+@pytest.mark.parametrize("late_terminator", ["\x07", "\x9c"])
+def test_strip_ansi_keeps_lines_after_an_unterminated_hyperlink(
+    late_terminator: str,
+) -> None:
+    """An incomplete hyperlink cannot swallow output on a later line."""
+    text = (
+        f"before\x1b]8;;https://example.test\nnext line{late_terminator}\nlast line\n"
+    )
+
+    assert strip_ansi(text) == f"before\nnext line{late_terminator}\nlast line\n"
 
 
 class _StubReader:
@@ -83,6 +108,15 @@ def test_summarise_success_falls_back_without_matching_reader(monkeypatch) -> No
     monkeypatch.setattr("agent_run.readers.FAILURE_READERS", ())
 
     assert summarise_success(["custom-check"], "last\n") == ["last"]
+
+
+def test_summarise_success_reads_coloured_vitest_totals() -> None:
+    """A known reader finds totals after terminal colour codes are removed."""
+    log_text = "\x1b[32mTest Files  1 passed (1)\x1b[0m\nlater output\n"
+
+    assert summarise_success(["vitest", "run"], log_text) == [
+        "Test Files  1 passed (1)"
+    ]
 
 
 def _failure(detail: tuple[str, ...] = ()) -> Failure:

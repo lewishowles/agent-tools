@@ -332,6 +332,45 @@ def test_cli_run_success_supports_text_and_json(
     assert json_output.err == ""
 
 
+def test_cli_run_strips_coloured_output_but_keeps_raw_logs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """JSON asks the child for plain output and strips colour it still prints."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    code = (
+        "import os\n"
+        "print('NO_COLOR=' + os.environ.get('NO_COLOR', 'unset'))\n"
+        "print('\\x1b[32mpassed\\x1b[0m')\n"
+        "print('\\x1b]8;;https://example.test\\x07linked\\x1b]8;;\\x07')\n"
+    )
+    command = [sys.executable, "-c", code]
+
+    assert main(["run", "--", *command]) == 0
+    human_output = capsys.readouterr()
+    assert "NO_COLOR=unset" in human_output.out
+    assert "\x1b" not in human_output.out
+
+    assert main(["run", "--json", "--", *command]) == 0
+    json_output = json.loads(capsys.readouterr().out)
+    run_data = json_output["data"]
+    run_id = run_data["run_id"]
+    assert run_data["summary"] == ["NO_COLOR=1", "passed", "linked"]
+    assert "\x1b" in Path(run_data["log_path"]).read_text()
+
+    assert main(["log", run_id]) == 0
+    raw_log = capsys.readouterr().out
+    assert "\x1b[32mpassed\x1b[0m" in raw_log
+
+    assert main(["log", run_id, "--json"]) == 0
+    plain_log = json.loads(capsys.readouterr().out)["data"]["log"]
+    assert plain_log == "NO_COLOR=1\npassed\nlinked\n"
+
+
 def test_cli_run_success_uses_fallback_when_log_cannot_be_read(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1308,7 +1347,7 @@ def test_cli_run_json_failure_includes_unrecognised_tail(
             "--",
             sys.executable,
             "-c",
-            "print('captured', flush=True); raise SystemExit(9)",
+            "print('\\x1b[31mcaptured\\x1b[0m', flush=True); raise SystemExit(9)",
         ]
     )
 
@@ -1319,8 +1358,53 @@ def test_cli_run_json_failure_includes_unrecognised_tail(
     assert exit_code == 1
     assert result["ok"] is False
     assert failure["recognised"] is False
-    assert failure["tail"]
+    assert failure["tail"] == ["captured"]
+    assert "\x1b" not in json.dumps(result)
     assert captured.err == ""
+
+
+def test_cli_recognises_coloured_vitest_failures_in_both_modes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Failure excerpts are plain in both modes while the saved log stays raw."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    command_path = tmp_path / "vitest"
+    command_path.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "print('\\x1b[31m FAIL  tests/example.test.js > suite > first\\x1b[0m')\n"
+        "print('\\x1b[31mAssertionError: broken\\x1b[0m')\n"
+        "print('\\x1b[36m ❯ tests/example.test.js:4:2\\x1b[0m')\n"
+        "print('\\x1b[31m FAIL  tests/example.test.js > suite > second\\x1b[0m')\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    command_path.chmod(0o700)
+
+    assert main(["run", "--", str(command_path)]) == 1
+    human_output = capsys.readouterr()
+    assert "suite > first" in human_output.err
+    assert "AssertionError: broken" in human_output.err
+    assert "\x1b" not in human_output.err
+
+    assert main(["run", "--json", "--", str(command_path)]) == 1
+    json_output = json.loads(capsys.readouterr().out)
+    failure = json_output["error"]["data"]["failure"]
+    run_id = json_output["error"]["data"]["run_id"]
+    assert failure["recognised"] is True
+    assert failure["first"]["title"] == "suite > first"
+    assert failure["first"]["detail"] == ["AssertionError: broken"]
+    assert failure["more"][0]["title"] == "suite > second"
+    assert "\x1b" not in json.dumps(json_output)
+
+    assert main(["failures", run_id, "--json"]) == 0
+    saved_failures = json.loads(capsys.readouterr().out)
+    assert saved_failures["data"]["failure"] == failure
+    assert "\x1b" in Path(json_output["error"]["data"]["log_path"]).read_text()
 
 
 def test_cli_run_maps_non_positive_timeout_to_usage(
