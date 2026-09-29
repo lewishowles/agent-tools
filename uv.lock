@@ -8,6 +8,7 @@ members = [
     "agent-run",
     "agents-progress",
     "friction",
+    "review-feedback",
 ]
 
 [manifest.dependency-groups]
@@ -143,6 +144,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/f6/45/eafb0bba0f9988f6a
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3c/26/1062c7ec1b053db9e499b4d2d5bc231743201b74051c973dadeac80a8f43/questionary-2.1.1-py3-none-any.whl", hash = "sha256:a51af13f345f1cdea62347589fbb6df3b290306ab8930713bfae4d475a7d4a59", size = 36753, upload-time = "2025-08-28T19:00:19.56Z" },
 ]
+
+[[package]]
+name = "review-feedback"
+version = "0.1.0"
+source = { editable = "packages/review-feedback" }
+dependencies = [
+    { name = "prompt-toolkit" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "prompt-toolkit", specifier = ">=3.0" }]
 
 [[package]]
 name = "ruff"
