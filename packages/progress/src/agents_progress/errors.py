@@ -8,6 +8,7 @@ _OBJECT_TYPE_NAMES = {
 	"chk_": "chunk",
 	"rel_": "release",
 	"prj_": "project",
+	"inb_": "inbox note",
 	"nte_": "note",
 }
 

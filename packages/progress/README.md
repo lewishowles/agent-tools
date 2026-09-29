@@ -683,6 +683,19 @@ The human output shows each note's text, ID and creation time, and says
 "No inbox notes." when the inbox is empty. The `--json` form returns the
 paginated note rows. See [Listing](#listing) for pagination details.
 
+### `progress inbox dismiss`
+
+Dismiss an inbox note after reviewing it:
+
+```text
+progress inbox dismiss <note_id> [--json] [--database <path>]
+```
+
+- `<note_id>`: the inbox note ID
+
+The command returns the dismissed note ID. An unknown or already dismissed ID
+returns a `not-found` error.
+
 ## Notes
 
 Each note belongs to exactly one task or release. A note is either a discovery

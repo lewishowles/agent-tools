@@ -1113,6 +1113,57 @@ def test_inbox_add_stores_a_note_for_the_project_and_rejects_blank_text(
 		store.inbox_add("  ")
 
 
+def test_inbox_dismiss_removes_the_note_and_rejects_unknown_or_repeated_ids(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	note = store.inbox_add("Review this")
+	reader = ReadStore(store.database, _ProjectStore(store.database))
+
+	assert store.inbox_dismiss(note["id"]) == {"id": note["id"]}
+	assert reader.inbox_list()["items"] == []
+
+	for note_id in (note["id"], "inb_" + "a" * 22):
+		with pytest.raises(NotFoundError) as error:
+			store.inbox_dismiss(note_id)
+
+		assert error.value.details == {"id": note_id}
+
+	with pytest.raises(WrongObjectIdTypeError) as error:
+		store.inbox_dismiss("nte_" + "n" * 22)
+
+	assert error.value.details["expected_prefix"] == "inb_"
+
+
+def test_inbox_dismiss_does_not_remove_another_projects_note(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	other_project_id = "prj_" + "q" * 22
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(other_project_id, "other", "Other project", "2026-01-01T00:00:00+00:00"),
+		)
+
+	class _OtherProjectStore:
+		def current(self, path: str | Path | None = None) -> Project:
+			return Project(
+				other_project_id, "other", "Other project", "2026-01-01T00:00:00+00:00"
+			)
+
+	other_store = WriteStore(store.database, _OtherProjectStore())
+	other_note = other_store.inbox_add("Keep this")
+
+	with pytest.raises(NotFoundError) as error:
+		store.inbox_dismiss(other_note["id"])
+
+	assert error.value.details == {"id": other_note["id"]}
+	assert (
+		ReadStore(store.database, _OtherProjectStore()).inbox_list()["items"][0]["id"]
+		== other_note["id"]
+	)
+
+
 def test_notes_and_context_replace_the_project_context_row(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("release", "Release", overview="Release overview")

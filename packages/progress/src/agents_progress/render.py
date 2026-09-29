@@ -88,6 +88,8 @@ def render(command: str, data: object) -> str:
 		return _render_commands(data)
 	if command == "inbox add" and isinstance(data, dict):
 		return render_status("success", "Added inbox note", str(data.get("id", "")))
+	if command == "inbox dismiss" and isinstance(data, dict):
+		return render_status("success", "Dismissed inbox note", str(data.get("id", "")))
 	if command in {"next", "current"}:
 		return _render_next(data)
 	if command == "summary":

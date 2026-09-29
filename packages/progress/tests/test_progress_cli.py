@@ -236,7 +236,7 @@ def test_group_without_subcommand_prints_its_help_and_succeeds(
 	assert output.out == help_output.out
 
 
-def test_inbox_help_names_add_and_list(capsys) -> None:
+def test_inbox_help_names_add_dismiss_and_list(capsys) -> None:
 	with pytest.raises(SystemExit) as help_exit:
 		cli.main(["inbox", "-h"])
 
@@ -245,7 +245,7 @@ def test_inbox_help_names_add_and_list(capsys) -> None:
 	assert help_exit.value.code == 0
 	assert output.err == ""
 	assert "progress inbox" in output.out
-	assert "{add,list}" in output.out
+	assert "{add,dismiss,list}" in output.out
 
 
 @pytest.mark.parametrize(
@@ -836,6 +836,7 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 			"decision_remove",
 			"write",
 		),
+		(["inbox", "dismiss", "inb_" + "n" * 22], "inbox_dismiss", "write"),
 		(["context", "set", "--current-goal", "Goal"], "context_set", "write"),
 	],
 )
@@ -2568,6 +2569,62 @@ def test_inbox_add_shows_the_new_id_and_preserves_json(
 
 	assert cli.main([*arguments, "--json"]) == 0
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": note}
+
+
+def test_inbox_dismiss_shows_the_id_and_preserves_json(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	note_id = "inb_" + "n" * 22
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def inbox_dismiss(self, identifier):
+			assert identifier == note_id
+			return {"id": note_id}
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+	arguments = ["inbox", "dismiss", note_id, "--database", str(tmp_path / "db")]
+
+	assert cli.main(arguments) == 0
+	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert "Dismissed inbox note" in output
+	assert note_id in output
+
+	assert cli.main([*arguments, "--json"]) == 0
+	assert json.loads(capsys.readouterr().out) == {
+		"ok": True,
+		"data": {"id": note_id},
+	}
+
+
+def test_inbox_dismiss_returns_not_found_for_an_unknown_id(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	note_id = "inb_" + "n" * 22
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def inbox_dismiss(self, identifier):
+			assert identifier == note_id
+			raise NotFoundError("inbox note was not found", {"id": identifier})
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			["inbox", "dismiss", note_id, "--database", str(tmp_path / "db"), "--json"]
+		)
+		== 1
+	)
+	assert json.loads(capsys.readouterr().out)["error"] == {
+		"code": "not-found",
+		"message": "inbox note was not found",
+		"details": {"id": note_id},
+	}
 
 
 @pytest.mark.parametrize("bare", [False, True])

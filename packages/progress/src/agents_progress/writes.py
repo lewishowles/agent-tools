@@ -1307,6 +1307,28 @@ class WriteStore(_StoreBase):
 			"created_at": created_at,
 		}
 
+	def inbox_dismiss(
+		self, note_id: str, path: str | Path | None = None
+	) -> dict[str, object]:
+		"""Delete a note from the current project's inbox and return its ID, raising NotFoundError when the project has no such note, including one already dismissed."""
+		validate_object_id(note_id, INBOX_PREFIX)
+		project = self.current_project(path)
+
+		with self.database.transaction() as connection:
+			note = connection.execute(
+				"SELECT id FROM inbox_notes WHERE id = ? AND project_id = ?",
+				(note_id, project.id),
+			).fetchone()
+
+			if note is None:
+				raise NotFoundError(
+					f"inbox note {note_id} was not found", {"id": note_id}
+				)
+
+			connection.execute("DELETE FROM inbox_notes WHERE id = ?", (note_id,))
+
+		return {"id": note_id}
+
 	def discovery_add(
 		self,
 		task_id: str | None,

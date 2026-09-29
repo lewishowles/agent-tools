@@ -727,6 +727,11 @@ _COMMAND_SPECS = (
 				arguments=(_argument("text", nargs="+"),),
 			),
 			_CommandSpec(
+				"dismiss",
+				"dismiss an inbox note",
+				arguments=(_argument("note_id"),),
+			),
+			_CommandSpec(
 				"list",
 				"list inbox notes, oldest first",
 				page_options=True,
@@ -1526,6 +1531,10 @@ def _run_command(
 		("inbox", "add"): lambda: (
 			WriteStore(database).inbox_add(" ".join(args.text)),
 			"inbox add",
+		),
+		("inbox", "dismiss"): lambda: (
+			WriteStore(database).inbox_dismiss(args.note_id),
+			"inbox dismiss",
 		),
 		("inbox", "list"): lambda: (
 			ReadStore(database).inbox_list(args.limit, args.offset),
