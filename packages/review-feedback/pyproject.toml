@@ -1,7 +1,7 @@
 [project]
 name = "review-feedback"
 version = "0.1.0"
-description = "Resolve copied worktree selections to exact review locations."
+description = "Turn worktree selections into review comments and split changes into reviewable patches."
 authors = [{ name = "Lewis Howles" }]
 license = { text = "MIT" }
 requires-python = ">=3.11"
@@ -21,6 +21,7 @@ Repository = "https://github.com/lewishowles/dev-tools"
 
 [project.scripts]
 review-feedback = "review_feedback.cli:main"
+review-patches = "review_feedback.patches:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -46,6 +46,39 @@ The copied text can match one or more locations; `add` creates one entry per mat
 
 The packet uses the working-tree path and coordinates for current content. Removed content is marked `(removed at HEAD)` and uses its `HEAD` path and coordinates.
 
+## Review patches
+
+`review-patches` splits uncommitted work into proposed commits as patch files that a reviewer can check. Write a plan at `.agent/review-patches/plan.json` that assigns each changed file or hunk to one proposal. Keep the plan in an ignored folder, because an untracked plan would itself count as a changed file:
+
+```json
+{
+  "proposals": [
+    {
+      "id": "first-change",
+      "title": "First change",
+      "changes": [{ "path": "src/example.py", "hunks": [0] }]
+    },
+    {
+      "id": "new-file",
+      "title": "New file",
+      "changes": [{ "path": "src/new.py" }]
+    }
+  ]
+}
+```
+
+Hunk numbers start at 0 and follow `git diff -U10`, so changes within about 20 lines of each other count as one hunk. Omit `hunks` to include the whole file. The plan must assign every changed file and hunk exactly once.
+
+Create patches, check whether they still match the plan and worktree, or refresh one proposal after an edit:
+
+```sh
+review-patches create --plan .agent/review-patches/plan.json
+review-patches check .agent/review-patches
+review-patches refresh first-change --plan .agent/review-patches/plan.json
+```
+
+Patches and metadata go in `.agent/review-patches` by default; ignore that folder in Git. Relative paths are resolved from the repository root, not the current directory, and `check` reads `plan.json` from the folder it checks unless you pass `--plan`. `check` exits with 0 when every patch is fresh and 1 when any patch is stale. Creation refuses staged changes unless you pass `--staged-policy include`.
+
 ## Clipboard limitation
 
 Clipboard access uses macOS `pbpaste` and `pbcopy`. `review-feedback add` and the `--copy` flags need those commands on `PATH`; on another platform, or when either command is unavailable, copy the selection or save the packet from standard output manually. The matching and rendering commands do not require clipboard output when you use `preview` without `--copy`.
