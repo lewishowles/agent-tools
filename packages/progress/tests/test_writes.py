@@ -1087,6 +1087,32 @@ def test_late_unfinished_dependency_blocks_ready_and_rejects_active(
 		store.task_dependency_add(task["id"], second_dependency["id"])
 
 
+def test_inbox_add_stores_a_note_for_the_project_and_rejects_blank_text(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+
+	note = store.inbox_add("Sort this later.")
+
+	assert note["id"].startswith("inb_")
+	assert note["project_id"] == PROJECT_ID
+	assert note["text"] == "Sort this later."
+	assert note["created_at"]
+	with store.database.connection() as connection:
+		assert (
+			dict(
+				connection.execute(
+					"SELECT id, project_id, text, created_at FROM inbox_notes WHERE id = ?",
+					(note["id"],),
+				).fetchone()
+			)
+			== note
+		)
+
+	with pytest.raises(ProgressError, match="inbox note text"):
+		store.inbox_add("  ")
+
+
 def test_notes_and_context_replace_the_project_context_row(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("release", "Release", overview="Release overview")

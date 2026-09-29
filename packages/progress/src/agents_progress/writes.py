@@ -19,6 +19,7 @@ from .errors import (
 )
 from .ids import (
 	CHUNK_PREFIX,
+	INBOX_PREFIX,
 	NOTE_PREFIX,
 	RELEASE_PREFIX,
 	TASK_PREFIX,
@@ -1284,6 +1285,27 @@ class WriteStore(_StoreBase):
 			]
 
 		return results if multiple else results[0]
+
+	def inbox_add(self, text: str, path: str | Path | None = None) -> dict[str, object]:
+		"""Save a note to the current project's inbox and return the stored note, rejecting blank text."""
+		_require_text(text, "inbox note text")
+		project = self.current_project(path)
+
+		with self.database.transaction() as connection:
+			note_id = _new_id(connection, INBOX_PREFIX, "inbox_notes")
+			created_at = utc_timestamp()
+			connection.execute(
+				"INSERT INTO inbox_notes (id, project_id, text, created_at) "
+				"VALUES (?, ?, ?, ?)",
+				(note_id, project.id, text, created_at),
+			)
+
+		return {
+			"id": note_id,
+			"project_id": project.id,
+			"text": text,
+			"created_at": created_at,
+		}
 
 	def discovery_add(
 		self,

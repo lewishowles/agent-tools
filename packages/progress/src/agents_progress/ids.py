@@ -11,12 +11,14 @@ PROJECT_PREFIX = "prj_"
 RELEASE_PREFIX = "rel_"
 TASK_PREFIX = "tsk_"
 CHUNK_PREFIX = "chk_"
+INBOX_PREFIX = "inb_"
 NOTE_PREFIX = "nte_"
 
 # the full set of recognised prefixes, used to validate and classify any object ID
 OBJECT_PREFIXES = frozenset(
 	{
 		CHUNK_PREFIX,
+		INBOX_PREFIX,
 		NOTE_PREFIX,
 		PROJECT_PREFIX,
 		RELEASE_PREFIX,

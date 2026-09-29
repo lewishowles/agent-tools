@@ -7,6 +7,7 @@ from agents_progress.errors import (
 )
 from agents_progress.ids import (
 	CHUNK_PREFIX,
+	INBOX_PREFIX,
 	NOTE_PREFIX,
 	PROJECT_PREFIX,
 	RELEASE_PREFIX,
@@ -19,7 +20,14 @@ from agents_progress.ids import (
 
 @pytest.mark.parametrize(
 	"prefix",
-	[CHUNK_PREFIX, NOTE_PREFIX, PROJECT_PREFIX, RELEASE_PREFIX, TASK_PREFIX],
+	[
+		CHUNK_PREFIX,
+		INBOX_PREFIX,
+		NOTE_PREFIX,
+		PROJECT_PREFIX,
+		RELEASE_PREFIX,
+		TASK_PREFIX,
+	],
 )
 def test_generated_ids_have_a_type_prefix_and_128_bits_of_random_input(
 	prefix: str,
@@ -52,7 +60,14 @@ def test_wrong_id_type_error_keeps_the_single_prefix_detail() -> None:
 
 @pytest.mark.parametrize(
 	"prefix",
-	[CHUNK_PREFIX, NOTE_PREFIX, PROJECT_PREFIX, RELEASE_PREFIX, TASK_PREFIX],
+	[
+		CHUNK_PREFIX,
+		INBOX_PREFIX,
+		NOTE_PREFIX,
+		PROJECT_PREFIX,
+		RELEASE_PREFIX,
+		TASK_PREFIX,
+	],
 )
 def test_object_id_prefix_recognises_every_object_type(prefix: str) -> None:
 	assert object_id_prefix(prefix + "a" * 22) == prefix

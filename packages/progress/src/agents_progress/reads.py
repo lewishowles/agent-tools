@@ -1300,6 +1300,28 @@ class ReadStore(_StoreBase):
 			"next_chunk": next_active or next_pending,
 		}
 
+	def inbox_list(
+		self,
+		limit: int = DEFAULT_LIMIT,
+		offset: int = 0,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""Return one page of the current project's inbox notes, oldest first."""
+		limit, offset = validate_page(limit, offset)
+		project = self.current_project(path)
+
+		with self.database.connection() as connection:
+			rows = connection.execute(
+				"SELECT id, project_id, text, created_at FROM inbox_notes "
+				"WHERE project_id = ? ORDER BY created_at, id LIMIT ? OFFSET ?",
+				(project.id, limit, offset),
+			).fetchall()
+			total = connection.execute(
+				"SELECT COUNT(*) FROM inbox_notes WHERE project_id = ?", (project.id,)
+			).fetchone()[0]
+
+		return page_response([dict(row) for row in rows], limit, offset, total)
+
 	def discovery_list(
 		self,
 		task_id: str | None = None,

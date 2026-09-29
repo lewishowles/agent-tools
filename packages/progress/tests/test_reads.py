@@ -1121,6 +1121,48 @@ def test_get_raises_not_found_for_an_unknown_record(
 		getattr(store, method_name)(object_id)
 
 
+def test_inbox_list_orders_notes_and_scopes_them_to_the_project(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	other_project_id = "prj_" + "q" * 22
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(other_project_id, "other", "Other project", "2026-01-01T00:00:00+00:00"),
+		)
+		for note_id, project_id, text, created_at in (
+			(
+				"inb_" + "b" * 22,
+				PROJECT_ID,
+				"Second by ID",
+				"2026-01-01T00:00:01+00:00",
+			),
+			("inb_" + "c" * 22, PROJECT_ID, "Newest", "2026-01-01T00:00:02+00:00"),
+			("inb_" + "a" * 22, PROJECT_ID, "First by ID", "2026-01-01T00:00:01+00:00"),
+			(
+				"inb_" + "d" * 22,
+				other_project_id,
+				"Other project",
+				"2026-01-01T00:00:00+00:00",
+			),
+		):
+			connection.execute(
+				"INSERT INTO inbox_notes (id, project_id, text, created_at) VALUES (?, ?, ?, ?)",
+				(note_id, project_id, text, created_at),
+			)
+
+	first_page = store.inbox_list(limit=2)
+	second_page = store.inbox_list(limit=2, offset=2)
+
+	assert [item["text"] for item in first_page["items"]] == [
+		"First by ID",
+		"Second by ID",
+	]
+	assert [item["text"] for item in second_page["items"]] == ["Newest"]
+	assert all(item["project_id"] == PROJECT_ID for item in first_page["items"])
+	assert first_page["has_more"] is True
+	assert second_page["has_more"] is False
+
+
 def test_note_lists_filter_type_and_optional_task_or_release_in_creation_order(
 	tmp_path: Path,
 ) -> None:

@@ -197,6 +197,7 @@ def test_first_connection_creates_the_schema_and_sqlite_safety_settings(
 			"task_files",
 			"chunks",
 			"notes",
+			"inbox_notes",
 			"context",
 			"checkouts",
 			"schema_migrations",
@@ -366,13 +367,59 @@ def test_version_eight_migration_adds_checkout_tracking_to_an_existing_database(
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 8
+			== schema.SCHEMA_VERSION
 		)
 		assert tuple(
 			connection.execute(
 				"SELECT project_id, last_seen_at FROM checkouts"
 			).fetchone()
 		) == (project_id, "2026-01-01T00:00:00+00:00")
+
+
+def test_version_nine_migration_adds_project_owned_inbox_notes(tmp_path) -> None:
+	database_path = tmp_path / "progress.db"
+	with sqlite3.connect(database_path) as connection:
+		for version in range(1, 9):
+			schema.MIGRATIONS[version](connection)
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.execute(
+			"INSERT INTO schema_migrations VALUES (8, '2026-01-01T00:00:00+00:00')"
+		)
+		project_id = generate_object_id(PROJECT_PREFIX)
+		_insert_project(connection, project_id)
+
+	with Database(database_path).connection() as connection:
+		assert (
+			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
+				0
+			]
+			== 9
+		)
+		connection.execute(
+			"INSERT INTO inbox_notes (id, project_id, text, created_at) VALUES (?, ?, ?, ?)",
+			(
+				"inb_" + "a" * 22,
+				project_id,
+				"Remember this.",
+				"2026-01-01T00:00:00+00:00",
+			),
+		)
+		assert (
+			connection.execute("SELECT text FROM inbox_notes").fetchone()[0]
+			== "Remember this."
+		)
+		with pytest.raises(sqlite3.IntegrityError):
+			connection.execute(
+				"INSERT INTO inbox_notes (id, project_id, text, created_at) VALUES (?, ?, ?, ?)",
+				(
+					"inb_" + "b" * 22,
+					"prj_" + "x" * 22,
+					"Orphan",
+					"2026-01-01T00:00:00+00:00",
+				),
+			)
 
 
 def test_failed_version_six_migration_leaves_version_five_intact(
