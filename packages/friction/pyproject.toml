@@ -1,0 +1,37 @@
+[project]
+name = "friction"
+dynamic = ["version"]
+description = "Store and review local agent friction events."
+authors = [{ name = "Lewis Howles" }]
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+friction = "friction.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/friction/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/friction"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+# Friction keeps the lint rules it had in dev-tools. The stricter rules that
+# progress uses report issues in its existing code, including the hook's
+# deliberate catch-all error handling, so adopting them is a separate change.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+known-first-party = ["friction"]
+
+[tool.ruff.format]
+indent-style = "tab"
