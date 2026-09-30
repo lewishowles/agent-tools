@@ -53,6 +53,10 @@ ANSI_STYLE_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 # plain rows, because the title and clock alone need 29 columns.
 MIN_FRAME_WIDTH = 30
 
+# The widest the frame gets. Wider terminals leave the extra columns empty to
+# the right, so the clock and counts stay close to the rows they describe.
+MAX_FRAME_WIDTH = 80
+
 
 def render_board(
     agents: list[dict], *, width: int, current_time: str, colour: bool = False
@@ -224,10 +228,12 @@ def _frame_lines(
 
     Args:
         lines: The content to show inside the frame.
-        width: The terminal's width for this refresh.
+        width: The terminal's width for this refresh. The frame is never wider
+            than MAX_FRAME_WIDTH.
         current_time: The local time for the top edge, formatted as HH:MM:SS.
         bottom_text: The text set into the bottom edge, or None for a plain edge.
     """
+    width = min(width, MAX_FRAME_WIDTH)
     top_start = "╭─ ✻ agent board "
     top_end = f" {current_time} ─╮"
     top = top_start + "─" * max(0, width - len(top_start) - len(top_end)) + top_end

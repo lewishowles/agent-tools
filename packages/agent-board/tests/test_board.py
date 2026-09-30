@@ -54,6 +54,38 @@ def test_frame_shows_mixed_groups_and_counts_at_full_width() -> None:
     assert all(len(line) == 60 for line in lines[1:])
 
 
+def test_wide_terminal_keeps_an_80_column_frame_left_aligned() -> None:
+    """A wide terminal leaves unused columns to the right of the frame."""
+    agents = [agent("Agent-Tools", "scout", status="active")]
+
+    lines = render_board(agents, width=200, current_time="12:34:56")
+
+    assert all(len(line) == 80 for line in lines[1:])
+    assert lines[1].endswith(" 12:34:56 ─╮")
+    assert lines[-1].startswith("╰─ 0 waiting on you · 1 working ")
+
+
+def test_80_column_terminal_keeps_its_existing_frame() -> None:
+    """The cap does not alter a frame at exactly 80 columns."""
+    agents = [agent("Agent-Tools", "scout", status="active")]
+
+    at_cap = render_board(agents, width=80, current_time="12:34:56")
+    above_cap = render_board(agents, width=200, current_time="12:34:56")
+
+    assert at_cap == above_cap
+    assert all(len(line) == 80 for line in at_cap[1:])
+
+
+def test_wide_terminal_shortens_a_long_row_at_the_frame_cap() -> None:
+    """A long team name ends inside the capped frame with an ellipsis."""
+    agents = [agent("Agent-Tools-" + "long-" * 20, "scout", status="active")]
+
+    lines = render_board(agents, width=200, current_time="12:34:56")
+
+    assert lines[4].endswith("…  │")
+    assert all(len(line) == 80 for line in lines[1:])
+
+
 @pytest.mark.parametrize(
     ("colour", "expected_rows"),
     [

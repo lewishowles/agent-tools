@@ -1,6 +1,6 @@
 # Agent board
 
-`agent-board` keeps a live view of HCOM teams in one terminal pane. It refreshes every two seconds and fills the pane's width with a rounded frame. The top edge shows the current time; the bottom edge counts teams waiting on you and working. Teams that need you appear above working teams, with blocked teams at the top. Each row shows a status symbol and status before the team name. Working teams show whether they are implementing, reviewing, checking, coordinating, starting, or working. Blocked teams show how long they have been blocked, and a lone working agent has `(partial team)` after the team name. Team status comes from `hcom list --json`; the board does not read conversations.
+`agent-board` keeps a live view of HCOM teams in one terminal pane. It refreshes every two seconds and draws a left-aligned rounded frame up to 80 columns wide. The top edge shows the current time; the bottom edge counts teams waiting on you and working. Teams that need you appear above working teams, with blocked teams at the top. Each row shows a status symbol and status before the team name. Working teams show whether they are implementing, reviewing, checking, coordinating, starting, or working. Blocked teams show how long they have been blocked, and a lone working agent has `(partial team)` after the team name. Team status comes from `hcom list --json`; the board does not read conversations.
 
 Below 30 columns, the board shows plain rows without the frame, headings, clock, or counts, and shortens long rows to fit.
 
