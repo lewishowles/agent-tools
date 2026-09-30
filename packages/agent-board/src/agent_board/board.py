@@ -46,19 +46,27 @@ DIM_STYLE = "\x1b[2m"
 # The terminal code that ends any of the styles above.
 RESET_STYLE = "\x1b[0m"
 
+# The pattern that matches ANSI colour codes, which take up no screen space.
+ANSI_STYLE_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 
-def render_board(agents: list[dict], *, colour: bool = False) -> list[str]:
-    """Build the board lines for one `hcom list --json` snapshot.
 
-    The lines start with a blank line. Teams that need you come first:
-    blocked teams with their longest wait, then teams whose agents are all
-    waiting with nothing unread. Working teams follow after another blank
-    line. Statuses line up across both sections, and an empty listing
-    shows "No active teams". Stopped (inactive) agents are left out, so a team
-    with one agent left shows as a partial team.
+def render_board(
+    agents: list[dict], *, width: int, current_time: str, colour: bool = False
+) -> list[str]:
+    """Build the framed board lines for one `hcom list --json` snapshot.
+
+    The lines start with a blank line, then the frame. Teams that need you come
+    first under WAITING ON YOU: blocked teams with their longest wait, then
+    teams whose agents are all waiting with nothing unread. Working teams
+    follow under WORKING. A heading is left out when its group is empty.
+    Statuses line up across both groups, and an empty listing shows
+    "No active teams". Stopped (inactive) agents are left out, so a team with
+    one agent left shows as a partial team.
 
     Args:
         agents: The records from `hcom list --json`.
+        width: The terminal's width for this refresh.
+        current_time: The local time for the top edge, formatted as HH:MM:SS.
         colour: Whether to colour attention rows and dim working rows.
     """
     teams = defaultdict(list)
@@ -123,17 +131,20 @@ def render_board(agents: list[dict], *, colour: bool = False) -> list[str]:
     needs_you.sort(key=lambda row: row[0])
     working.sort(key=lambda row: row[0])
 
-    lines = [""]
+    lines = []
 
     if not needs_you and not working:
         line = "No active teams"
         lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
-        return lines
+        return _frame_lines(lines, width, current_time, "0 waiting on you · 0 working")
 
     shown_statuses = [status for _, _, status in needs_you] + [
         status for _, status in working
     ]
     status_width = max(len(status) for status in shown_statuses)
+
+    if needs_you:
+        lines.append("WAITING ON YOU")
 
     for _, label, status in needs_you:
         symbol = STATUS_SYMBOLS[status.partition(" · ")[0]]
@@ -148,15 +159,68 @@ def render_board(agents: list[dict], *, colour: bool = False) -> list[str]:
         else:
             lines.append(f"{symbol} {padded_status}  {label}")
 
-    if needs_you and working:
-        lines.append("")
+    if working:
+        lines.append("WORKING")
 
     for label, status in working:
         symbol = STATUS_SYMBOLS[status]
         line = f"{symbol} {status:<{status_width}}  {label}"
         lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
 
-    return lines
+    bottom_text = f"{len(needs_you)} waiting on you · {len(working)} working"
+    return _frame_lines(lines, width, current_time, bottom_text)
+
+
+def render_error(message: str, *, width: int, current_time: str) -> list[str]:
+    """Build the framed board lines that show an hcom failure in place of the teams.
+
+    Args:
+        message: The error to show inside the frame.
+        width: The terminal's width for this refresh.
+        current_time: The local time for the top edge, formatted as HH:MM:SS.
+    """
+    return _frame_lines(message.splitlines(), width, current_time, None)
+
+
+def _frame_lines(
+    lines: list[str], width: int, current_time: str, bottom_text: str | None
+) -> list[str]:
+    """Draw the rounded frame around the board's lines.
+
+    A blank row sits above and below the content. Content lines sit two spaces
+    in from each side, and the right padding ignores colour codes.
+
+    Args:
+        lines: The content to show inside the frame.
+        width: The terminal's width for this refresh.
+        current_time: The local time for the top edge, formatted as HH:MM:SS.
+        bottom_text: The text set into the bottom edge, or None for a plain edge.
+    """
+    top_start = "╭─ ✻ agent board "
+    top_end = f" {current_time} ─╮"
+    top = top_start + "─" * max(0, width - len(top_start) - len(top_end)) + top_end
+
+    bottom_start = f"╰─ {bottom_text} " if bottom_text is not None else "╰"
+    bottom_end = "─╯" if bottom_text is not None else "╯"
+    bottom = (
+        bottom_start
+        + "─" * max(0, width - len(bottom_start) - len(bottom_end))
+        + bottom_end
+    )
+
+    # The borders and two spaces on each side use six columns.
+    content_width = width - 6
+    blank_row = f"│{' ' * (width - 2)}│"
+    framed_rows = [
+        f"│  {line}{' ' * max(0, content_width - _visible_width(line))}  │"
+        for line in lines
+    ]
+    return ["", top, blank_row, *framed_rows, blank_row, bottom]
+
+
+def _visible_width(line: str) -> int:
+    """Count the characters that occupy a row, leaving out ANSI colour codes."""
+    return len(ANSI_STYLE_PATTERN.sub("", line))
 
 
 def _working_status(members: list[tuple[dict, str | None]]) -> str:

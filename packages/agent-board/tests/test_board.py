@@ -1,7 +1,7 @@
 """Check board decisions against representative HCOM listings."""
 
 import pytest
-from agent_board.board import render_board
+from agent_board.board import ANSI_STYLE_PATTERN, render_board, render_error
 
 
 def agent(
@@ -23,6 +23,146 @@ def agent(
     }
 
 
+def board_content(agents: list[dict], *, colour: bool = False) -> list[str]:
+    """Return the content rows as drawn inside the frame, including headings."""
+    framed = render_board(agents, width=80, current_time="12:34:56", colour=colour)
+    return [row[3:-3].rstrip() for row in framed[3:-2]]
+
+
+def test_frame_shows_mixed_groups_and_counts_at_full_width() -> None:
+    """A mixed board puts headings and totals inside a full-width frame."""
+    agents = [
+        agent("Agent-Tools-idle", "orchestrator"),
+        agent("Agent-Tools-idle", "scout"),
+        agent("Agent-Tools-working", "orchestrator", status="active"),
+        agent("Agent-Tools-working", "scout"),
+    ]
+
+    lines = render_board(agents, width=60, current_time="12:34:56")
+
+    assert lines[0] == ""
+    assert lines[1].startswith("╭─ ✻ agent board ")
+    assert lines[1].endswith(" 12:34:56 ─╮")
+    assert lines[2] == "│" + " " * 58 + "│"
+    assert lines[3] == "│  WAITING ON YOU" + " " * 40 + "  │"
+    assert lines[4].startswith("│  ● needs you")
+    assert lines[5] == "│  WORKING" + " " * 47 + "  │"
+    assert lines[6].startswith("│  ○ coordinating")
+    assert lines[-2] == lines[2]
+    assert lines[-1].startswith("╰─ 1 waiting on you · 1 working ")
+    assert lines[-1].endswith("─╯")
+    assert all(len(line) == 60 for line in lines[1:])
+
+
+@pytest.mark.parametrize(
+    ("colour", "expected_rows"),
+    [
+        (
+            False,
+            [
+                "WAITING ON YOU",
+                "✕ blocked · 2m  Agent-Tools · blocked",
+                "WORKING",
+                "◌ checking      Agent-Tools · working (partial team)",
+            ],
+        ),
+        (
+            True,
+            [
+                "WAITING ON YOU",
+                "\x1b[31m✕ blocked · 2m\x1b[0m  \x1b[97mAgent-Tools · blocked\x1b[0m",
+                "WORKING",
+                "\x1b[2m◌ checking      Agent-Tools · working (partial team)\x1b[0m",
+            ],
+        ),
+    ],
+)
+def test_frame_pads_coloured_and_plain_rows_to_the_same_width(
+    colour: bool, expected_rows: list[str]
+) -> None:
+    """Colour codes do not move the right edge of a blocked or working row."""
+    agents = [
+        agent("Agent-Tools-blocked", "scout", status="blocked", age=120),
+        agent("Agent-Tools-working", "scout", status="active"),
+    ]
+
+    lines = render_board(agents, width=70, current_time="01:02:03", colour=colour)
+
+    assert [line[3:-3].rstrip() for line in lines[3:-2]] == expected_rows
+    assert all(len(ANSI_STYLE_PATTERN.sub("", line)) == 70 for line in lines[1:])
+
+
+@pytest.mark.parametrize("colour", [False, True])
+def test_empty_board_keeps_message_inside_frame(colour: bool) -> None:
+    """An empty board pads its message and shows zero counts in either colour mode."""
+    lines = render_board([], width=50, current_time="09:08:07", colour=colour)
+
+    assert len(lines) == 6
+    assert lines[2] == "│" + " " * 48 + "│"
+    assert lines[3].startswith("│  ")
+    assert "No active teams" in lines[3]
+    assert lines[-2] == lines[2]
+    assert lines[-1].startswith("╰─ 0 waiting on you · 0 working ")
+    assert all(len(ANSI_STYLE_PATTERN.sub("", line)) == 50 for line in lines[1:])
+
+
+def test_error_frame_uses_plain_bottom_edge() -> None:
+    """A failed listing shows its message without making a team-count claim."""
+    lines = render_error(
+        "HCOM error: listing failed", width=50, current_time="09:08:07"
+    )
+
+    assert lines[1].startswith("╭─ ✻ agent board ")
+    assert lines[2] == "│" + " " * 48 + "│"
+    assert lines[3] == "│  HCOM error: listing failed" + " " * 18 + "  │"
+    assert lines[-2] == lines[2]
+    assert lines[-1] == "╰" + "─" * 48 + "╯"
+    assert all(len(line) == 50 for line in lines[1:])
+
+
+def test_multiline_error_keeps_every_line_inside_the_frame() -> None:
+    """Each line of an HCOM error has its own left and right border."""
+    lines = render_error(
+        "HCOM error: listing failed\nretry later",
+        width=50,
+        current_time="09:08:07",
+    )
+
+    assert lines[2] == "│" + " " * 48 + "│"
+    assert lines[3].startswith("│  HCOM error: listing failed")
+    assert lines[4].startswith("│  retry later")
+    assert all(line.endswith("  │") for line in lines[3:5])
+    assert lines[-2] == lines[2]
+    assert lines[-1] == "╰" + "─" * 48 + "╯"
+    assert all(len(line) == 50 for line in lines[1:])
+
+
+@pytest.mark.parametrize(
+    ("agents", "heading", "totals"),
+    [
+        (
+            [agent("Agent-Tools", "orchestrator"), agent("Agent-Tools", "scout")],
+            "WAITING ON YOU",
+            "╰─ 1 waiting on you · 0 working ",
+        ),
+        (
+            [agent("Agent-Tools", "scout", status="active")],
+            "WORKING",
+            "╰─ 0 waiting on you · 1 working ",
+        ),
+    ],
+)
+def test_single_group_uses_only_its_heading(
+    agents: list[dict], heading: str, totals: str
+) -> None:
+    """A one-group board omits the other group's heading and counts it as zero."""
+    lines = render_board(agents, width=60, current_time="12:34:56")
+
+    assert lines[3].startswith(f"│  {heading}")
+    assert len(lines) == 7
+    assert lines[-1].startswith(totals)
+
+
 def test_attention_and_working_groups_use_priority_and_align_statuses() -> None:
     """Blocked teams come first, and every row shares a status column."""
     agents = [
@@ -34,13 +174,13 @@ def test_attention_and_working_groups_use_priority_and_align_statuses() -> None:
         agent("Agent-Tools-blocked", "reviewer", status="active", age=10),
     ]
 
-    lines = render_board(agents)
+    lines = board_content(agents)
 
     assert lines == [
-        "",
+        "WAITING ON YOU",
         "✕ blocked · 2m  Agent-Tools · blocked",
         "● needs you     Agent-Tools · idle",
-        "",
+        "WORKING",
         "○ working       Agent-Tools · partial (partial team)",
     ]
 
@@ -56,12 +196,12 @@ def test_blocked_waits_sort_before_waiting_team_names() -> None:
         agent("Agent-Tools-z-blocked", "scout", status="blocked", age=120),
     ]
 
-    assert render_board(agents) == [
-        "",
+    assert board_content(agents) == [
+        "WAITING ON YOU",
         "✕ blocked · 2m   Agent-Tools · z-blocked",
         "✕ blocked · 30s  Agent-Tools · a-blocked",
         "● needs you      Agent-Tools · z-idle",
-        "",
+        "WORKING",
         "○ working        Agent-Tools · a-workers",
     ]
 
@@ -76,9 +216,9 @@ def test_active_and_unread_teams_remain_working_rows() -> None:
         agent("Agent-Tools-old", "scout", status="inactive"),
     ]
 
-    lines = render_board(agents)
+    lines = board_content(agents)
 
-    assert lines == ["", "○ coordinating  Agent-Tools", "◌ checking      Custom"]
+    assert lines == ["WORKING", "○ coordinating  Agent-Tools", "◌ checking      Custom"]
 
 
 @pytest.mark.parametrize(
@@ -99,7 +239,7 @@ def test_active_role_names_working_team(
         agent("Agent-Tools", partner_role, status="listening"),
     ]
 
-    assert render_board(agents)[1] == f"{symbol} {label}  Agent-Tools"
+    assert board_content(agents)[1] == f"{symbol} {label}  Agent-Tools"
 
 
 @pytest.mark.parametrize(
@@ -116,7 +256,7 @@ def test_active_role_priority_names_working_team(
     """The highest-priority active role names a team with concurrent work."""
     agents = [agent("Agent-Tools", role, status="active") for role in roles]
 
-    assert render_board(agents)[1] == f"{symbol} {label}  Agent-Tools"
+    assert board_content(agents)[1] == f"{symbol} {label}  Agent-Tools"
 
 
 def test_launching_team_is_starting_without_active_members() -> None:
@@ -126,7 +266,7 @@ def test_launching_team_is_starting_without_active_members() -> None:
         agent("Agent-Tools", "scout", status="listening"),
     ]
 
-    assert render_board(agents)[1] == "◇ starting  Agent-Tools"
+    assert board_content(agents)[1] == "◇ starting  Agent-Tools"
 
 
 def test_active_role_takes_priority_over_launching_member() -> None:
@@ -136,7 +276,7 @@ def test_active_role_takes_priority_over_launching_member() -> None:
         agent("Agent-Tools", "scout", status="active"),
     ]
 
-    assert render_board(agents)[1] == "◌ checking  Agent-Tools"
+    assert board_content(agents)[1] == "◌ checking  Agent-Tools"
 
 
 def test_unrecognised_active_role_keeps_working_fallback() -> None:
@@ -149,14 +289,14 @@ def test_unrecognised_active_role_keeps_working_fallback() -> None:
         untagged_agent,
     ]
 
-    assert render_board(agents)[1] == "○ working  Agent-Tools"
+    assert board_content(agents)[1] == "○ working  Agent-Tools"
 
 
 def test_active_partial_team_keeps_suffix() -> None:
     """A lone active agent shows its work and remains marked as partial."""
     agents = [agent("Agent-Tools", "implementer", status="active")]
 
-    assert render_board(agents)[1] == "▶ implementing  Agent-Tools (partial team)"
+    assert board_content(agents)[1] == "▶ implementing  Agent-Tools (partial team)"
 
 
 @pytest.mark.parametrize(
@@ -181,7 +321,7 @@ def test_learner_and_review_team_roles_share_one_complete_row(
     """Learner and review workers share a row with their matching scout."""
     agents = [agent(tags[0], None, status="active"), agent(tags[1], None)]
 
-    assert render_board(agents) == ["", expected_row]
+    assert board_content(agents) == ["WORKING", expected_row]
 
 
 @pytest.mark.parametrize(
@@ -211,7 +351,7 @@ def test_learner_and_review_team_without_matching_role_is_partial(
     """Each half of a learner or review team stays marked as incomplete."""
     agents = [agent(tag, None, status="active")]
 
-    assert render_board(agents) == ["", expected_row]
+    assert board_content(agents) == ["WORKING", expected_row]
 
 
 def test_standard_team_with_learner_in_its_label_stays_complete() -> None:
@@ -221,7 +361,10 @@ def test_standard_team_with_learner_in_its_label_stays_complete() -> None:
         agent("Agent-Tools-learner-ui", "implementer"),
     ]
 
-    assert render_board(agents) == ["", "● needs you  Agent-Tools · learner-ui"]
+    assert board_content(agents) == [
+        "WAITING ON YOU",
+        "● needs you  Agent-Tools · learner-ui",
+    ]
 
 
 def test_repository_name_containing_learner_keeps_standard_team_rule() -> None:
@@ -231,15 +374,18 @@ def test_repository_name_containing_learner_keeps_standard_team_rule() -> None:
         agent("e-learner-app-board", "implementer", directory="/work/e-learner-app"),
     ]
 
-    assert render_board(agents) == ["", "● needs you  e-learner-app · board"]
+    assert board_content(agents) == [
+        "WAITING ON YOU",
+        "● needs you  e-learner-app · board",
+    ]
 
 
 def test_planning_scout_keeps_its_own_non_review_row() -> None:
     """A planning scout does not join an insights review team."""
     agents = [agent("Agent-Tools-scout-peer-claude", None, status="active")]
 
-    assert render_board(agents) == [
-        "",
+    assert board_content(agents) == [
+        "WORKING",
         "○ working  Agent-Tools · scout-peer-claude (partial team)",
     ]
 
@@ -252,12 +398,12 @@ def test_single_live_agent_joins_dimmed_working_group() -> None:
         agent("Agent-Tools-idle", "scout", age=60),
     ]
 
-    lines = render_board(agents, colour=True)
+    lines = board_content(agents, colour=True)
 
     assert lines == [
-        "",
+        "WAITING ON YOU",
         "\x1b[35m● needs you\x1b[0m  \x1b[97mAgent-Tools · idle\x1b[0m",
-        "",
+        "WORKING",
         "\x1b[2m○ working    Agent-Tools · alone (partial team)\x1b[0m",
     ]
 
@@ -269,7 +415,7 @@ def test_directory_normalisation_without_idle_age() -> None:
         agent("Lew-Timer", "reviewer", directory="/work/Lew Timer!", age=40),
     ]
 
-    assert render_board(agents)[1] == "● needs you  Lew-Timer"
+    assert board_content(agents)[1] == "● needs you  Lew-Timer"
 
 
 def test_workers_in_nested_directory_share_the_team() -> None:
@@ -284,8 +430,8 @@ def test_workers_in_nested_directory_share_the_team() -> None:
         ),
     ]
 
-    assert render_board(agents) == [
-        "",
+    assert board_content(agents) == [
+        "WAITING ON YOU",
         "● needs you  Agent-Tools · board",
     ]
 
@@ -301,7 +447,7 @@ def test_longest_matching_folder_names_the_repo() -> None:
         agent("Agent-Tools-board", "orchestrator"),
     ]
 
-    assert render_board(agents)[1] == "● needs you  Agent-Tools · board"
+    assert board_content(agents)[1] == "● needs you  Agent-Tools · board"
 
 
 def test_workers_without_orchestrator_are_working() -> None:
@@ -311,7 +457,7 @@ def test_workers_without_orchestrator_are_working() -> None:
         agent("Agent-Tools-workers", "reviewer", age=80),
     ]
 
-    assert render_board(agents, colour=True)[1] == (
+    assert board_content(agents, colour=True)[1] == (
         "\x1b[2m○ working  Agent-Tools · workers\x1b[0m"
     )
 
@@ -325,8 +471,8 @@ def test_distinct_prefixes_with_the_same_label_are_both_shown() -> None:
         agent("Agent-Tools-a--b", "reviewer"),
     ]
 
-    assert render_board(agents) == [
-        "",
+    assert board_content(agents) == [
+        "WORKING",
         "○ working  Agent-Tools · a-b",
         "○ working  Agent-Tools · a-b",
     ]
@@ -340,7 +486,7 @@ def test_lone_blocked_agent_keeps_age_order_and_red_status() -> None:
         agent("Agent-Tools-idle", "scout", age=60),
     ]
 
-    lines = render_board(agents, colour=True)
+    lines = board_content(agents, colour=True)
 
     assert lines[1] == (
         "\x1b[31m✕ blocked · 2m\x1b[0m  \x1b[97mAgent-Tools · blocked\x1b[0m"
@@ -361,31 +507,19 @@ def test_working_rows_are_fully_dimmed_when_colour_is_on() -> None:
         agent("Agent-Tools-workers", "reviewer"),
     ]
 
-    assert render_board(agents, colour=True) == [
-        "",
+    assert board_content(agents, colour=True) == [
+        "WORKING",
         "\x1b[2m○ coordinating  Agent-Tools · active\x1b[0m",
         "\x1b[2m○ working       Agent-Tools · unread\x1b[0m",
         "\x1b[2m○ working       Agent-Tools · workers\x1b[0m",
     ]
 
 
-def test_empty_groups_add_no_separator() -> None:
-    """The board starts blank without adding a gap for a missing group."""
-    waiting = [agent("Agent-Tools", "orchestrator"), agent("Agent-Tools", "scout")]
-
-    assert render_board(waiting) == ["", "● needs you  Agent-Tools"]
-    assert render_board([agent("Agent-Tools", "scout")]) == [
-        "",
-        "○ working  Agent-Tools (partial team)",
-    ]
-
-
-def test_no_active_teams_shows_one_dimmed_message() -> None:
-    """An empty or inactive listing gives a single message after the blank line."""
-    assert render_board([]) == ["", "No active teams"]
-    assert render_board([], colour=True) == ["", "\x1b[2mNo active teams\x1b[0m"]
-    assert render_board([agent("Agent-Tools", "scout", status="inactive")]) == [
-        "",
+def test_no_active_teams_shows_one_message_inside_the_frame() -> None:
+    """An empty or inactive listing shows only the message inside the frame."""
+    assert board_content([]) == ["No active teams"]
+    assert board_content([], colour=True) == ["\x1b[2mNo active teams\x1b[0m"]
+    assert board_content([agent("Agent-Tools", "scout", status="inactive")]) == [
         "No active teams",
     ]
 
@@ -394,7 +528,7 @@ def test_unfamiliar_tag_without_role_keeps_raw_prefix() -> None:
     """An unfamiliar tag remains on the board as its own team."""
     entry = agent("CustomTag", None, status="active", age=30)
 
-    assert render_board([entry])[1] == "○ working  CustomTag (partial team)"
+    assert board_content([entry])[1] == "○ working  CustomTag (partial team)"
 
 
 def test_missing_tag_uses_agent_name_as_team_prefix() -> None:
@@ -404,7 +538,7 @@ def test_missing_tag_uses_agent_name_as_team_prefix() -> None:
         entry["name"] = "Agent-Tools-standalone-lamo"
         entry["tag"] = missing_tag
 
-        assert render_board([entry])[1] == (
+        assert board_content([entry])[1] == (
             "○ working  Agent-Tools · standalone-lamo (partial team)"
         )
 
@@ -412,6 +546,6 @@ def test_missing_tag_uses_agent_name_as_team_prefix() -> None:
     entry["name"] = "Agent-Tools-standalone-lamo"
     del entry["tag"]
 
-    assert render_board([entry])[1] == (
+    assert board_content([entry])[1] == (
         "○ working  Agent-Tools · standalone-lamo (partial team)"
     )

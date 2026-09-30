@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 
-from agent_board.board import render_board
+from agent_board.board import render_board, render_error
 
 # The terminal code that hides the cursor while the board is running.
 HIDE_CURSOR = "\x1b[?25l"
@@ -36,6 +36,10 @@ def main() -> int:
 
     try:
         while True:
+            width = shutil.get_terminal_size().columns
+            current_time = time.strftime("%H:%M:%S")
+            error_message = None
+
             try:
                 result = subprocess.run(
                     ["hcom", "list", "--json"],
@@ -49,15 +53,25 @@ def main() -> int:
                     message = (
                         result.stderr.strip() or f"hcom exited {result.returncode}"
                     )
-                    lines = [f"HCOM error: {message}"]
+                    error_message = f"HCOM error: {message}"
                 else:
-                    lines = render_board(json.loads(result.stdout), colour=colour)
+                    lines = render_board(
+                        json.loads(result.stdout),
+                        width=width,
+                        current_time=current_time,
+                        colour=colour,
+                    )
             except KeyError as error:
-                lines = [f"Unexpected hcom listing: missing {error}"]
+                error_message = f"Unexpected hcom listing: missing {error}"
             except TypeError as error:
-                lines = [f"Unexpected hcom listing: {error}"]
+                error_message = f"Unexpected hcom listing: {error}"
             except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as error:
-                lines = [f"HCOM error: {error}"]
+                error_message = f"HCOM error: {error}"
+
+            if error_message is not None:
+                lines = render_error(
+                    error_message, width=width, current_time=current_time
+                )
 
             sys.stdout.write(CLEAR_SCREEN + "\n".join(lines) + "\n")
             sys.stdout.flush()
