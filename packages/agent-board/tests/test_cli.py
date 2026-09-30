@@ -7,6 +7,7 @@ import subprocess
 
 import pytest
 from agent_board import cli
+from agent_board.board import ANSI_STYLE_PATTERN
 
 
 def test_missing_hcom_returns_one_without_hiding_cursor(monkeypatch) -> None:
@@ -24,9 +25,14 @@ def test_missing_hcom_returns_one_without_hiding_cursor(monkeypatch) -> None:
     )
 
 
-@pytest.mark.parametrize("colour", [False, True])
-def test_nonzero_hcom_exit_is_shown_on_the_board(monkeypatch, colour: bool) -> None:
-    """A failed HCOM command stays in an uncoloured frame until the next refresh."""
+@pytest.mark.parametrize(
+    ("terminal", "no_colour", "coloured"),
+    [(False, False, False), (True, False, True), (True, True, False)],
+)
+def test_nonzero_hcom_exit_is_shown_on_the_board(
+    monkeypatch, terminal: bool, no_colour: bool, coloured: bool
+) -> None:
+    """A failed HCOM command keeps its frame and follows the terminal colour setting."""
     output = io.StringIO()
 
     def failed_hcom(*args, **kwargs):
@@ -47,19 +53,30 @@ def test_nonzero_hcom_exit_is_shown_on_the_board(monkeypatch, colour: bool) -> N
         cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
     )
     monkeypatch.setattr(cli.sys, "stdout", output)
-    monkeypatch.setattr(output, "isatty", lambda: colour)
+    monkeypatch.setattr(output, "isatty", lambda: terminal)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    if no_colour:
+        monkeypatch.setenv("NO_COLOR", "1")
 
     assert cli.main() == 0
-    assert "╭─ ✻ agent board " in output.getvalue()
-    assert "12:34:56 ─╮" in output.getvalue()
-    assert "│" + " " * 78 + "│\n│  HCOM error: listing failed" in output.getvalue()
-    assert "│  retry later" in output.getvalue()
-    assert "│" + " " * 78 + "│\n╰" in output.getvalue()
-    assert "╰" + "─" * 78 + "╯" in output.getvalue()
-    assert (
-        "\x1b["
-        not in output.getvalue().split(cli.CLEAR_SCREEN)[1].split(cli.SHOW_CURSOR)[0]
+    board_output = (
+        output.getvalue().split(cli.CLEAR_SCREEN)[1].split(cli.SHOW_CURSOR)[0]
     )
+    plain_output = ANSI_STYLE_PATTERN.sub("", board_output)
+
+    assert "╭─ ✻ agent board " in plain_output
+    assert "12:34:56 ─╮" in plain_output
+    assert "│" + " " * 78 + "│\n│  HCOM error: listing failed" in plain_output
+    assert "│  retry later" in plain_output
+    assert "│" + " " * 78 + "│\n╰" in plain_output
+    assert "╰" + "─" * 78 + "╯" in plain_output
+
+    if coloured:
+        assert "\x1b[38;5;214m╭" in board_output
+    else:
+        assert "\x1b[" not in board_output
+
     assert output.getvalue().endswith(cli.SHOW_CURSOR + "\n")
 
 

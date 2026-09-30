@@ -4,12 +4,15 @@
 
 Below 30 columns, the board shows plain rows without the frame, headings, clock, or counts, and shortens long rows to fit.
 
+The frame turns red for blocked teams, magenta for teams that need you, and amber otherwise; set `NO_COLOR` to show the same board without colour.
+
 ```text
 ╭─ ✻ agent board ─────────────────────────────── 12:34:56 ─╮
 │                                                          │
 │  WAITING ON YOU                                          │
 │  ✕ blocked · 4m  agent-tools                             │
 │  ● needs you     Lew-Timer                               │
+│                                                          │
 │  WORKING                                                 │
 │  ▶ implementing  agent-tools · agent-board               │
 │  ◌ checking      agent-tools · scratch                   │

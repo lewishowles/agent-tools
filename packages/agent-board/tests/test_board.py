@@ -1,5 +1,7 @@
 """Check board decisions against representative HCOM listings."""
 
+import re
+
 import pytest
 from agent_board.board import ANSI_STYLE_PATTERN, render_board, render_error
 
@@ -26,7 +28,14 @@ def agent(
 def board_content(agents: list[dict], *, colour: bool = False) -> list[str]:
     """Return the content rows as drawn inside the frame, including headings."""
     framed = render_board(agents, width=80, current_time="12:34:56", colour=colour)
-    return [row[3:-3].rstrip() for row in framed[3:-2]]
+    rows = []
+
+    for row in framed[3:-2]:
+        content = re.sub(r"^(?:\x1b\[[0-9;]*m)?│(?:\x1b\[[0-9;]*m)?  ", "", row)
+        content = re.sub(r"  (?:\x1b\[[0-9;]*m)?│(?:\x1b\[[0-9;]*m)?$", "", content)
+        rows.append(content.rstrip())
+
+    return rows
 
 
 def test_frame_shows_mixed_groups_and_counts_at_full_width() -> None:
@@ -46,12 +55,49 @@ def test_frame_shows_mixed_groups_and_counts_at_full_width() -> None:
     assert lines[2] == "│" + " " * 58 + "│"
     assert lines[3] == "│  WAITING ON YOU" + " " * 40 + "  │"
     assert lines[4].startswith("│  ● needs you")
-    assert lines[5] == "│  WORKING" + " " * 47 + "  │"
-    assert lines[6].startswith("│  ○ coordinating")
+    assert lines[5] == lines[2]
+    assert lines[6] == "│  WORKING" + " " * 47 + "  │"
+    assert lines[7].startswith("│  ○ coordinating")
     assert lines[-2] == lines[2]
     assert lines[-1].startswith("╰─ 1 waiting on you · 1 working ")
     assert lines[-1].endswith("─╯")
     assert all(len(line) == 60 for line in lines[1:])
+
+
+@pytest.mark.parametrize(
+    ("agents", "border_style"),
+    [
+        ([agent("Agent-Tools", "scout", status="blocked")], "\x1b[31m"),
+        (
+            [agent("Agent-Tools", "orchestrator"), agent("Agent-Tools", "scout")],
+            "\x1b[35m",
+        ),
+        ([agent("Agent-Tools", "scout", status="active")], "\x1b[38;5;214m"),
+        ([], "\x1b[38;5;214m"),
+    ],
+)
+def test_frame_colour_follows_the_board_state(
+    agents: list[dict], border_style: str
+) -> None:
+    """The border and counts show waiting teams, or amber when none is waiting."""
+    lines = render_board(agents, width=60, current_time="12:34:56", colour=True)
+
+    assert lines[1].startswith(f"{border_style}╭─ ")
+    assert "\x1b[38;5;214m✻ agent board\x1b[0m" in lines[1]
+    assert "\x1b[38;5;214m12:34:56\x1b[0m" in lines[1]
+    assert lines[2].startswith(f"{border_style}│\x1b[0m")
+    assert lines[-1].startswith(f"{border_style}╰─ ")
+    assert lines[-1].endswith("─╯\x1b[0m")
+    assert all(len(ANSI_STYLE_PATTERN.sub("", line)) == 60 for line in lines[1:])
+
+
+def test_colourless_frame_contains_no_terminal_styles() -> None:
+    """A plain output stream keeps the same frame without ANSI codes."""
+    agents = [agent("Agent-Tools", "scout", status="blocked")]
+
+    lines = render_board(agents, width=60, current_time="12:34:56", colour=False)
+
+    assert all("\x1b[" not in line for line in lines)
 
 
 def test_wide_terminal_keeps_an_80_column_frame_left_aligned() -> None:
@@ -94,6 +140,7 @@ def test_wide_terminal_shortens_a_long_row_at_the_frame_cap() -> None:
             [
                 "WAITING ON YOU",
                 "✕ blocked · 2m  Agent-Tools · blocked",
+                "",
                 "WORKING",
                 "◌ checking      Agent-Tools · working (partial team)",
             ],
@@ -101,9 +148,10 @@ def test_wide_terminal_shortens_a_long_row_at_the_frame_cap() -> None:
         (
             True,
             [
-                "WAITING ON YOU",
-                "\x1b[31m✕ blocked · 2m\x1b[0m  \x1b[97mAgent-Tools · blocked\x1b[0m",
-                "WORKING",
+                "\x1b[2mWAITING ON YOU\x1b[0m",
+                "\x1b[31m✕ blocked · 2m\x1b[0m  \x1b[97mAgent-Tools\x1b[0m\x1b[2m · blocked\x1b[0m",
+                "",
+                "\x1b[2mWORKING\x1b[0m",
                 "\x1b[2m◌ checking      Agent-Tools · working (partial team)\x1b[0m",
             ],
         ),
@@ -120,7 +168,7 @@ def test_frame_pads_coloured_and_plain_rows_to_the_same_width(
 
     lines = render_board(agents, width=70, current_time="01:02:03", colour=colour)
 
-    assert [line[3:-3].rstrip() for line in lines[3:-2]] == expected_rows
+    assert board_content(agents, colour=colour) == expected_rows
     assert all(len(ANSI_STYLE_PATTERN.sub("", line)) == 70 for line in lines[1:])
 
 
@@ -130,12 +178,14 @@ def test_empty_board_keeps_message_inside_frame(colour: bool) -> None:
     lines = render_board([], width=50, current_time="09:08:07", colour=colour)
 
     assert len(lines) == 6
-    assert lines[2] == "│" + " " * 48 + "│"
-    assert lines[3].startswith("│  ")
-    assert "No active teams" in lines[3]
+    plain_lines = [ANSI_STYLE_PATTERN.sub("", line) for line in lines]
+
+    assert plain_lines[2] == "│" + " " * 48 + "│"
+    assert plain_lines[3].startswith("│  ")
+    assert "No active teams" in plain_lines[3]
     assert lines[-2] == lines[2]
-    assert lines[-1].startswith("╰─ 0 waiting on you · 0 working ")
-    assert all(len(ANSI_STYLE_PATTERN.sub("", line)) == 50 for line in lines[1:])
+    assert plain_lines[-1].startswith("╰─ 0 waiting on you · 0 working ")
+    assert all(len(line) == 50 for line in plain_lines[1:])
 
 
 def test_error_frame_uses_plain_bottom_edge() -> None:
@@ -150,6 +200,28 @@ def test_error_frame_uses_plain_bottom_edge() -> None:
     assert lines[-2] == lines[2]
     assert lines[-1] == "╰" + "─" * 48 + "╯"
     assert all(len(line) == 50 for line in lines[1:])
+
+
+@pytest.mark.parametrize("colour", [False, True])
+def test_error_frame_uses_amber_only_with_colour(colour: bool) -> None:
+    """An error keeps its frame and uses amber only when colour is enabled."""
+    lines = render_error(
+        "HCOM error: listing failed",
+        width=50,
+        current_time="09:08:07",
+        colour=colour,
+    )
+
+    if colour:
+        assert lines[1].startswith("\x1b[38;5;214m╭─ ")
+        assert "\x1b[38;5;214m✻ agent board\x1b[0m" in lines[1]
+        assert "\x1b[38;5;214m09:08:07\x1b[0m" in lines[1]
+        assert lines[2].startswith("\x1b[38;5;214m│\x1b[0m")
+        assert lines[-1].startswith("\x1b[38;5;214m╰")
+    else:
+        assert all("\x1b[" not in line for line in lines)
+
+    assert all(len(ANSI_STYLE_PATTERN.sub("", line)) == 50 for line in lines[1:])
 
 
 def test_multiline_error_keeps_every_line_inside_the_frame() -> None:
@@ -184,14 +256,13 @@ def test_tight_frame_shortens_rows_and_bottom_text(colour: bool) -> None:
     assert plain_lines[1].endswith(" 12:34:56 ─╮")
     assert plain_lines[4].startswith("│  ✕ blocked · 1m")
     assert plain_lines[4].endswith("…  │")
-    assert plain_lines[6].endswith("…  │")
+    assert plain_lines[7].endswith("…  │")
     assert plain_lines[-1] == "╰─ 1 waiting on you · 1 wo… ─╯"
     assert all(len(line) == 30 for line in plain_lines[1:])
 
     if colour:
-        assert lines[4].endswith("…\x1b[0m  │")
-        assert lines[6].endswith("…\x1b[0m  │")
-        assert lines[4].count("\x1b[0m") == 2
+        assert "…\x1b[0m" in lines[4]
+        assert "…\x1b[0m" in lines[7]
     else:
         assert all("\x1b[" not in line for line in lines)
 
@@ -299,6 +370,7 @@ def test_attention_and_working_groups_use_priority_and_align_statuses() -> None:
         "WAITING ON YOU",
         "✕ blocked · 2m  Agent-Tools · blocked",
         "● needs you     Agent-Tools · idle",
+        "",
         "WORKING",
         "○ working       Agent-Tools · partial (partial team)",
     ]
@@ -320,6 +392,7 @@ def test_blocked_waits_sort_before_waiting_team_names() -> None:
         "✕ blocked · 2m   Agent-Tools · z-blocked",
         "✕ blocked · 30s  Agent-Tools · a-blocked",
         "● needs you      Agent-Tools · z-idle",
+        "",
         "WORKING",
         "○ working        Agent-Tools · a-workers",
     ]
@@ -520,9 +593,10 @@ def test_single_live_agent_joins_dimmed_working_group() -> None:
     lines = board_content(agents, colour=True)
 
     assert lines == [
-        "WAITING ON YOU",
-        "\x1b[35m● needs you\x1b[0m  \x1b[97mAgent-Tools · idle\x1b[0m",
-        "WORKING",
+        "\x1b[2mWAITING ON YOU\x1b[0m",
+        "\x1b[35m● needs you\x1b[0m  \x1b[97mAgent-Tools\x1b[0m\x1b[2m · idle\x1b[0m",
+        "",
+        "\x1b[2mWORKING\x1b[0m",
         "\x1b[2m○ working    Agent-Tools · alone (partial team)\x1b[0m",
     ]
 
@@ -608,10 +682,10 @@ def test_lone_blocked_agent_keeps_age_order_and_red_status() -> None:
     lines = board_content(agents, colour=True)
 
     assert lines[1] == (
-        "\x1b[31m✕ blocked · 2m\x1b[0m  \x1b[97mAgent-Tools · blocked\x1b[0m"
+        "\x1b[31m✕ blocked · 2m\x1b[0m  \x1b[97mAgent-Tools\x1b[0m\x1b[2m · blocked\x1b[0m"
     )
     assert lines[2] == (
-        "\x1b[35m● needs you   \x1b[0m  \x1b[97mAgent-Tools · idle\x1b[0m"
+        "\x1b[35m● needs you   \x1b[0m  \x1b[97mAgent-Tools\x1b[0m\x1b[2m · idle\x1b[0m"
     )
 
 
@@ -627,7 +701,7 @@ def test_working_rows_are_fully_dimmed_when_colour_is_on() -> None:
     ]
 
     assert board_content(agents, colour=True) == [
-        "WORKING",
+        "\x1b[2mWORKING\x1b[0m",
         "\x1b[2m○ coordinating  Agent-Tools · active\x1b[0m",
         "\x1b[2m○ working       Agent-Tools · unread\x1b[0m",
         "\x1b[2m○ working       Agent-Tools · workers\x1b[0m",

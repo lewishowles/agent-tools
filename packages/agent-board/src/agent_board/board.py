@@ -40,6 +40,10 @@ RED_STYLE = "\x1b[31m"
 # The terminal code that shows a "needs you" status in purple.
 MAGENTA_STYLE = "\x1b[35m"
 
+# The terminal code for the amber title and clock, and for the border while
+# no team is waiting on you.
+AMBER_STYLE = "\x1b[38;5;214m"
+
 # The terminal code that dims working teams and the empty state.
 DIM_STYLE = "\x1b[2m"
 
@@ -66,7 +70,8 @@ def render_board(
     The lines start with a blank line, then the frame. Teams that need you come
     first under WAITING ON YOU: blocked teams with their longest wait, then
     teams whose agents are all waiting with nothing unread. Working teams
-    follow under WORKING. A heading is left out when its group is empty.
+    follow under WORKING, after a blank line when both groups show. A heading
+    is left out when its group is empty.
     Below 30 columns, plain rows replace the frame and headings, with a blank
     line between the groups.
     Statuses line up across both groups, and an empty listing shows
@@ -77,7 +82,8 @@ def render_board(
         agents: The records from `hcom list --json`.
         width: The terminal's width for this refresh.
         current_time: The local time for the top edge, formatted as HH:MM:SS.
-        colour: Whether to colour attention rows and dim working rows.
+        colour: Whether to colour the frame and rows and dim the headings,
+            working rows and team names after the repository.
     """
     teams = defaultdict(list)
 
@@ -99,7 +105,8 @@ def render_board(
     working = []
 
     for (prefix, kind), members in teams.items():
-        label = _team_label(prefix, members)
+        repository, label_rest = _team_label(prefix, members)
+        label = repository + label_rest
         statuses = [agent["status"] for agent, _ in members]
         roles = {role for _, role in members}
 
@@ -121,25 +128,40 @@ def render_board(
                 for agent, _ in members
                 if agent["status"] == "blocked"
             )
-            needs_you.append(((0, -age, label), label, f"blocked · {_format_age(age)}"))
+            needs_you.append(
+                (
+                    (0, -age, label),
+                    repository,
+                    label_rest,
+                    f"blocked · {_format_age(age)}",
+                )
+            )
         elif partly_running:
             status = _working_status(members)
 
             if len(members) == 1:
-                label += " (partial team)"
+                label_rest += " (partial team)"
 
-            working.append((label, status))
+            working.append((label, repository, label_rest, status))
         elif all(
             agent["status"] == "listening" and agent["unread_count"] == 0
             for agent, _ in members
         ):
-            needs_you.append(((1, 0, label), label, "needs you"))
+            needs_you.append(((1, 0, label), repository, label_rest, "needs you"))
         else:
-            working.append((label, _working_status(members)))
+            working.append((label, repository, label_rest, _working_status(members)))
 
     # Blocked teams sort by longest wait; every other team sorts by name.
     needs_you.sort(key=lambda row: row[0])
     working.sort(key=lambda row: row[0])
+
+    # The border follows the most urgent team and is amber when none is waiting.
+    if any(status.startswith("blocked") for _, _, _, status in needs_you):
+        frame_style = RED_STYLE
+    elif needs_you:
+        frame_style = MAGENTA_STYLE
+    else:
+        frame_style = AMBER_STYLE
 
     # Narrow terminals get plain rows without the frame or headings.
     framed = width >= MIN_FRAME_WIDTH
@@ -151,61 +173,89 @@ def render_board(
         if not framed:
             return _plain_lines(lines, width)
 
-        return _frame_lines(lines, width, current_time, "0 waiting on you · 0 working")
+        return _frame_lines(
+            lines,
+            width,
+            current_time,
+            "0 waiting on you · 0 working",
+            frame_style=frame_style if colour else None,
+        )
 
-    shown_statuses = [status for _, _, status in needs_you] + [
-        status for _, status in working
+    shown_statuses = [status for _, _, _, status in needs_you] + [
+        status for _, _, _, status in working
     ]
     status_width = max(len(status) for status in shown_statuses)
 
     if needs_you and framed:
-        lines.append("WAITING ON YOU")
+        heading = "WAITING ON YOU"
+        lines.append(f"{DIM_STYLE}{heading}{RESET_STYLE}" if colour else heading)
 
-    for _, label, status in needs_you:
+    for _, repository, label_rest, status in needs_you:
         symbol = STATUS_SYMBOLS[status.partition(" · ")[0]]
         padded_status = f"{status:<{status_width}}"
 
         if colour:
             status_style = RED_STYLE if status.startswith("blocked") else MAGENTA_STYLE
+            styled_rest = f"{DIM_STYLE}{label_rest}{RESET_STYLE}" if label_rest else ""
             lines.append(
                 f"{status_style}{symbol} {padded_status}{RESET_STYLE}  "
-                f"{BRIGHT_WHITE_STYLE}{label}{RESET_STYLE}"
+                f"{BRIGHT_WHITE_STYLE}{repository}{RESET_STYLE}"
+                f"{styled_rest}"
             )
         else:
-            lines.append(f"{symbol} {padded_status}  {label}")
+            lines.append(f"{symbol} {padded_status}  {repository}{label_rest}")
 
     if working and framed:
-        lines.append("WORKING")
+        if needs_you:
+            lines.append("")
+
+        heading = "WORKING"
+        lines.append(f"{DIM_STYLE}{heading}{RESET_STYLE}" if colour else heading)
     elif working and needs_you:
         # Without headings, a blank line keeps the two groups apart.
         lines.append("")
 
-    for label, status in working:
+    for _, repository, label_rest, status in working:
         symbol = STATUS_SYMBOLS[status]
-        line = f"{symbol} {status:<{status_width}}  {label}"
+        line = f"{symbol} {status:<{status_width}}  {repository}{label_rest}"
         lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
 
     if not framed:
         return _plain_lines(lines, width)
 
     bottom_text = f"{len(needs_you)} waiting on you · {len(working)} working"
-    return _frame_lines(lines, width, current_time, bottom_text)
+    return _frame_lines(
+        lines,
+        width,
+        current_time,
+        bottom_text,
+        frame_style=frame_style if colour else None,
+    )
 
 
-def render_error(message: str, *, width: int, current_time: str) -> list[str]:
+def render_error(
+    message: str, *, width: int, current_time: str, colour: bool = False
+) -> list[str]:
     """Show an hcom failure inside the frame, or as plain lines below 30 columns.
 
     Args:
         message: The error to show inside the frame.
         width: The terminal's width for this refresh.
         current_time: The local time for the top edge, formatted as HH:MM:SS.
+        colour: Whether to colour the frame amber.
     """
     lines = message.splitlines()
 
     if width < MIN_FRAME_WIDTH:
         return _plain_lines(lines, width)
 
-    return _frame_lines(lines, width, current_time, None)
+    return _frame_lines(
+        lines,
+        width,
+        current_time,
+        None,
+        frame_style=AMBER_STYLE if colour else None,
+    )
 
 
 def _plain_lines(lines: list[str], width: int) -> list[str]:
@@ -217,7 +267,12 @@ def _plain_lines(lines: list[str], width: int) -> list[str]:
 
 
 def _frame_lines(
-    lines: list[str], width: int, current_time: str, bottom_text: str | None
+    lines: list[str],
+    width: int,
+    current_time: str,
+    bottom_text: str | None,
+    *,
+    frame_style: str | None = None,
 ) -> list[str]:
     """Draw the rounded frame around the board's lines.
 
@@ -232,11 +287,21 @@ def _frame_lines(
             than MAX_FRAME_WIDTH.
         current_time: The local time for the top edge, formatted as HH:MM:SS.
         bottom_text: The text set into the bottom edge, or None for a plain edge.
+        frame_style: The terminal colour for the border and the bottom-edge
+            text, or None to draw the frame without colour.
     """
     width = min(width, MAX_FRAME_WIDTH)
     top_start = "╭─ ✻ agent board "
     top_end = f" {current_time} ─╮"
-    top = top_start + "─" * max(0, width - len(top_start) - len(top_end)) + top_end
+    top_dashes = "─" * max(0, width - len(top_start) - len(top_end))
+    top = top_start + top_dashes + top_end
+
+    if frame_style:
+        top = (
+            f"{frame_style}╭─ {RESET_STYLE}{AMBER_STYLE}✻ agent board{RESET_STYLE}"
+            f"{frame_style} {top_dashes} {RESET_STYLE}{AMBER_STYLE}{current_time}"
+            f"{RESET_STYLE}{frame_style} ─╮{RESET_STYLE}"
+        )
 
     # The corners, the dashes beside the text and the spaces around it use six
     # columns.
@@ -252,15 +317,31 @@ def _frame_lines(
         + bottom_end
     )
 
+    if frame_style:
+        bottom = f"{frame_style}{bottom}{RESET_STYLE}"
+
     # The borders and two spaces on each side use six columns.
     content_width = width - 6
     blank_row = f"│{' ' * (width - 2)}│"
+
+    if frame_style:
+        blank_row = (
+            f"{frame_style}│{RESET_STYLE}{' ' * (width - 2)}{frame_style}│{RESET_STYLE}"
+        )
+
     framed_rows = []
 
     for line in lines:
         short_line = _shorten_visible(line, content_width)
         padding = " " * (content_width - _visible_width(short_line))
-        framed_rows.append(f"│  {short_line}{padding}  │")
+
+        if frame_style:
+            framed_rows.append(
+                f"{frame_style}│{RESET_STYLE}  {short_line}{padding}  "
+                f"{frame_style}│{RESET_STYLE}"
+            )
+        else:
+            framed_rows.append(f"│  {short_line}{padding}  │")
 
     return ["", top, blank_row, *framed_rows, blank_row, bottom]
 
@@ -372,14 +453,15 @@ def _split_tag(tag: str) -> tuple[str, str | None, str]:
     return tag, None, "standard"
 
 
-def _team_label(prefix: str, members: list[tuple[dict, str | None]]) -> str:
-    """Name a team as `repo` or `repo · label`.
+def _team_label(prefix: str, members: list[tuple[dict, str | None]]) -> tuple[str, str]:
+    """Split a team's name into its repository and the rest, such as " · label".
 
     The repository is the longest folder name, from any member's working
     directory or its parents, that the tag prefix starts with. Agents often
     work in a subfolder, and a short subfolder name must not win over the
     repository. A prefix with no matching folder is shown as it is, so the
-    agent is still listed.
+    agent is still listed. The rest is empty when the team is named after its
+    repository alone; the board dims it on rows that are waiting on you.
     """
     normalised_prefix = _normalise(prefix)
     repository = ""
@@ -398,12 +480,12 @@ def _team_label(prefix: str, members: list[tuple[dict, str | None]]) -> str:
                 repository = folder_name
 
     if repository == normalised_prefix:
-        return repository
+        return repository, ""
 
     if repository:
-        return f"{repository} · {normalised_prefix[len(repository) + 1 :]}"
+        return repository, f" · {normalised_prefix[len(repository) + 1 :]}"
 
-    return prefix
+    return prefix, ""
 
 
 def _format_age(seconds: float) -> str:

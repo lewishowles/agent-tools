@@ -70,7 +70,7 @@ def main() -> int:
 
             if error_message is not None:
                 lines = render_error(
-                    error_message, width=width, current_time=current_time
+                    error_message, width=width, current_time=current_time, colour=colour
                 )
 
             sys.stdout.write(CLEAR_SCREEN + "\n".join(lines) + "\n")
