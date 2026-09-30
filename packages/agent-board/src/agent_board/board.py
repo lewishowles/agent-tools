@@ -49,6 +49,10 @@ RESET_STYLE = "\x1b[0m"
 # The pattern that matches ANSI colour codes, which take up no screen space.
 ANSI_STYLE_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 
+# The narrowest terminal that still gets the frame. Narrower terminals get
+# plain rows, because the title and clock alone need 29 columns.
+MIN_FRAME_WIDTH = 30
+
 
 def render_board(
     agents: list[dict], *, width: int, current_time: str, colour: bool = False
@@ -59,6 +63,8 @@ def render_board(
     first under WAITING ON YOU: blocked teams with their longest wait, then
     teams whose agents are all waiting with nothing unread. Working teams
     follow under WORKING. A heading is left out when its group is empty.
+    Below 30 columns, plain rows replace the frame and headings, with a blank
+    line between the groups.
     Statuses line up across both groups, and an empty listing shows
     "No active teams". Stopped (inactive) agents are left out, so a team with
     one agent left shows as a partial team.
@@ -131,11 +137,16 @@ def render_board(
     needs_you.sort(key=lambda row: row[0])
     working.sort(key=lambda row: row[0])
 
+    # Narrow terminals get plain rows without the frame or headings.
+    framed = width >= MIN_FRAME_WIDTH
     lines = []
 
     if not needs_you and not working:
         line = "No active teams"
         lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
+        if not framed:
+            return _plain_lines(lines, width)
+
         return _frame_lines(lines, width, current_time, "0 waiting on you · 0 working")
 
     shown_statuses = [status for _, _, status in needs_you] + [
@@ -143,7 +154,7 @@ def render_board(
     ]
     status_width = max(len(status) for status in shown_statuses)
 
-    if needs_you:
+    if needs_you and framed:
         lines.append("WAITING ON YOU")
 
     for _, label, status in needs_you:
@@ -159,27 +170,46 @@ def render_board(
         else:
             lines.append(f"{symbol} {padded_status}  {label}")
 
-    if working:
+    if working and framed:
         lines.append("WORKING")
+    elif working and needs_you:
+        # Without headings, a blank line keeps the two groups apart.
+        lines.append("")
 
     for label, status in working:
         symbol = STATUS_SYMBOLS[status]
         line = f"{symbol} {status:<{status_width}}  {label}"
         lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
 
+    if not framed:
+        return _plain_lines(lines, width)
+
     bottom_text = f"{len(needs_you)} waiting on you · {len(working)} working"
     return _frame_lines(lines, width, current_time, bottom_text)
 
 
 def render_error(message: str, *, width: int, current_time: str) -> list[str]:
-    """Build the framed board lines that show an hcom failure in place of the teams.
+    """Show an hcom failure inside the frame, or as plain lines below 30 columns.
 
     Args:
         message: The error to show inside the frame.
         width: The terminal's width for this refresh.
         current_time: The local time for the top edge, formatted as HH:MM:SS.
     """
-    return _frame_lines(message.splitlines(), width, current_time, None)
+    lines = message.splitlines()
+
+    if width < MIN_FRAME_WIDTH:
+        return _plain_lines(lines, width)
+
+    return _frame_lines(lines, width, current_time, None)
+
+
+def _plain_lines(lines: list[str], width: int) -> list[str]:
+    """Show the board's lines without a frame, each shortened to the terminal width.
+
+    The leading empty line matches the gap above the frame on wider terminals.
+    """
+    return ["", *(_shorten_visible(line, width) for line in lines)]
 
 
 def _frame_lines(
@@ -188,7 +218,9 @@ def _frame_lines(
     """Draw the rounded frame around the board's lines.
 
     A blank row sits above and below the content. Content lines sit two spaces
-    in from each side, and the right padding ignores colour codes.
+    in from each side, and the right padding ignores colour codes. Content and
+    bottom-edge text that would not fit end in "…", so the right edge always
+    lines up.
 
     Args:
         lines: The content to show inside the frame.
@@ -200,7 +232,13 @@ def _frame_lines(
     top_end = f" {current_time} ─╮"
     top = top_start + "─" * max(0, width - len(top_start) - len(top_end)) + top_end
 
-    bottom_start = f"╰─ {bottom_text} " if bottom_text is not None else "╰"
+    # The corners, the dashes beside the text and the spaces around it use six
+    # columns.
+    bottom_start = (
+        f"╰─ {_shorten_visible(bottom_text, width - 6)} "
+        if bottom_text is not None
+        else "╰"
+    )
     bottom_end = "─╯" if bottom_text is not None else "╯"
     bottom = (
         bottom_start
@@ -211,16 +249,57 @@ def _frame_lines(
     # The borders and two spaces on each side use six columns.
     content_width = width - 6
     blank_row = f"│{' ' * (width - 2)}│"
-    framed_rows = [
-        f"│  {line}{' ' * max(0, content_width - _visible_width(line))}  │"
-        for line in lines
-    ]
+    framed_rows = []
+
+    for line in lines:
+        short_line = _shorten_visible(line, content_width)
+        padding = " " * (content_width - _visible_width(short_line))
+        framed_rows.append(f"│  {short_line}{padding}  │")
+
     return ["", top, blank_row, *framed_rows, blank_row, bottom]
 
 
 def _visible_width(line: str) -> int:
     """Count the characters that occupy a row, leaving out ANSI colour codes."""
     return len(ANSI_STYLE_PATTERN.sub("", line))
+
+
+def _shorten_visible(line: str, width: int) -> str:
+    """Shorten a line to fit a number of columns, ending it with "…" when cut.
+
+    Colour codes take no columns and are never split. A shortened line that
+    contains colour ends with a reset, so the colour stops at the "…".
+    """
+    if _visible_width(line) <= width:
+        return line
+
+    if width <= 0:
+        return ""
+
+    # One column is kept free for the "…".
+    limit = width - 1
+    parts = []
+    visible = 0
+    start = 0
+
+    for match in ANSI_STYLE_PATTERN.finditer(line):
+        segment = line[start : match.start()]
+        remaining = limit - visible
+
+        if len(segment) >= remaining:
+            parts.append(segment[:remaining])
+            break
+
+        parts.extend((segment, match.group()))
+        visible += len(segment)
+        start = match.end()
+    else:
+        parts.append(line[start : start + limit - visible])
+
+    shortened = "".join(parts) + "…"
+    return (
+        shortened + RESET_STYLE if ANSI_STYLE_PATTERN.search(shortened) else shortened
+    )
 
 
 def _working_status(members: list[tuple[dict, str | None]]) -> str:

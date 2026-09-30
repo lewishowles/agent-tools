@@ -137,6 +137,93 @@ def test_multiline_error_keeps_every_line_inside_the_frame() -> None:
     assert all(len(line) == 50 for line in lines[1:])
 
 
+@pytest.mark.parametrize("colour", [False, True])
+def test_tight_frame_shortens_rows_and_bottom_text(colour: bool) -> None:
+    """The frame stays aligned when team rows and the counts exceed its width."""
+    agents = [
+        agent("Agent-Tools-long-blocked-team", "scout", status="blocked"),
+        agent("Agent-Tools-long-working-team", "scout", status="active"),
+    ]
+
+    lines = render_board(agents, width=30, current_time="12:34:56", colour=colour)
+    plain_lines = [ANSI_STYLE_PATTERN.sub("", line) for line in lines]
+
+    assert plain_lines[1].startswith("╭─ ✻ agent board ")
+    assert plain_lines[1].endswith(" 12:34:56 ─╮")
+    assert plain_lines[4].startswith("│  ✕ blocked · 1m")
+    assert plain_lines[4].endswith("…  │")
+    assert plain_lines[6].endswith("…  │")
+    assert plain_lines[-1] == "╰─ 1 waiting on you · 1 wo… ─╯"
+    assert all(len(line) == 30 for line in plain_lines[1:])
+
+    if colour:
+        assert lines[4].endswith("…\x1b[0m  │")
+        assert lines[6].endswith("…\x1b[0m  │")
+        assert lines[4].count("\x1b[0m") == 2
+    else:
+        assert all("\x1b[" not in line for line in lines)
+
+
+def test_long_error_line_stays_inside_a_tight_frame() -> None:
+    """A long hcom error cannot push the right edge past the terminal width."""
+    lines = render_error(
+        "HCOM error: a very long failure message",
+        width=30,
+        current_time="12:34:56",
+    )
+
+    assert lines[3] == "│  HCOM error: a very long…  │"
+    assert all(len(line) == 30 for line in lines[1:])
+
+
+@pytest.mark.parametrize("colour", [False, True])
+def test_narrow_board_uses_plain_rows_with_a_gap_between_groups(colour: bool) -> None:
+    """A narrow board keeps both groups without headings, a clock, or counts."""
+    agents = [
+        agent("Agent-Tools-blocked", "scout", status="blocked"),
+        agent("Agent-Tools-working", "scout", status="active"),
+    ]
+
+    lines = render_board(agents, width=29, current_time="12:34:56", colour=colour)
+    plain_lines = [ANSI_STYLE_PATTERN.sub("", line) for line in lines]
+
+    assert plain_lines == [
+        "",
+        "✕ blocked · 1m  Agent-Tools …",
+        "",
+        "◌ checking      Agent-Tools …",
+    ]
+    assert all(len(line) <= 29 for line in plain_lines)
+
+    if colour:
+        assert lines[1].endswith("…\x1b[0m")
+        assert lines[3].endswith("…\x1b[0m")
+    else:
+        assert all("\x1b[" not in line for line in lines)
+
+
+@pytest.mark.parametrize("colour", [False, True])
+def test_narrow_empty_board_keeps_plain_empty_message(colour: bool) -> None:
+    """The empty state remains readable without a frame or counts."""
+    lines = render_board([], width=10, current_time="12:34:56", colour=colour)
+
+    assert ANSI_STYLE_PATTERN.sub("", lines[1]) == "No active…"
+    assert len(lines) == 2
+    assert len(ANSI_STYLE_PATTERN.sub("", lines[1])) == 10
+
+    if colour:
+        assert lines[1].endswith("…\x1b[0m")
+
+
+def test_narrow_error_shortens_each_plain_line() -> None:
+    """Error lines fit a narrow terminal without an enclosing frame."""
+    lines = render_error(
+        "HCOM error: a long message\nretry later", width=10, current_time="12:34:56"
+    )
+
+    assert lines == ["", "HCOM erro…", "retry lat…"]
+
+
 @pytest.mark.parametrize(
     ("agents", "heading", "totals"),
     [
