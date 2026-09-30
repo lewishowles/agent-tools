@@ -1744,7 +1744,7 @@ def test_task_clean_deletes_contract_and_file_rows(tmp_path: Path) -> None:
 		)
 
 
-def test_task_clean_force_removes_only_blocked_done_tasks_and_notes(
+def test_task_clean_force_removes_done_tasks_and_notes(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
@@ -1783,23 +1783,71 @@ def test_task_clean_force_removes_only_blocked_done_tasks_and_notes(
 
 	result = store.task_clean(force=True)
 
-	assert result["removed_count"] == 2
+	assert result["removed_count"] == 3
 	assert {task["id"] for task in result["removed"]} == {
 		dependency["id"],
 		blocked_task["id"],
+		new_clean_task["id"],
 	}
 	assert result["blocked"] == []
 	assert result["releases_removed"] == [{"id": release["id"], "title": "Blocked"}]
-	assert (
+	with pytest.raises(NotFoundError):
 		ReadStore(store.database, _ProjectStore(store.database)).task_get(
 			new_clean_task["id"]
-		)["status"]
-		== "done"
-	)
+		)
 
 	with store.database.connection() as connection:
 		assert connection.execute("SELECT 1 FROM notes").fetchone() is None
 		assert connection.execute("SELECT 1 FROM task_dependencies").fetchone() is None
+
+
+def test_task_clean_force_removes_safe_and_blocked_tasks_in_one_pass(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	safe_release = store.release_add("safe", "Safe release", overview="Safe overview")
+	blocked_release = store.release_add(
+		"blocked", "Blocked release", overview="Blocked overview"
+	)
+	safe_task = _add_task(store, "safe", "Safe task", release_id=safe_release["id"])
+	dependency = _add_task(
+		store, "dependency", "Dependency", release_id=blocked_release["id"]
+	)
+	blocked_task = _add_task(
+		store,
+		"blocked",
+		"Blocked task",
+		release_id=blocked_release["id"],
+		depends_on=[dependency["id"]],
+	)
+	safe_chunk = _add_chunk(store, safe_task["id"], "Safe chunk")
+	blocked_chunk = _add_chunk(store, blocked_task["id"], "Blocked chunk")
+	store.discovery_add(blocked_task["id"], "Blocked discovery")
+	store.task_start(safe_task["id"])
+	store.chunk_complete(safe_chunk["id"])
+	store.task_complete(safe_task["id"])
+	store.task_start(dependency["id"])
+	store.task_complete(dependency["id"])
+	store.task_start(blocked_task["id"])
+	store.chunk_complete(blocked_chunk["id"])
+	store.task_complete(blocked_task["id"])
+
+	result = store.task_clean(force=True)
+
+	assert result["removed_count"] == 3
+	assert {task["id"] for task in result["removed"]} == {
+		safe_task["id"],
+		dependency["id"],
+		blocked_task["id"],
+	}
+	assert result["blocked"] == []
+	assert {release["id"] for release in result["releases_removed"]} == {
+		safe_release["id"],
+		blocked_release["id"],
+	}
+	with store.database.connection() as connection:
+		for table in ("tasks", "notes", "task_dependencies", "chunks", "releases"):
+			assert connection.execute(f"SELECT 1 FROM {table}").fetchone() is None
 
 
 def test_rename_updates_titles_without_changing_identifiers_or_slugs(

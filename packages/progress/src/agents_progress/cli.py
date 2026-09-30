@@ -538,7 +538,13 @@ _COMMAND_SPECS = (
 			_CommandSpec(
 				"clean",
 				"remove done tasks and now-empty releases",
-				arguments=(_argument("--force", action="store_true"),),
+				arguments=(
+					_argument(
+						"--force",
+						action="store_true",
+						help="remove every done task, including its notes and dependency links",
+					),
+				),
 			),
 			_CommandSpec(
 				"rename",

@@ -430,7 +430,7 @@ class WriteStore(_StoreBase):
 		force: bool = False,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Remove done tasks that are safe to clear, or the current blocked set with force."""
+		"""Remove done tasks with no notes or dependencies, or every done task with force."""
 		project = self.current_project(path)
 
 		with self.database.transaction() as connection:
@@ -465,7 +465,7 @@ class WriteStore(_StoreBase):
 			blocked = [
 				_clean_blocked_task(candidate) for candidate in blocking_candidates
 			]
-			targets = blocking_candidates if force else clean_candidates
+			targets = candidates if force else clean_candidates
 			task_ids = [candidate["task"]["id"] for candidate in targets]
 
 			if force:

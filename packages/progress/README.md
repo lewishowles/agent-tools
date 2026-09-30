@@ -374,12 +374,13 @@ Use `--force` only when those notes and dependency edges can be deleted:
 progress task clean --force [--json] [--database <path>]
 ```
 
-The forced pass removes the currently blocked completed tasks, their notes,
-dependency edges, and chunks before removing any releases left with no tasks.
+The forced pass removes all completed tasks, including tasks without notes or
+dependency edges. It also removes their notes, dependency edges, and chunks
+before removing any releases left with no tasks.
 Release-owned notes are removed with those releases. An empty release that was
 not affected by this command is not removed.
 
-If a note on a task outside the blocked set supersedes a note being force
+If a note on a task that is not done supersedes a note being force
 deleted, the whole `--force` pass aborts with a "still referenced" error and
 nothing is deleted. This is rare and fails safely: resolve it by removing or
 reassigning the superseding note first, then rerun `--force`.
