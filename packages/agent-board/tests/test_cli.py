@@ -83,7 +83,7 @@ def test_nonzero_hcom_exit_is_shown_on_the_board(
 @pytest.mark.parametrize(
     ("listing", "expected"),
     [
-        ([{"status": "listening", "tag": "Team-scout"}], "missing 'directory'"),
+        ([{"status": "listening", "tag": "Team-scout"}], "missing 'unread_count'"),
         (None, "'NoneType' object is not iterable"),
     ],
 )

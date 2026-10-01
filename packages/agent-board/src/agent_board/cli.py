@@ -31,6 +31,9 @@ def main() -> int:
         return 1
 
     colour = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+    # When the board first saw each waiting agent with unread messages, so a
+    # team can show as stuck once that wait passes the grace period.
+    unread_since = {}
     sys.stdout.write(HIDE_CURSOR)
     sys.stdout.flush()
 
@@ -55,11 +58,16 @@ def main() -> int:
                     )
                     error_message = f"HCOM error: {message}"
                 else:
+                    agents = json.loads(result.stdout)
+                    now = time.monotonic()
+                    _update_unread_since(agents, unread_since, now)
                     lines = render_board(
-                        json.loads(result.stdout),
+                        agents,
                         width=width,
                         current_time=current_time,
                         colour=colour,
+                        unread_since=unread_since,
+                        now=now,
                     )
             except KeyError as error:
                 error_message = f"Unexpected hcom listing: missing {error}"
@@ -81,3 +89,27 @@ def main() -> int:
     finally:
         sys.stdout.write(SHOW_CURSOR + "\n")
         sys.stdout.flush()
+
+
+def _update_unread_since(
+    agents: list[dict], unread_since: dict[str, float], now: float
+) -> None:
+    """Record when each waiting agent first had unread messages.
+
+    Adds the current time for agents that have just started waiting with unread
+    messages, keeps the earlier time for agents still in that state, and removes
+    agents that have read their messages or stopped waiting. Changes
+    `unread_since` in place.
+    """
+    unread_names = {
+        agent["name"]
+        for agent in agents
+        if agent["status"] == "listening" and agent["unread_count"] > 0
+    }
+
+    for name in list(unread_since):
+        if name not in unread_names:
+            del unread_since[name]
+
+    for name in unread_names:
+        unread_since.setdefault(name, now)

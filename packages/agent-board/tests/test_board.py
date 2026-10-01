@@ -4,6 +4,7 @@ import re
 
 import pytest
 from agent_board.board import ANSI_STYLE_PATTERN, render_board, render_error
+from agent_board.cli import _update_unread_since
 
 
 def agent(
@@ -18,6 +19,7 @@ def agent(
     """Build a listing row for a team prefix, with an optional role suffix."""
     return {
         "directory": directory,
+        "name": f"{prefix}-{role}" if role else prefix,
         "status": status,
         "status_age_seconds": age,
         "tag": f"{prefix}-{role}" if role else prefix,
@@ -25,9 +27,22 @@ def agent(
     }
 
 
-def board_content(agents: list[dict], *, colour: bool = False) -> list[str]:
+def board_content(
+    agents: list[dict],
+    *,
+    colour: bool = False,
+    unread_since: dict[str, float] | None = None,
+    now: float = 0,
+) -> list[str]:
     """Return the content rows as drawn inside the frame, including headings."""
-    framed = render_board(agents, width=80, current_time="12:34:56", colour=colour)
+    framed = render_board(
+        agents,
+        width=80,
+        current_time="12:34:56",
+        colour=colour,
+        unread_since=unread_since,
+        now=now,
+    )
     rows = []
 
     for row in framed[3:-2]:
@@ -399,7 +414,7 @@ def test_blocked_waits_sort_before_waiting_team_names() -> None:
 
 
 def test_active_and_unread_teams_remain_working_rows() -> None:
-    """Active roles name both teams, including one with unread messages."""
+    """An active role keeps a team working after unread messages grow old."""
     agents = [
         agent("Agent-Tools", "orchestrator", status="active"),
         agent("Agent-Tools", "scout", unread=1),
@@ -408,9 +423,117 @@ def test_active_and_unread_teams_remain_working_rows() -> None:
         agent("Agent-Tools-old", "scout", status="inactive"),
     ]
 
-    lines = board_content(agents)
+    lines = board_content(
+        agents,
+        unread_since={"Agent-Tools-scout": 0},
+        now=61,
+    )
 
     assert lines == ["WORKING", "○ coordinating  Agent-Tools", "◌ checking      Custom"]
+
+
+def test_unread_team_becomes_stuck_after_the_grace_period() -> None:
+    """A listening team needs attention once unread messages have waited over a minute."""
+    agents = [
+        agent("Agent-Tools", "orchestrator", unread=2, age=0),
+        agent("Agent-Tools", "scout", age=0),
+    ]
+    unread_since = {"Agent-Tools-orchestrator": 10}
+
+    assert board_content(agents, unread_since=unread_since, now=70) == [
+        "WORKING",
+        "○ working  Agent-Tools",
+    ]
+    assert board_content(agents, unread_since=unread_since, now=71) == [
+        "WAITING ON YOU",
+        "● stuck  Agent-Tools",
+    ]
+
+
+def test_lone_listening_agent_with_old_unread_messages_is_stuck() -> None:
+    """A partial team with unread messages also needs attention."""
+    agents = [agent("Agent-Tools", "scout", unread=1)]
+
+    assert board_content(
+        agents,
+        unread_since={"Agent-Tools-scout": 0},
+        now=61,
+    ) == ["WAITING ON YOU", "● stuck  Agent-Tools"]
+
+
+def test_stuck_team_sorts_with_attention_and_uses_attention_colour() -> None:
+    """Stuck teams appear after blocked teams and before working teams."""
+    agents = [
+        agent("Agent-Tools-working", "scout", status="active"),
+        agent("Agent-Tools-stuck", "orchestrator", unread=1),
+        agent("Agent-Tools-stuck", "scout"),
+        agent("Agent-Tools-blocked", "orchestrator", unread=1),
+        agent("Agent-Tools-blocked", "scout", status="blocked"),
+    ]
+
+    lines = board_content(
+        agents,
+        colour=True,
+        unread_since={
+            "Agent-Tools-blocked-orchestrator": 0,
+            "Agent-Tools-stuck-orchestrator": 0,
+        },
+        now=61,
+    )
+
+    assert lines[0] == "\x1b[2mWAITING ON YOU\x1b[0m"
+    assert lines[1].startswith("\x1b[31m✕ blocked")
+    assert lines[2].startswith("\x1b[35m● stuck")
+    assert lines[4] == "\x1b[2mWORKING\x1b[0m"
+
+
+def test_unread_tracking_resets_when_messages_clear_or_agent_activates() -> None:
+    """Reading messages or becoming active restarts the grace period."""
+    listener = agent("Agent-Tools", "orchestrator", unread=1)
+    partner = agent("Agent-Tools", "scout")
+    unread_since = {}
+
+    _update_unread_since([listener, partner], unread_since, 10)
+    assert board_content([listener, partner], unread_since=unread_since, now=71)[
+        1
+    ].startswith("● stuck")
+
+    listener["unread_count"] = 0
+    _update_unread_since([listener, partner], unread_since, 72)
+    assert unread_since == {}
+    assert board_content([listener, partner], unread_since=unread_since, now=72) == [
+        "WAITING ON YOU",
+        "● needs you  Agent-Tools",
+    ]
+
+    listener["unread_count"] = 1
+    _update_unread_since([listener, partner], unread_since, 73)
+    assert board_content([listener, partner], unread_since=unread_since, now=73) == [
+        "WORKING",
+        "○ working  Agent-Tools",
+    ]
+
+    listener["status"] = "active"
+    _update_unread_since([listener, partner], unread_since, 74)
+    assert unread_since == {}
+    assert board_content([listener, partner], unread_since=unread_since, now=74) == [
+        "WORKING",
+        "○ coordinating  Agent-Tools",
+    ]
+
+
+def test_launching_team_stays_working_with_old_unread_messages() -> None:
+    """A launching member keeps an otherwise stuck team in the working group."""
+    agents = [
+        agent("Agent-Tools", "orchestrator", unread=1),
+        agent("Agent-Tools", "scout", status="launching"),
+    ]
+
+    assert board_content(
+        agents,
+        unread_since={"Agent-Tools-orchestrator": 0},
+        now=61,
+    ) == ["WORKING", "◇ starting  Agent-Tools"]
 
 
 @pytest.mark.parametrize(

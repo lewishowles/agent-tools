@@ -21,6 +21,7 @@ ROLES = set(ACTIVITY_LABELS)
 # A blocked row is looked up without its wait time.
 STATUS_SYMBOLS = {
     "needs you": "●",
+    "stuck": "●",
     "blocked": "✕",
     "implementing": "▶",
     "learning": "▶",
@@ -61,17 +62,28 @@ MIN_FRAME_WIDTH = 30
 # the right, so the clock and counts stay close to the rows they describe.
 MAX_FRAME_WIDTH = 80
 
+# How long a waiting agent can leave messages unread before its team shows as
+# stuck. Messages normally wake an agent within a refresh or two, so a longer
+# wait means delivery has stalled and the team needs you.
+STUCK_AFTER_SECONDS = 60
+
 
 def render_board(
-    agents: list[dict], *, width: int, current_time: str, colour: bool = False
+    agents: list[dict],
+    *,
+    width: int,
+    current_time: str,
+    colour: bool = False,
+    unread_since: dict[str, float] | None = None,
+    now: float = 0,
 ) -> list[str]:
     """Build the framed board lines for one `hcom list --json` snapshot.
 
     The lines start with a blank line, then the frame. Teams that need you come
     first under WAITING ON YOU: blocked teams with their longest wait, then
-    teams whose agents are all waiting with nothing unread. Working teams
-    follow under WORKING, after a blank line when both groups show. A heading
-    is left out when its group is empty.
+    stuck teams and teams whose agents are all waiting with nothing unread.
+    Working teams follow under WORKING, after a blank line when both groups
+    show. A heading is left out when its group is empty.
     Below 30 columns, plain rows replace the frame and headings, with a blank
     line between the groups.
     Statuses line up across both groups, and an empty listing shows
@@ -84,8 +96,12 @@ def render_board(
         current_time: The local time for the top edge, formatted as HH:MM:SS.
         colour: Whether to colour the frame and rows and dim the headings,
             working rows and team names after the repository.
+        unread_since: The first time each listening agent was seen with unread
+            messages, keyed by agent name.
+        now: The monotonic time for this refresh, in seconds.
     """
     teams = defaultdict(list)
+    unread_since = unread_since or {}
 
     for agent in agents:
         if agent["status"] == "inactive":
@@ -136,6 +152,14 @@ def render_board(
                     f"blocked · {_format_age(age)}",
                 )
             )
+        elif not any(status in {"active", "launching"} for status in statuses) and any(
+            agent["status"] == "listening"
+            and agent["unread_count"] > 0
+            and agent["name"] in unread_since
+            and now - unread_since[agent["name"]] > STUCK_AFTER_SECONDS
+            for agent, _ in members
+        ):
+            needs_you.append(((1, 0, label), repository, label_rest, "stuck"))
         elif partly_running:
             status = _working_status(members)
 
