@@ -22,6 +22,10 @@ packages/
     └── pyproject.toml
 ```
 
+## Page-to-markdown
+
+[page-to-markdown](packages/page-to-markdown/README.md) converts a URL, local HTML file, or piped HTML into compact Markdown and reports its confidence in the selected content.
+
 ## Add an independent package
 
 1. Create `packages/<package-name>/`.

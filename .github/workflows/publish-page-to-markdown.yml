@@ -1,0 +1,48 @@
+name: Publish page-to-markdown
+
+on:
+  push:
+    tags:
+      - "page-to-markdown-v*"
+
+concurrency:
+  group: publish-page-to-markdown-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install CLI style
+        run: bun add -g @lewishowles/cli-style@0.15.0
+
+      - name: Add Bun global binaries to PATH
+        run: echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+
+      - name: Test package
+        run: uv run pytest packages/page-to-markdown/tests
+
+      - name: Build package
+        working-directory: packages/page-to-markdown
+        run: uv build
+
+      - name: Publish to PyPI
+        working-directory: .
+        run: uv publish --trusted-publishing automatic
