@@ -105,7 +105,10 @@ def _render_block(node: _DomNode, base_url: str | None) -> list[str]:
 	tag = node.tag
 
 	if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
-		content = _normalise_inline(_render_inline_children(node, base_url))
+		# A Markdown heading is one line, so line breaks inside it become spaces.
+		content = _normalise_inline(
+			re.sub(r"\s*\n\s*", " ", _render_inline_children(node, base_url))
+		)
 		if not content:
 			return []
 		return [f"{'#' * int(tag[1:])} {content}"]

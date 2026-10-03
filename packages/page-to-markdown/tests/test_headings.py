@@ -5,11 +5,41 @@ from pathlib import Path
 
 import pytest
 from page_to_markdown.cli import main
+from page_to_markdown.convert import convert_to_markdown
 from page_to_markdown.outline import HeadingLookupError, extract_section, list_headings
 
 
 # Local HTML used by every heading command test.
 FIXTURES = Path(__file__).parents[1] / "fixtures"
+
+
+@pytest.mark.parametrize(
+	"heading",
+	[
+		"<h2>First<br>Second</h2>",
+		"<h2>First <br><br> Second</h2>",
+		"<h2><br>First<br>Second<br></h2>",
+	],
+)
+def test_heading_breaks_keep_full_text_on_one_line(heading) -> None:
+	"""A heading with line breaks converts to one line, with each break as one space and breaks at the edges dropped."""
+	assert convert_to_markdown(heading) == "## First Second\n"
+
+
+def test_heading_commands_use_full_text_across_line_break(tmp_path, capsys) -> None:
+	"""Listing headings and selecting a section both use the whole heading when it contains a line break."""
+	source = tmp_path / "heading-break.html"
+	source.write_text("<h2>First<br>Second</h2><p>Body</p>", encoding="utf-8")
+
+	list_exit_code = main([str(source), "--list-headings"])
+	listed = capsys.readouterr()
+	section_exit_code = main([str(source), "--heading", "First Second"])
+	section = capsys.readouterr()
+
+	assert list_exit_code == 0
+	assert listed.out == "2  First Second  #first-second\n"
+	assert section_exit_code == 0
+	assert section.out == "## First Second\n\nBody\n"
 
 
 def test_list_headings_reports_plain_text_and_unique_selectors(capsys) -> None:
