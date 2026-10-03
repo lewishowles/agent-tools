@@ -6,9 +6,10 @@ from collections.abc import Sequence
 from typing import TextIO
 
 from cli_style import (
-    command_result,
     empty_state,
+    quote_block,
     row_group,
+    status,
 )
 
 # Exit status for each error code in the shared CLI contract.
@@ -30,27 +31,6 @@ _EXIT_CODES = {
 _RENDER_OPTIONS: dict[str, object] = {"raise_on_missing": False}
 
 
-def render_command_result(
-    *,
-    result: str,
-    summary: str,
-    command: str,
-    exit_code: float | None,
-    duration: str,
-    detail: str,
-) -> str:
-    """Return the text summary of a finished command run."""
-    return command_result(
-        result=result,
-        summary=summary,
-        command=command,
-        exit_code=exit_code,
-        duration=duration,
-        detail=detail,
-        **_RENDER_OPTIONS,
-    )
-
-
 def render_empty_state(*, title: str, detail: str = "") -> str:
     """Return the message shown when a list or runs command has nothing to show."""
     return empty_state(
@@ -64,6 +44,24 @@ def render_row_group(rows: Sequence[dict[str, object]]) -> str:
     """Return label and value rows with the values lined up in one column."""
     return row_group(
         rows=list(rows),
+        **_RENDER_OPTIONS,
+    )
+
+
+def render_quote_block(*, lines: Sequence[str], title: str) -> str:
+    """Return command output lines under a heading, each marked as a quote."""
+    return quote_block(
+        lines=list(lines),
+        title=title,
+        **_RENDER_OPTIONS,
+    )
+
+
+def render_success_status(*, label: str) -> str:
+    """Return the success marker and label for a completed command."""
+    return status(
+        type="success",
+        label=label,
         **_RENDER_OPTIONS,
     )
 

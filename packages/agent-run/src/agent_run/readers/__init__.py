@@ -1,6 +1,7 @@
 """Choose a failure reader for a command and apply the output limits."""
 
 from collections.abc import Sequence
+from typing import NamedTuple
 
 from agent_run.failures import (
     MAX_ADDITIONAL_FAILURES,
@@ -29,10 +30,22 @@ FAILURE_READERS: tuple[FailureReader, ...] = (
 )
 
 
-def summarise_success(argv: Sequence[str], log_text: str) -> list[str]:
+class SuccessSummary(NamedTuple):
+    """The lines that describe a successful run, and where they came from."""
+
+    # The plain-text lines to show under the run's facts.
+    lines: list[str]
+    # True when a reader recognised the tool, False when the lines are simply
+    # the end of the log.
+    recognised: bool
+
+
+def summarise_success(argv: Sequence[str], log_text: str) -> SuccessSummary:
     """Use a matching reader's success lines, or keep the bounded log tail.
 
-    The lines are plain text: terminal colour codes are removed first.
+    The lines are plain text: terminal colour codes are removed first. The
+    result also says whether a reader recognised the tool, so the caller can
+    label the lines as a summary or as the end of the log.
     """
     clean_text = strip_ansi(log_text)
     reader = next(
@@ -40,7 +53,11 @@ def summarise_success(argv: Sequence[str], log_text: str) -> list[str]:
         None,
     )
     summary = reader.summarise(clean_text) if reader is not None else None
-    return summary or summarise_output(clean_text)
+
+    if summary:
+        return SuccessSummary(lines=summary, recognised=True)
+
+    return SuccessSummary(lines=summarise_output(clean_text), recognised=False)
 
 
 def read_failure_report(argv: Sequence[str], log_text: str) -> FailureReport:

@@ -13,15 +13,15 @@ from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
-from agent_run.cli import _format_failure_report, main
+from agent_run.cli import _format_failure_report, _format_run, main
 from agent_run.database import connect_database
-from agent_run.execution import TerminateRequested
+from agent_run.execution import RunResult, TerminateRequested
 from agent_run.failures import Failure, FailureReport
 from agent_run.locking import acquire_run_lock
-from agent_run.output import render_command_result, render_error, render_success
+from agent_run.output import render_error, render_success
+from agent_run.readers import SuccessSummary
 from agent_run.repository import create_repository_id, identify_repository
-from agent_run.runs import create_run_log, start_run
-from cli_style import CliStyleNotFoundError
+from agent_run.runs import RunRecord, create_run_log, start_run
 
 
 def _create_repository(path: Path) -> Path:
@@ -303,14 +303,14 @@ def test_cli_run_success_supports_text_and_json(
     text_output = capsys.readouterr()
 
     assert text_exit_code == 0
-    assert "out\nerr\n" in text_output.out
+    assert "| out\n| err\n" in text_output.out
     assert "Command completed" in text_output.out
     assert "Run ID" in text_output.out
-    assert "Log path" in text_output.out
+    assert "\nLog " in text_output.out
     assert (
         text_output.out.index("Command completed")
-        < text_output.out.index("out\nerr\n")
-        < text_output.out.index("Log path")
+        < text_output.out.index("\nLog ")
+        < text_output.out.index("| out\n| err\n")
     )
     assert text_output.err == ""
 
@@ -2294,58 +2294,56 @@ def test_text_mode_renders_result() -> None:
     assert stderr.getvalue() == ""
 
 
-def test_cli_style_text_renderer_uses_plain_fixed_width_options(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("recognised", "heading"),
+    [(True, "Summary"), (False, "Last lines of output")],
+)
+def test_success_block_keeps_command_and_log_on_single_lines(
+    recognised: bool, heading: str
 ) -> None:
-    """Text renderers disable colour and use the shared fixed width."""
-    options: dict[str, object] = {}
-
-    def fake_command_result(**kwargs: object) -> str:
-        options.update(kwargs)
-        return "rendered"
-
-    monkeypatch.setattr("agent_run.output.command_result", fake_command_result)
-    monkeypatch.setattr(
-        "agent_run.output._RENDER_OPTIONS",
-        {"plain": True, "width": 80, "raise_on_missing": False},
+    """A completed run shows aligned facts before its marked output lines."""
+    command = "echo " + "x" * 90
+    log_path = Path("/tmp/") / ("long-log-directory-" * 5) / "run.log"
+    result = RunResult(
+        argv=("sh", "-c", command),
+        working_directory=Path("/tmp"),
+        exit_status=0,
+        timed_out=False,
+        duration_seconds=0.123,
+        log_path=log_path,
+    )
+    record = RunRecord(
+        run_id="run-1",
+        repository_id="repo-1",
+        argv=result.argv,
+        working_directory=".",
+        timeout_seconds=5,
+        started_at="2026-10-03T12:00:00+00:00",
+        duration_seconds=result.duration_seconds,
+        exit_status=0,
+        timed_out=False,
+        log_path=log_path,
     )
 
-    rendered = render_command_result(
-        result="success",
-        summary="Command completed",
-        command="echo ok",
-        exit_code=0,
-        duration="0.001s",
-        detail="Run ID: run-1",
+    rendered = _format_run(
+        result,
+        record,
+        SuccessSummary(lines=["first line", "second line"], recognised=recognised),
     )
 
-    assert rendered == "rendered"
-    assert options["plain"] is True
-    assert options["width"] == 80
-    assert options["raise_on_missing"] is False
-
-
-def test_cli_style_text_renderer_falls_back_without_binary(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Text rendering still returns plain output when the binary is unavailable."""
-
-    def missing_binary(binary: str) -> str:
-        raise CliStyleNotFoundError(f"missing: {binary}")
-
-    monkeypatch.setattr("cli_style.core.resolve_binary", missing_binary)
-
-    rendered = render_command_result(
-        result="success",
-        summary="Command completed",
-        command="echo ok",
-        exit_code=0,
-        duration="0.001s",
-        detail="Run ID: run-1",
+    assert rendered == (
+        "\n"
+        "OK Command completed\n"
+        f"$ {shlex.join(result.argv)}\n"
+        "Exit code  0\n"
+        "Duration   0.123s\n"
+        "Run ID     run-1\n"
+        f"Log        {log_path}\n"
+        "\n"
+        f"{heading}\n"
+        "| first line\n"
+        "| second line\n\n"
     )
-
-    assert "command: echo ok" in rendered
-    assert "summary: Command completed" in rendered
 
 
 def test_failure_text_drops_the_repeated_source_location() -> None:

@@ -35,7 +35,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "lewishowles-cli-style", specifier = ">=0.15.0" },
+    { name = "lewishowles-cli-style", specifier = ">=0.17.0" },
     { name = "questionary", specifier = ">=2.1.1" },
 ]
 
@@ -78,11 +78,11 @@ wheels = [
 
 [[package]]
 name = "lewishowles-cli-style"
-version = "0.15.0"
+version = "0.17.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/5d/5d/55c916ca77013a7373cd78986f5b9910cb9ae37c2bc6cfce6e607c39ccae/lewishowles_cli_style-0.15.0.tar.gz", hash = "sha256:59c765cd0fcc6e7a35048956647745ea32fbd8c2268f437c113095dd7ddf3415", size = 5501, upload-time = "2026-09-20T14:40:45.831Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/95/37/9b38bf466c48ee7f668691bf2ac691658470f8937f8560398014ec48d5a3/lewishowles_cli_style-0.17.0.tar.gz", hash = "sha256:c5baf49ca69345131f080a93852f313a92c1305350033a6ff5f165fc6be77cba", size = 6098, upload-time = "2026-10-03T11:40:25.672Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a5/42/eeef27d0a9dbb7c85d536e7352b72938b7f85208cecaada1fd4d1010180d/lewishowles_cli_style-0.15.0-py3-none-any.whl", hash = "sha256:b01442cab4a414c674523bb7dfdfec2ed21c074ea9afd0a165f6cedc8046c1e0", size = 6701, upload-time = "2026-09-20T14:40:44.654Z" },
+    { url = "https://files.pythonhosted.org/packages/51/12/65072c2ad81b28cb89db1bc0c0ec84c379f126e7452c9d33c1cfd3640ece/lewishowles_cli_style-0.17.0-py3-none-any.whl", hash = "sha256:ac6e9ea1619569666d49995312c5b17db07e8ae8ffeef38ac8860b1545bfe852", size = 7364, upload-time = "2026-10-03T11:40:24.349Z" },
 ]
 
 [[package]]

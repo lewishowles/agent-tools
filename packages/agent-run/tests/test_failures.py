@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 import pytest
 from agent_run.failures import Failure, FailureReport, strip_ansi, summarise_output
-from agent_run.readers import read_failure_report, summarise_success
+from agent_run.readers import SuccessSummary, read_failure_report, summarise_success
 
 
 def test_read_failure_report_selects_xcodebuild_reader() -> None:
@@ -85,7 +85,9 @@ def test_summarise_success_selects_matching_reader(monkeypatch) -> None:
     reader.summary = ["Tests passed: 2 tests"]
     monkeypatch.setattr("agent_run.readers.FAILURE_READERS", (reader,))
 
-    assert summarise_success(["custom-check"], "noise") == ["Tests passed: 2 tests"]
+    assert summarise_success(["custom-check"], "noise") == SuccessSummary(
+        lines=["Tests passed: 2 tests"], recognised=True
+    )
 
 
 @pytest.mark.parametrize("summary", [None, []])
@@ -97,26 +99,27 @@ def test_summarise_success_falls_back_when_reader_finds_nothing(
     reader.summary = summary
     monkeypatch.setattr("agent_run.readers.FAILURE_READERS", (reader,))
 
-    assert summarise_success(["custom-check"], "first\nlast\n") == [
-        "first",
-        "last",
-    ]
+    assert summarise_success(["custom-check"], "first\nlast\n") == SuccessSummary(
+        lines=["first", "last"], recognised=False
+    )
 
 
 def test_summarise_success_falls_back_without_matching_reader(monkeypatch) -> None:
     """Unknown commands retain the last eight output lines."""
     monkeypatch.setattr("agent_run.readers.FAILURE_READERS", ())
 
-    assert summarise_success(["custom-check"], "last\n") == ["last"]
+    assert summarise_success(["custom-check"], "last\n") == SuccessSummary(
+        lines=["last"], recognised=False
+    )
 
 
 def test_summarise_success_reads_coloured_vitest_totals() -> None:
     """A known reader finds totals after terminal colour codes are removed."""
     log_text = "\x1b[32mTest Files  1 passed (1)\x1b[0m\nlater output\n"
 
-    assert summarise_success(["vitest", "run"], log_text) == [
-        "Test Files  1 passed (1)"
-    ]
+    assert summarise_success(["vitest", "run"], log_text) == SuccessSummary(
+        lines=["Test Files  1 passed (1)"], recognised=True
+    )
 
 
 def _failure(detail: tuple[str, ...] = ()) -> Failure:

@@ -53,13 +53,14 @@ from agent_run.failures import (
 )
 from agent_run.locking import RunBusyError, RunLock, acquire_run_lock
 from agent_run.output import (
-    render_command_result,
     render_empty_state,
     render_error,
+    render_quote_block,
     render_row_group,
     render_success,
+    render_success_status,
 )
-from agent_run.readers import read_failure_report, summarise_success
+from agent_run.readers import SuccessSummary, read_failure_report, summarise_success
 from agent_run.repository import (
     RepositoryError,
     RepositoryUninitialisedError,
@@ -1783,12 +1784,14 @@ def _execute_run(
         try:
             log_text = record.log_path.read_bytes().decode("utf-8", errors="replace")
         except OSError:
-            summary = ["Output could not be read."]
+            summary = SuccessSummary(
+                lines=["Output could not be read."], recognised=False
+            )
         else:
             summary = summarise_success(result.argv, log_text)
 
         data = _run_record(result, record, resolved_file_paths)
-        data["summary"] = summary
+        data["summary"] = summary.lines
         text = _format_run(result, record, summary)
 
         if json_mode:
@@ -2384,19 +2387,47 @@ def _format_failure_line(failure: Failure) -> str:
     return f"{location}: {failure.title}" if location else failure.title
 
 
-def _format_run(result: RunResult, record: RunRecord, summary: Sequence[str]) -> str:
+def _format_run(result: RunResult, record: RunRecord, summary: SuccessSummary) -> str:
     """Format one human-readable result block for a completed command."""
-    result_text = render_command_result(
-        result="success",
-        summary="Command completed",
-        command=shlex.join(result.argv),
-        exit_code=result.exit_status,
-        duration=f"{result.duration_seconds:.3f}s",
-        detail=f"Run ID: {record.run_id}",
+    # The facts agent-run reports about the run, in display order.
+    facts = (
+        ("Exit code", result.exit_status),
+        ("Duration", f"{result.duration_seconds:.3f}s"),
+        ("Run ID", record.run_id),
+        ("Log", str(record.log_path)),
     )
-    summary_text = "\n".join(summary)
 
-    return f"{result_text}\n{summary_text}\nLog path: {record.log_path}"
+    # The facts as aligned rows. Wrapping is off so that a long log path stays
+    # on one line and can be copied whole.
+    details = render_row_group(
+        [
+            {"label": label, "value": value, "labelColour": "muted", "wrap": False}
+            for label, value in facts
+        ]
+    )
+
+    # The summary lines, marked as quoted output. They come from the command's
+    # output, except when the command printed nothing or its log could not be
+    # read, when agent-run's short note says so instead.
+    output = render_quote_block(
+        lines=summary.lines,
+        title="Summary" if summary.recognised else "Last lines of output",
+    )
+
+    # The empty strings leave a blank line above the block, between the facts
+    # and the command's output, and below the block.
+    return "\n".join(
+        [
+            "",
+            render_success_status(label="Command completed"),
+            f"$ {shlex.join(result.argv)}",
+            details,
+            "",
+            output,
+            "",
+            "",
+        ]
+    )
 
 
 if __name__ == "__main__":
