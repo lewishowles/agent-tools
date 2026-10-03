@@ -2,6 +2,7 @@
 
 import re
 from dataclasses import dataclass
+from difflib import get_close_matches
 
 
 # Matches a heading line written with one to six leading # marks, capturing the marks and the heading text.
@@ -14,6 +15,10 @@ LINK_PATTERN = re.compile(r"!?\[([^\]]+)\]\([^)]*\)")
 CODE_PATTERN = re.compile(r"(`+)(.*?)\1")
 # Matches paired one- to three-asterisk emphasis markers around visible text.
 EMPHASIS_PATTERN = re.compile(r"(?<!\*)(\*{1,3})([^\s*](?:.*?[^\s*])??)\1(?!\*)")
+# The error kind, shown in JSON output, when no heading matches the query.
+MISSING_HEADING = "missing"
+# The error kind, shown in JSON output, when the query text matches more than one heading.
+AMBIGUOUS_HEADING = "ambiguous"
 
 
 @dataclass(frozen=True)
@@ -26,6 +31,23 @@ class Heading:
 	text: str
 	# The GitHub-style anchor for the heading, unique within the document.
 	selector: str
+	# The zero-based line where this heading starts in the converted Markdown.
+	line: int
+
+
+class HeadingLookupError(ValueError):
+	"""Report a heading query that matched no heading or more than one.
+
+	The error keeps its kind ("missing" or "ambiguous"), the query as typed, and up to five
+	headings the user could select instead.
+	"""
+
+	def __init__(self, kind: str, query: str, candidates: list[Heading]) -> None:
+		"""Store the failure kind, the query, and the first five suggested headings."""
+		super().__init__(kind)
+		self.kind = kind
+		self.query = query
+		self.candidates = candidates[:5]
 
 
 def list_headings(markdown: str) -> list[Heading]:
@@ -43,7 +65,7 @@ def list_headings(markdown: str) -> list[Heading]:
 	# How many fence characters opened the current code block.
 	fence_length = 0
 
-	for line in markdown.splitlines():
+	for line_number, line in enumerate(markdown.splitlines()):
 		# The code fence at the start of this line, if there is one.
 		fence_match = FENCE_PATTERN.match(line)
 
@@ -91,10 +113,70 @@ def list_headings(markdown: str) -> list[Heading]:
 				level=len(heading_match.group(1)),
 				text=plain_text,
 				selector=selector,
+				line=line_number,
 			)
 		)
 
 	return headings
+
+
+def extract_section(
+	markdown: str, query: str, without_children: bool = False
+) -> tuple[Heading, str]:
+	"""Return the heading that the query selects, with its section of the Markdown.
+
+	The query is tried as an anchor selector first, with or without a leading "#", and then
+	as heading text, ignoring letter case, repeated spaces, and inline Markdown. The section
+	runs from the heading line to the next heading at the same or a higher level. When
+	without_children is set, it stops at the next heading of any level instead.
+
+	Raises HeadingLookupError when no heading matches, or when the text matches several.
+	"""
+	headings = list_headings(markdown)
+	selector_query = query.removeprefix("#")
+	selected = next(
+		(heading for heading in headings if heading.selector == selector_query), None
+	)
+
+	if selected is None:
+		normalised_query = _plain_text(query).casefold()
+		matches = [
+			heading
+			for heading in headings
+			if heading.text.casefold() == normalised_query
+		]
+
+		if len(matches) > 1:
+			raise HeadingLookupError(AMBIGUOUS_HEADING, query, matches)
+
+		if not matches:
+			nearby_text = get_close_matches(
+				normalised_query,
+				# One entry per distinct heading text, so repeated headings count once towards the five.
+				dict.fromkeys(heading.text.casefold() for heading in headings),
+				n=5,
+			)
+			candidates = []
+			for text in nearby_text:
+				candidates.extend(
+					heading for heading in headings if heading.text.casefold() == text
+				)
+
+			raise HeadingLookupError(MISSING_HEADING, query, candidates)
+
+		selected = matches[0]
+
+	lines = markdown.splitlines(keepends=True)
+	end_line = len(lines)
+	for heading in headings:
+		if heading.line <= selected.line:
+			continue
+
+		if without_children or heading.level <= selected.level:
+			end_line = heading.line
+			break
+
+	return selected, "".join(lines[selected.line : end_line])
 
 
 def _plain_text(markdown: str) -> str:

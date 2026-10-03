@@ -92,7 +92,18 @@ If one source fails to fetch, the rest still convert; the failed one shows a `##
 | `--confidence`  | Also print the confidence report to stdout (it always goes to stderr regardless of this flag).                                                                                                                                                           |
 | `--metadata`    | Alongside `--output`, also write a `<output>.json` sidecar with `title`, `url`, and `timestamp`. Requires `--output`, and only supports a single source (ambiguous with a batch).                                                                        |
 | `--list-headings` | List each heading's level, plain text, and unique anchor selector from one source. Headings inside code blocks are skipped. |
-| `--json` | Write the heading list as an object with `source` and `headings` fields. Requires `--list-headings`; cannot be combined with `--confidence` or `--copy`. |
+| `--heading HEADING` | Return one section by its anchor selector or heading text from one source. Text matching ignores case, repeated spaces, and inline Markdown. Duplicate text needs a selector. |
+| `--without-children` | With `--heading`, stop at the next heading of any level. By default, child sections are included. |
+| `--json` | Write the heading list or selected section as JSON. Requires `--list-headings` or `--heading`; cannot be combined with `--confidence` or `--copy`. |
+
+Use the selector from `--list-headings` to pick a duplicate heading:
+
+```bash
+page-to-markdown ./page.html --list-headings
+page-to-markdown ./page.html --heading installation-1 --json
+```
+
+The section starts with the selected heading and ends before the next heading at the same or a higher level. `--json` returns `source`, `heading` (level, text, selector), and `markdown`. A missing or ambiguous heading exits `1` and reports up to five candidates. With `--json`, that failure is an `error` object containing `kind`, `query`, and `candidates`.
 
 ## Combining with web-audit
 

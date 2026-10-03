@@ -13,7 +13,12 @@ from dataclasses import dataclass
 from page_to_markdown.clipboard import ClipboardError, copy_to_clipboard
 from page_to_markdown.convert import convert_to_markdown
 from page_to_markdown.fetch import FetchError, fetch_url, read_file
-from page_to_markdown.outline import list_headings
+from page_to_markdown.outline import (
+	AMBIGUOUS_HEADING,
+	HeadingLookupError,
+	extract_section,
+	list_headings,
+)
 from page_to_markdown.report import ConfidenceReport, build_metadata, build_report
 from page_to_markdown.select import select_content
 from page_to_markdown.style import hint, row, row_group, span, status
@@ -79,9 +84,19 @@ def build_parser():
 		help="List the converted document's headings and anchor selectors.",
 	)
 	parser.add_argument(
+		"--heading",
+		metavar="HEADING",
+		help="Return one section by anchor selector or heading text.",
+	)
+	parser.add_argument(
+		"--without-children",
+		action="store_true",
+		help="Stop the selected section at its first child heading.",
+	)
+	parser.add_argument(
 		"--json",
 		action="store_true",
-		help="Write heading results as JSON. Requires --list-headings.",
+		help="Write heading results as JSON. Requires --list-headings or --heading.",
 	)
 	return parser
 
@@ -209,11 +224,17 @@ def main(argv=None):
 	if args.metadata and len(args.source) > 1:
 		parser.error("--metadata only supports one source")
 
-	if args.list_headings and len(args.source) > 1:
-		parser.error("--list-headings only supports one source")
+	if args.list_headings and args.heading is not None:
+		parser.error("--heading cannot be combined with --list-headings")
 
-	if args.json and not args.list_headings:
-		parser.error("--json requires --list-headings")
+	if args.without_children and args.heading is None:
+		parser.error("--without-children requires --heading")
+
+	if (args.list_headings or args.heading is not None) and len(args.source) > 1:
+		parser.error("heading options only support one source")
+
+	if args.json and not (args.list_headings or args.heading is not None):
+		parser.error("--json requires --list-headings or --heading")
 
 	if args.json and (args.confidence or args.copy):
 		parser.error("--json cannot be combined with --confidence or --copy")
@@ -267,7 +288,7 @@ def main(argv=None):
 		]
 		content = "\n\n---\n\n".join(blocks) + "\n"
 
-	# The heading list replaces the converted document as the output.
+	# Heading commands replace the converted document as the output.
 	if args.list_headings:
 		headings = list_headings(content)
 		if args.json:
@@ -293,6 +314,71 @@ def main(argv=None):
 			content = "".join(
 				f"{heading.level}  {heading.text}  #{heading.selector}\n"
 				for heading in headings
+			)
+	elif args.heading is not None:
+		try:
+			heading, content = extract_section(
+				content, args.heading, without_children=args.without_children
+			)
+		except HeadingLookupError as error:
+			candidates = [
+				{
+					"level": candidate.level,
+					"text": candidate.text,
+					"selector": candidate.selector,
+				}
+				for candidate in error.candidates
+			]
+			if args.json:
+				sys.stdout.write(
+					json.dumps(
+						{
+							"error": {
+								"kind": error.kind,
+								"query": error.query,
+								"candidates": candidates,
+							}
+						},
+						ensure_ascii=False,
+						indent=2,
+					)
+					+ "\n"
+				)
+			else:
+				message = (
+					"Several headings match"
+					if error.kind == AMBIGUOUS_HEADING
+					else "No heading matches"
+				)
+				sys.stderr.write(status("failed", message, error.query) + "\n")
+				if candidates:
+					sys.stderr.write(hint("Try one of these headings:") + "\n")
+					for candidate in candidates:
+						sys.stderr.write(
+							row(candidate["text"], f"#{candidate['selector']}") + "\n"
+						)
+				else:
+					sys.stderr.write(
+						hint("Use --list-headings to see available headings.") + "\n"
+					)
+			return 1
+
+		if args.json:
+			content = (
+				json.dumps(
+					{
+						"source": successful_results[0].source,
+						"heading": {
+							"level": heading.level,
+							"text": heading.text,
+							"selector": heading.selector,
+						},
+						"markdown": content,
+					},
+					ensure_ascii=False,
+					indent=2,
+				)
+				+ "\n"
 			)
 
 	if args.confidence and not args.output:

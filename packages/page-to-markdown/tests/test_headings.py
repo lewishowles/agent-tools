@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from page_to_markdown.cli import main
-from page_to_markdown.outline import list_headings
+from page_to_markdown.outline import HeadingLookupError, extract_section, list_headings
 
 
 # Local HTML used by every heading command test.
@@ -85,6 +85,163 @@ def test_list_headings_keeps_asterisks_inside_code_spans() -> None:
 	assert heading.selector == "use-args-with-options"
 
 
+def test_heading_selects_one_duplicate_by_selector(capsys) -> None:
+	"""A numbered selector picks the second of two headings with the same text."""
+	source = str(FIXTURES / "headings.html")
+
+	exit_code = main([source, "--heading", "install-the-tool-1"])
+	captured = capsys.readouterr()
+
+	assert exit_code == 0
+	assert captured.out.startswith("## Install `the tool`\n")
+	assert "## Reference" not in captured.out
+	assert "### Quick" not in captured.out
+
+
+def test_heading_accepts_selector_with_leading_hash(capsys) -> None:
+	"""A selector copied from the outline can include its leading hash."""
+	source = str(FIXTURES / "headings.html")
+
+	exit_code = main([source, "--heading", "#install-the-tool-1"])
+	captured = capsys.readouterr()
+
+	assert exit_code == 0
+	assert captured.out.startswith("## Install `the tool`\n")
+	assert "## Reference" not in captured.out
+
+
+def test_heading_matches_formatted_text_and_includes_children(capsys) -> None:
+	"""Text queries ignore case, extra spaces, and inline Markdown syntax."""
+	source = str(FIXTURES / "headings.html")
+
+	exit_code = main([source, "--heading", "**guide**", "--json"])
+	captured = capsys.readouterr()
+	result = json.loads(captured.out)
+
+	assert exit_code == 0
+	assert result["source"] == source
+	assert result["heading"] == {"level": 1, "text": "Guide", "selector": "guide"}
+	assert result["markdown"].startswith("# Guide\n")
+	assert "### Quick **start**" in result["markdown"]
+	assert "## Reference" in result["markdown"]
+
+
+def test_heading_without_children_stops_at_first_child(capsys) -> None:
+	"""The shorter section ends before the next heading at any level."""
+	source = str(FIXTURES / "headings.html")
+
+	exit_code = main([source, "--heading", "guide", "--without-children"])
+	captured = capsys.readouterr()
+
+	assert exit_code == 0
+	assert captured.out.startswith("# Guide\n")
+	assert "## Install" not in captured.out
+
+
+def test_heading_text_query_reports_duplicate_candidates(capsys) -> None:
+	"""Duplicate heading text needs an anchor selector to pick one section."""
+	source = str(FIXTURES / "headings.html")
+
+	exit_code = main([source, "--heading", "Install   `the tool`", "--json"])
+	captured = capsys.readouterr()
+
+	assert exit_code == 1
+	assert json.loads(captured.out) == {
+		"error": {
+			"kind": "ambiguous",
+			"query": "Install   `the tool`",
+			"candidates": [
+				{
+					"level": 2,
+					"text": "Install the tool",
+					"selector": "install-the-tool",
+				},
+				{
+					"level": 2,
+					"text": "Install the tool",
+					"selector": "install-the-tool-1",
+				},
+			],
+		}
+	}
+
+
+def test_ambiguous_heading_text_reports_selectors_on_stderr(capsys) -> None:
+	"""Text mode shows each selector when a heading name repeats."""
+	source = str(FIXTURES / "headings.html")
+
+	exit_code = main([source, "--heading", "Install the tool"])
+	captured = capsys.readouterr()
+
+	assert exit_code == 1
+	assert captured.out == ""
+	assert "Several headings match" in captured.err
+	assert "#install-the-tool\n" in captured.err
+	assert "#install-the-tool-1" in captured.err
+
+
+def test_missing_heading_candidates_follow_closeness_order() -> None:
+	"""Suggestions rank closer heading names before earlier document headings."""
+	markdown = "# Installation\n# Install\n"
+
+	with pytest.raises(HeadingLookupError) as error:
+		extract_section(markdown, "Instal")
+
+	assert [heading.text for heading in error.value.candidates] == [
+		"Install",
+		"Installation",
+	]
+
+
+@pytest.mark.parametrize(
+	("query", "expected"),
+	[
+		("Quick stat", "#quick-start"),
+		("completely unrelated", "--list-headings"),
+		("Not a heading", "--list-headings"),
+	],
+)
+def test_missing_heading_gives_candidates_or_outline_hint(
+	query, expected, capsys
+) -> None:
+	"""Absent headings fail with a close selector or a way to inspect the outline."""
+	source = str(FIXTURES / "headings.html")
+
+	exit_code = main([source, "--heading", query])
+	captured = capsys.readouterr()
+
+	assert exit_code == 1
+	assert captured.out == ""
+	assert expected in captured.err
+
+
+def test_extract_section_ignores_fenced_headings_as_boundaries() -> None:
+	"""A heading printed in a code fence stays inside its real parent section."""
+	markdown = "# Start\n```\n# Not a heading\n```\n## Child\ntext\n# Next\n"
+
+	heading, section = extract_section(markdown, "start")
+
+	assert heading.selector == "start"
+	assert section == "# Start\n```\n# Not a heading\n```\n## Child\ntext\n"
+
+
+def test_missing_heading_json_has_no_candidates_when_nothing_is_close(capsys) -> None:
+	"""The JSON failure still reports the query when no heading is close enough to suggest."""
+	source = str(FIXTURES / "headings.html")
+
+	exit_code = main([source, "--heading", "completely unrelated", "--json"])
+	captured = capsys.readouterr()
+
+	assert exit_code == 1
+	assert json.loads(captured.out) == {
+		"error": {
+			"kind": "missing",
+			"query": "completely unrelated",
+			"candidates": [],
+		}
+	}
+
+
 @pytest.mark.parametrize("non_closing_fence", ["```", "~~~~"])
 def test_list_headings_ignores_heading_after_non_closing_fence(
 	non_closing_fence,
@@ -104,6 +261,10 @@ def test_list_headings_ignores_heading_after_non_closing_fence(
 		["--list-headings", "--json", "--confidence"],
 		["--list-headings", "--json", "--copy"],
 		["--list-headings", str(FIXTURES / "simple.html")],
+		["--heading", "Guide", "--list-headings"],
+		["--heading", "Guide", str(FIXTURES / "simple.html")],
+		["--without-children"],
+		["--list-headings", "--without-children"],
 	],
 )
 def test_heading_usage_errors_exit_two(arguments, capsys) -> None:
