@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from page_to_markdown.clipboard import ClipboardError, copy_to_clipboard
 from page_to_markdown.convert import convert_to_markdown
 from page_to_markdown.fetch import FetchError, fetch_url, read_file
+from page_to_markdown.outline import list_headings
 from page_to_markdown.report import ConfidenceReport, build_metadata, build_report
 from page_to_markdown.select import select_content
 from page_to_markdown.style import hint, row, row_group, span, status
@@ -71,6 +72,16 @@ def build_parser():
 		"--metadata",
 		action="store_true",
 		help="Write title, URL, and timestamp metadata beside --output.",
+	)
+	parser.add_argument(
+		"--list-headings",
+		action="store_true",
+		help="List the converted document's headings and anchor selectors.",
+	)
+	parser.add_argument(
+		"--json",
+		action="store_true",
+		help="Write heading results as JSON. Requires --list-headings.",
 	)
 	return parser
 
@@ -198,6 +209,15 @@ def main(argv=None):
 	if args.metadata and len(args.source) > 1:
 		parser.error("--metadata only supports one source")
 
+	if args.list_headings and len(args.source) > 1:
+		parser.error("--list-headings only supports one source")
+
+	if args.json and not args.list_headings:
+		parser.error("--json requires --list-headings")
+
+	if args.json and (args.confidence or args.copy):
+		parser.error("--json cannot be combined with --confidence or --copy")
+
 	sources = args.source if args.source else ["stdin"]
 	results = []
 
@@ -246,6 +266,34 @@ def main(argv=None):
 			for result in results
 		]
 		content = "\n\n---\n\n".join(blocks) + "\n"
+
+	# The heading list replaces the converted document as the output.
+	if args.list_headings:
+		headings = list_headings(content)
+		if args.json:
+			content = (
+				json.dumps(
+					{
+						"source": successful_results[0].source,
+						"headings": [
+							{
+								"level": heading.level,
+								"text": heading.text,
+								"selector": heading.selector,
+							}
+							for heading in headings
+						],
+					},
+					ensure_ascii=False,
+					indent=2,
+				)
+				+ "\n"
+			)
+		else:
+			content = "".join(
+				f"{heading.level}  {heading.text}  #{heading.selector}\n"
+				for heading in headings
+			)
 
 	if args.confidence and not args.output:
 		formatted = "\n\n".join(_render_report(result) for result in results)

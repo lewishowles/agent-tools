@@ -91,6 +91,8 @@ If one source fails to fetch, the rest still convert; the failed one shows a `##
 | `--copy`        | Copy the generated Markdown to the clipboard (macOS only, via `pbcopy`). Without `--output`, prints a short formatted preview (length, a 300-character truncated excerpt, a success/failure status) instead of dumping the full content to the terminal. |
 | `--confidence`  | Also print the confidence report to stdout (it always goes to stderr regardless of this flag).                                                                                                                                                           |
 | `--metadata`    | Alongside `--output`, also write a `<output>.json` sidecar with `title`, `url`, and `timestamp`. Requires `--output`, and only supports a single source (ambiguous with a batch).                                                                        |
+| `--list-headings` | List each heading's level, plain text, and unique anchor selector from one source. Headings inside code blocks are skipped. |
+| `--json` | Write the heading list as an object with `source` and `headings` fields. Requires `--list-headings`; cannot be combined with `--confidence` or `--copy`. |
 
 ## Combining with web-audit
 
