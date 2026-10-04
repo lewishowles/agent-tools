@@ -158,6 +158,15 @@ repository. Named runs use the saved command's working directory. The effective
 timeout is chosen in this order: `--timeout`, the saved command's timeout, then
 the 120-second default.
 
+Give `run` several saved names to run them one after another. It checks every
+name before starting, runs the remaining commands if one fails, then shows each
+result and a summary on standard output. The exit status is 0 when all runs
+pass; 1 when any run fails, times out, or finds its command already running; 2
+or 3 when a later command cannot start because of a usage or environment error;
+and 130 or 143 on interrupt. A command that cannot start ends the set. `--timeout`
+applies to each run; `--cwd`, `--file`, and `--glob` cannot be used with several
+names. With `--json`, one JSON document lists every run and its result.
+
 A command marked `--manual` still appears in `list`, but `run` refuses to
 execute it and prints the exact command and working directory for a human to
 run instead. Direct Playwright and Cypress commands are refused in the same
@@ -165,6 +174,7 @@ way, before they start or create a run record.
 
 ```sh
 agent-run run test
+agent-run run format-check build test
 agent-run run --timeout 30 -- pytest
 agent-run run --cwd tools --timeout 10 --json -- ruff check
 agent-run run lint-changed --file src/main.py --file src/cli.py

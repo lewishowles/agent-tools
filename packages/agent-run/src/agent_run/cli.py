@@ -9,6 +9,7 @@ import sqlite3
 import sys
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib.metadata import version
 from pathlib import Path
@@ -53,6 +54,7 @@ from agent_run.failures import (
 )
 from agent_run.locking import RunBusyError, RunLock, acquire_run_lock
 from agent_run.output import (
+    _EXIT_CODES,
     render_empty_state,
     render_error,
     render_quote_block,
@@ -96,6 +98,33 @@ from agent_run.targets import resolve_file_targets
 CANDIDATE_NEW = "new"
 CANDIDATE_SAVED = "saved"
 CANDIDATE_CLASH = "clash"
+
+# How one command ended, as shown in the summary and JSON when several named
+# commands run.
+RUN_PASSED = "passed"
+RUN_FAILED = "failed"
+RUN_TIMED_OUT = "timed out"
+RUN_INTERRUPTED = "interrupted"
+RUN_NOT_STARTED = "not started"
+
+
+@dataclass(frozen=True)
+class _RunOutcome:
+    """The result of one attempted run, ready to print alone or in a set."""
+
+    # How the run ended, using one of the RUN_ statuses.
+    status: str
+    # The exit status agent-run returns when this run is printed alone.
+    exit_code: int
+    # The run data shown with --json, or details for an error.
+    data: dict[str, object] | None = None
+    # The text shown without --json.
+    text: str | None = None
+    # The error code from the shared CLI contract, set whenever the run did
+    # not pass.
+    error_code: str | None = None
+    # The one-line error message that goes with error_code.
+    message: str | None = None
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -321,7 +350,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "run",
         help="Run a named or direct project command.",
         description="Run a named or direct project command in the foreground.",
-        usage="agent-run run [NAME] [--cwd DIR] [--timeout SECONDS] [--file PATH] [--glob PATTERN] [--json] [-- ARGV...]",
+        usage="agent-run run [NAME ...] [--cwd DIR] [--timeout SECONDS] [--file PATH] [--glob PATTERN] [--json] [-- ARGV...]",
         add_help=False,
         json_mode=json_mode,
     )
@@ -371,7 +400,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "root with the `file-list` capability."
         ),
     )
-    run_parser.add_argument("name", nargs="?", help="Name of a stored command to run.")
+    run_parser.add_argument(
+        "names", nargs="*", help="Names of stored commands to run in order."
+    )
 
     again_parser = subparsers.add_parser(
         "again",
@@ -864,29 +895,43 @@ def main(argv: Sequence[str] | None = None) -> int:
         return render_success(json_mode=False, text=repository_id)
 
     if parsed.command == "run":
-        if parsed.name is not None and separator_index + 1 < len(values):
+        if parsed.names and separator_index + 1 < len(values):
             run_parser.error("named commands cannot include arguments after --")
 
-        if parsed.name is None and separator_index == len(values):
+        if not parsed.names and separator_index == len(values):
             run_parser.error("the following arguments are required: name or --")
 
         direct_arguments = values[separator_index + 1 :]
 
-        if parsed.name is None and not direct_arguments:
+        if not parsed.names and not direct_arguments:
             run_parser.error("the following arguments are required: ARGV")
 
-        if parsed.name is not None and parsed.cwd is not None:
+        if len(parsed.names) > 1 and (
+            parsed.cwd is not None or parsed.file or parsed.glob
+        ):
+            run_parser.error(
+                "--cwd, --file and --glob cannot be used with several named commands"
+            )
+
+        if parsed.names and parsed.cwd is not None:
             run_parser.error("named commands use their stored working directory")
 
-        if parsed.name is None and (parsed.file or parsed.glob):
+        if not parsed.names and (parsed.file or parsed.glob):
             run_parser.error(
                 "--file and --glob are only valid for a named command with the "
                 "file-list capability"
             )
 
+        if len(parsed.names) > 1:
+            return _execute_multiple_runs(
+                names=parsed.names,
+                json_mode=parsed.json,
+                timeout=parsed.timeout,
+            )
+
         return _execute_run(
             json_mode=parsed.json,
-            name=parsed.name,
+            name=parsed.names[0] if parsed.names else None,
             direct_arguments=direct_arguments,
             cwd=parsed.cwd,
             timeout=parsed.timeout,
@@ -1587,6 +1632,95 @@ def main(argv: Sequence[str] | None = None) -> int:
         return render_success(json_mode=False, text=text)
 
 
+def _execute_multiple_runs(
+    *, names: Sequence[str], json_mode: bool, timeout: float | None
+) -> int:
+    """Run several saved commands one after another and summarise the results.
+
+    Every name is looked up first, so an unknown or manual-only name refuses
+    the whole set before anything runs or a run record is saved.
+    Each command's result is shown, followed by one summary row per attempted
+    command. A failed or timed-out command does not stop the set; a command
+    that cannot start, or an interrupt, ends it and is the last summary row.
+    JSON reports the same attempted runs in one document.
+    """
+    try:
+        repository = identify_repository()
+        connection = connect_database()
+
+        try:
+            commands = [find_command(connection, repository, name) for name in names]
+        finally:
+            connection.close()
+
+        for command in commands:
+            if command.manual:
+                return _manual_command_error(
+                    json_mode=json_mode,
+                    argv=command.argv,
+                    cwd=repository.root / command.working_directory,
+                    name=command.name,
+                )
+    except RepositoryUninitialisedError as error:
+        return _uninitialised_repository_error(json_mode=json_mode, error=error)
+    except CommandNotFoundError as error:
+        return render_error(json_mode=json_mode, code="not-found", message=str(error))
+    except (RepositoryError, NewerSchemaError, OSError, sqlite3.Error) as error:
+        return render_error(json_mode=json_mode, code="environment", message=str(error))
+
+    runs: list[dict[str, object]] = []
+    blocks: list[str] = []
+    exit_code = 0
+
+    for command in commands:
+        outcome = _perform_run(
+            json_mode=json_mode,
+            name=command.name,
+            timeout=timeout,
+            command=command,
+        )
+        run = {
+            "name": command.name,
+            "ok": outcome.status == RUN_PASSED,
+            "status": outcome.status,
+        }
+
+        if outcome.status == RUN_NOT_STARTED:
+            run_error = {"code": outcome.error_code, "message": outcome.message}
+
+            if outcome.data is not None:
+                run_error["data"] = outcome.data
+
+            run["error"] = run_error
+        else:
+            run["data"] = outcome.data
+
+        runs.append(run)
+
+        if not json_mode and outcome.text is not None:
+            blocks.append(outcome.text.strip("\n"))
+
+        if outcome.exit_code != 0:
+            exit_code = outcome.exit_code
+
+        # A command that cannot start or is interrupted ends the sequence.
+        if outcome.status in {RUN_NOT_STARTED, RUN_INTERRUPTED}:
+            break
+
+    if json_mode:
+        print(
+            json.dumps({"ok": all(run["ok"] for run in runs), "data": {"runs": runs}})
+        )
+    else:
+        rows = [
+            {"label": run["name"], "value": run["status"], "wrap": False}
+            for run in runs
+        ]
+        print("\n\n".join([*blocks, f"Summary\n{render_row_group(rows)}"]))
+
+    return exit_code
+
+
 def _execute_run(
     *,
     json_mode: bool,
@@ -1597,7 +1731,43 @@ def _execute_run(
     file_paths: Sequence[str] = (),
     globs: Sequence[str] = (),
 ) -> int:
-    """Run a command, record the run, and return the exit code for agent-run.
+    """Print one command's usual result and return its exit code."""
+    outcome = _perform_run(
+        json_mode=json_mode,
+        name=name,
+        direct_arguments=direct_arguments,
+        cwd=cwd,
+        timeout=timeout,
+        file_paths=file_paths,
+        globs=globs,
+    )
+
+    if outcome.error_code is not None:
+        render_error(
+            json_mode=json_mode,
+            code=outcome.error_code,
+            message=outcome.message,
+            data=outcome.data,
+            text=outcome.text,
+        )
+    else:
+        render_success(json_mode=json_mode, data=outcome.data, text=outcome.text)
+
+    return outcome.exit_code
+
+
+def _perform_run(
+    *,
+    json_mode: bool,
+    name: str | None = None,
+    direct_arguments: Sequence[str] = (),
+    cwd: str | None = None,
+    timeout: float | None = None,
+    file_paths: Sequence[str] = (),
+    globs: Sequence[str] = (),
+    command: Command | None = None,
+) -> _RunOutcome:
+    """Run and record one command, returning its result without printing it.
 
     With a name, run that saved command from its stored working directory, with
     any file targets added; cwd is ignored. Without a name, run
@@ -1605,6 +1775,9 @@ def _execute_run(
     timeout, then the default. Both run and again use this, so the
     one-at-a-time lock and the manual-only and browser-runner refusals apply to
     each.
+
+    A caller that has already looked up the saved command can pass it as
+    command to skip a second lookup.
     """
     connection: sqlite3.Connection | None = None
     log_path: Path | None = None
@@ -1627,19 +1800,18 @@ def _execute_run(
             command_arguments = tuple(direct_arguments)
 
             if starts_browser_runner(command_arguments):
-                return _manual_command_error(
-                    json_mode=json_mode,
+                return _manual_run_outcome(
                     argv=command_arguments,
                     cwd=repository.root / relative_working_directory,
                 )
         else:
-            command = find_command(connection, repository, name)
+            if command is None:
+                command = find_command(connection, repository, name)
 
             # A manual-only command stops here, before file targets are resolved
             # or a log is opened, so nothing runs and no run record is saved.
             if command.manual:
-                return _manual_command_error(
-                    json_mode=json_mode,
+                return _manual_run_outcome(
                     argv=command.argv,
                     cwd=repository.root / command.working_directory,
                     name=command.name,
@@ -1732,13 +1904,23 @@ def _execute_run(
             timed_out=result.timed_out,
         )
     except RunBusyError as error:
-        return _busy_command_error(
-            json_mode=json_mode,
-            name=name,
-            run_id=error.run_id,
+        command_label = "This command" if name is None else f'Command "{name}"'
+        return _RunOutcome(
+            status=RUN_NOT_STARTED,
+            exit_code=_EXIT_CODES["busy"],
+            data={"run_id": error.run_id},
+            text=f"Error: {command_label} is already running (run ID: {error.run_id}).",
+            error_code="busy",
+            message=f"{command_label} is already running (run ID: {error.run_id}).",
         )
     except RepositoryUninitialisedError as error:
-        return _uninitialised_repository_error(json_mode=json_mode, error=error)
+        return _RunOutcome(
+            status=RUN_NOT_STARTED,
+            exit_code=_EXIT_CODES["uninitialised"],
+            text=f"Error: {error}",
+            error_code="uninitialised",
+            message=str(error),
+        )
     except (RepositoryError, NewerSchemaError, OSError, sqlite3.Error) as error:
         if not finalising and connection is not None and log_path is not None:
             try:
@@ -1747,21 +1929,27 @@ def _execute_run(
                 # Report the original startup error, not the cleanup failure.
                 pass
 
-        return render_error(
-            json_mode=json_mode,
-            code="environment",
+        return _RunOutcome(
+            status=RUN_NOT_STARTED,
+            exit_code=_EXIT_CODES["environment"],
+            text=f"Error: {error}",
+            error_code="environment",
             message=str(error),
         )
     except CommandNotFoundError as error:
-        return render_error(
-            json_mode=json_mode,
-            code="not-found",
+        return _RunOutcome(
+            status=RUN_NOT_STARTED,
+            exit_code=_EXIT_CODES["not-found"],
+            text=f"Error: {error}",
+            error_code="not-found",
             message=str(error),
         )
     except (CommandError, ValueError) as error:
-        return render_error(
-            json_mode=json_mode,
-            code="usage",
+        return _RunOutcome(
+            status=RUN_NOT_STARTED,
+            exit_code=_EXIT_CODES["usage"],
+            text=f"Error: {error}",
+            error_code="usage",
             message=str(error),
         )
     finally:
@@ -1794,10 +1982,7 @@ def _execute_run(
         data["summary"] = summary.lines
         text = _format_run(result, record, summary)
 
-        if json_mode:
-            return render_success(json_mode=True, data=data)
-
-        return render_success(json_mode=False, text=text)
+        return _RunOutcome(status=RUN_PASSED, exit_code=0, data=data, text=text)
 
     failure_message = (
         f"{failure_message} run ID: {record.run_id}; log path: {record.log_path}"
@@ -1826,17 +2011,24 @@ def _execute_run(
             f"Error: {failure_message}\n\n{_format_failure_report(failure_report)}"
         )
 
-    exit_code = render_error(
-        json_mode=json_mode,
-        code="check-failed",
-        message=failure_message,
-        data=failure_data,
-        text=failure_text,
-    )
+    if interrupted:
+        status = RUN_INTERRUPTED
+    elif result.timed_out:
+        status = RUN_TIMED_OUT
+    else:
+        status = RUN_FAILED
 
-    # The shell convention for a process ended by a signal is 128 plus
-    # the signal number, so 130 for Ctrl+C and 143 for SIGTERM.
-    return 128 + interrupt_signal if interrupted else exit_code
+    # A process ended by a signal exits with 128 plus the signal number.
+    return _RunOutcome(
+        status=status,
+        exit_code=128 + interrupt_signal
+        if interrupted
+        else _EXIT_CODES["check-failed"],
+        data=failure_data,
+        text=failure_text or f"Error: {failure_message}",
+        error_code="check-failed",
+        message=failure_message,
+    )
 
 
 def _resolve_run(
@@ -1871,29 +2063,34 @@ def _manual_command_error(
     name: str | None = None,
 ) -> int:
     """Render the refusal for a command that must be started by a person."""
-    command_line = f"cd {shlex.quote(str(cwd))} && {shlex.join(argv)}"
-    command_label = "This command" if name is None else f'Command "{name}"'
+    outcome = _manual_run_outcome(argv=argv, cwd=cwd, name=name)
 
     return render_error(
         json_mode=json_mode,
-        code="manual",
-        message=(
-            f"{command_label} is manual-only. Run it manually with: {command_line}"
-        ),
-        data={"argv": list(argv), "cwd": str(cwd)},
+        code=outcome.error_code,
+        message=outcome.message,
+        data=outcome.data,
     )
 
 
-def _busy_command_error(*, json_mode: bool, name: str | None, run_id: str) -> int:
-    """Render the refusal for a command that is already running."""
-    command_label = "This command" if name is None else f'Command "{name}"'
-    message = f"{command_label} is already running (run ID: {run_id})."
+def _manual_run_outcome(
+    *, argv: Sequence[str], cwd: Path, name: str | None = None
+) -> _RunOutcome:
+    """Build the refusal for a manual-only command.
 
-    return render_error(
-        json_mode=json_mode,
-        code="busy",
+    The refusal includes the exact command a person must run.
+    """
+    command_line = f"cd {shlex.quote(str(cwd))} && {shlex.join(argv)}"
+    command_label = "This command" if name is None else f'Command "{name}"'
+    message = f"{command_label} is manual-only. Run it manually with: {command_line}"
+
+    return _RunOutcome(
+        status=RUN_NOT_STARTED,
+        exit_code=_EXIT_CODES["manual"],
+        data={"argv": list(argv), "cwd": str(cwd)},
+        text=f"Error: {message}",
+        error_code="manual",
         message=message,
-        data={"run_id": run_id},
     )
 
 

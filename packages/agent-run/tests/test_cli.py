@@ -17,7 +17,7 @@ from agent_run.cli import _format_failure_report, _format_run, main
 from agent_run.database import connect_database
 from agent_run.execution import RunResult, TerminateRequested
 from agent_run.failures import Failure, FailureReport
-from agent_run.locking import acquire_run_lock
+from agent_run.locking import RunBusyError, acquire_run_lock
 from agent_run.output import render_error, render_success
 from agent_run.readers import SuccessSummary
 from agent_run.repository import create_repository_id, identify_repository
@@ -717,6 +717,417 @@ def test_cli_named_run_uses_saved_directory_and_timeout_precedence(
         connection.close()
 
     assert timeouts == [120.0, 5.0, 2.0]
+
+
+def test_cli_multiple_runs_report_every_result_and_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A failed saved command does not prevent later commands from running."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    for name, code in (("first", 0), ("second", 7), ("third", 0)):
+        assert (
+            main(["add", name, "--", sys.executable, "-c", f"raise SystemExit({code})"])
+            == 0
+        )
+        capsys.readouterr()
+
+    exit_code = main(["run", "first", "second", "third"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert captured.err == ""
+    assert captured.out.count("Command completed") == 2
+    assert "Error: Command exited with status 7." in captured.out
+    assert captured.out.index("$ " + sys.executable) < captured.out.index("Summary")
+    summary = captured.out.split("Summary\n", 1)[1]
+    summary_lines = summary.splitlines()
+
+    for name, status in (
+        ("first", "passed"),
+        ("second", "failed"),
+        ("third", "passed"),
+    ):
+        assert any(name in line and status in line for line in summary_lines)
+
+    assert "\n\n\n" not in captured.out
+    assert "\n\nSummary\n" in captured.out
+
+    connection = connect_database(database_path)
+    try:
+        names = [
+            row[0]
+            for row in connection.execute(
+                "SELECT command_name FROM runs ORDER BY rowid"
+            )
+        ]
+    finally:
+        connection.close()
+
+    assert names == ["first", "second", "third"]
+
+
+def test_cli_multiple_runs_json_reports_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Successful named commands share one successful JSON result."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    for name in ("first", "third"):
+        assert main(["add", name, "--", sys.executable, "-c", "print('done')"]) == 0
+        capsys.readouterr()
+
+    success_exit_code = main(["run", "first", "third", "--json"])
+    success_result = json.loads(capsys.readouterr().out)
+
+    assert success_exit_code == 0
+    assert success_result["ok"] is True
+
+    assert [run["name"] for run in success_result["data"]["runs"]] == [
+        "first",
+        "third",
+    ]
+
+
+def test_cli_multiple_runs_text_reports_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Successful named commands each print a block before the summary."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    for name in ("first", "third"):
+        assert main(["add", name, "--", sys.executable, "-c", "print('done')"]) == 0
+        capsys.readouterr()
+
+    assert main(["run", "first", "third"]) == 0
+    passed_output = capsys.readouterr().out
+    assert passed_output.count("Command completed") == 2
+    assert "\n\n\n" not in passed_output
+    assert "\n\nSummary\n" in passed_output
+
+
+def test_cli_multiple_runs_text_reports_failure_in_last_block(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A failed final command is separated from the earlier result and summary."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    assert (
+        main(["add", "second", "--", sys.executable, "-c", "raise SystemExit(7)"]) == 0
+    )
+    capsys.readouterr()
+
+    assert (
+        main(["add", "fourth", "--", sys.executable, "-c", "raise SystemExit(8)"]) == 0
+    )
+    capsys.readouterr()
+
+    assert main(["run", "second", "fourth"]) == 1
+    failed_output = capsys.readouterr().out
+    assert "\n\nError: Command exited with status 8." in failed_output
+    assert "\n\nSummary\n" in failed_output
+    assert "\n\n\n" not in failed_output
+
+
+def test_cli_multiple_runs_json_includes_failure_and_timeout_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """One JSON document reports every run, including failed and timed out runs."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    commands = (
+        ("passed", "print('done')"),
+        ("failed", "raise SystemExit(4)"),
+        ("slow", "import time; time.sleep(10)"),
+    )
+
+    for name, script in commands:
+        assert main(["add", name, "--", sys.executable, "-c", script]) == 0
+        capsys.readouterr()
+
+    exit_code = main(["run", "passed", "failed", "slow", "--timeout", "0.1", "--json"])
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 1
+    assert captured.err == ""
+    assert result["ok"] is False
+    runs = result["data"]["runs"]
+    assert [run["name"] for run in runs] == ["passed", "failed", "slow"]
+    assert [run["status"] for run in runs] == ["passed", "failed", "timed out"]
+    assert [run["ok"] for run in runs] == [True, False, False]
+    assert runs[1]["data"]["exit_status"] == 4
+    assert runs[1]["data"]["failure"]
+    assert runs[2]["data"]["timed_out"] is True
+    assert runs[2]["data"]["failure"]
+
+    connection = connect_database(tmp_path / "agent-run.db")
+    try:
+        timeouts = [
+            row[0]
+            for row in connection.execute(
+                "SELECT timeout_seconds FROM runs ORDER BY rowid"
+            )
+        ]
+    finally:
+        connection.close()
+
+    assert timeouts == [0.1, 0.1, 0.1]
+
+
+@pytest.mark.parametrize(
+    ("interruption", "expected_status"),
+    [(KeyboardInterrupt, 130), (TerminateRequested, 143)],
+)
+def test_cli_multiple_runs_stop_after_an_interrupt(
+    interruption: type[BaseException],
+    expected_status: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An interrupted run is saved and the later command is skipped."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    for name in ("first", "second"):
+        assert main(["add", name, "--", sys.executable, "-c", "print('done')"]) == 0
+        capsys.readouterr()
+
+    def interrupt(*_args: object, **_kwargs: object) -> None:
+        """Simulate a stopped child after the run record starts."""
+        raise interruption
+
+    monkeypatch.setattr("agent_run.cli.run_command", interrupt)
+
+    exit_code = main(["run", "first", "second", "--json"])
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == expected_status
+    assert captured.err == ""
+    assert result["ok"] is False
+    assert [run["name"] for run in result["data"]["runs"]] == ["first"]
+    assert result["data"]["runs"][0]["status"] == "interrupted"
+
+    text_exit_code = main(["run", "first", "second"])
+    text_output = capsys.readouterr()
+
+    assert text_exit_code == expected_status
+    assert text_output.err == ""
+    assert "Error: Command interrupted." in text_output.out
+    assert "\n\nSummary\n" in text_output.out
+    assert any(
+        "first" in line and "interrupted" in line
+        for line in text_output.out.split("Summary\n", 1)[1].splitlines()
+    )
+    assert "second" not in text_output.out
+
+    connection = connect_database(database_path)
+    try:
+        records = connection.execute(
+            "SELECT command_name, exit_status FROM runs ORDER BY rowid"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert records == [
+        ("first", 128 - expected_status),
+        ("first", 128 - expected_status),
+    ]
+
+
+def test_cli_multiple_runs_keep_prior_results_when_a_later_run_is_busy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A busy command ends the set after reporting runs that already completed."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    for name in ("first", "second", "third"):
+        assert main(["add", name, "--", sys.executable, "-c", "print('done')"]) == 0
+        capsys.readouterr()
+
+    def block_second(
+        database_path: Path, repository_id: str, name: str, *, run_id: str
+    ) -> object:
+        """Keep the second saved name busy after the first has completed."""
+        if name == "second":
+            raise RunBusyError("active-run")
+
+        return acquire_run_lock(database_path, repository_id, name, run_id=run_id)
+
+    monkeypatch.setattr("agent_run.cli.acquire_run_lock", block_second)
+
+    json_exit_code = main(["run", "first", "second", "third", "--json"])
+    json_output = capsys.readouterr()
+    result = json.loads(json_output.out)
+
+    assert json_exit_code == 1
+    assert json_output.err == ""
+    assert result["ok"] is False
+    runs = result["data"]["runs"]
+    assert [run["name"] for run in runs] == ["first", "second"]
+    assert [run["status"] for run in runs] == ["passed", "not started"]
+    assert runs[1]["error"] == {
+        "code": "busy",
+        "message": 'Command "second" is already running (run ID: active-run).',
+        "data": {"run_id": "active-run"},
+    }
+
+    text_exit_code = main(["run", "first", "second", "third"])
+    text_output = capsys.readouterr()
+
+    assert text_exit_code == 1
+    assert text_output.err == ""
+    assert '\n\nError: Command "second" is already running' in text_output.out
+    assert "\n\nSummary\n" in text_output.out
+    assert any(
+        "second" in line and "not started" in line
+        for line in text_output.out.split("Summary\n", 1)[1].splitlines()
+    )
+    assert "third" not in text_output.out
+
+    connection = connect_database(database_path)
+    try:
+        names = [
+            row[0]
+            for row in connection.execute(
+                "SELECT command_name FROM runs ORDER BY rowid"
+            )
+        ]
+    finally:
+        connection.close()
+
+    assert names == ["first", "first"]
+
+
+@pytest.mark.parametrize(
+    ("failure", "error_code", "expected_exit_code"),
+    [
+        (ValueError("invalid command"), "usage", 2),
+        (OSError("command unavailable"), "environment", 3),
+    ],
+)
+def test_cli_multiple_runs_keep_the_exit_status_when_a_later_run_cannot_start(
+    failure: Exception,
+    error_code: str,
+    expected_exit_code: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The set stops with the error status of the command that could not start."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    for name in ("first", "second", "third"):
+        assert main(["add", name, "--", sys.executable, "-c", "print('done')"]) == 0
+        capsys.readouterr()
+
+    def stop_second(
+        database_path: Path, repository_id: str, name: str, *, run_id: str
+    ) -> object:
+        """Raise the chosen startup error after the first command passes."""
+        if name == "second":
+            raise failure
+
+        return acquire_run_lock(database_path, repository_id, name, run_id=run_id)
+
+    monkeypatch.setattr("agent_run.cli.acquire_run_lock", stop_second)
+
+    exit_code = main(["run", "first", "second", "third", "--json"])
+    result = json.loads(capsys.readouterr().out)
+
+    assert exit_code == expected_exit_code
+    assert result["ok"] is False
+    assert [run["name"] for run in result["data"]["runs"]] == ["first", "second"]
+    assert result["data"]["runs"][1]["status"] == "not started"
+    assert result["data"]["runs"][1]["error"]["code"] == error_code
+
+
+@pytest.mark.parametrize("invalid_name", ["missing", "manual"])
+def test_cli_multiple_runs_validate_every_name_before_starting(
+    invalid_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Unknown and manual-only commands refuse the set without saving a run."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+
+    assert main(["add", "ready", "--", sys.executable, "-c", "print('ready')"]) == 0
+    assert (
+        main(
+            ["add", "manual", "--manual", "--", sys.executable, "-c", "print('manual')"]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    exit_code = main(["run", "ready", invalid_name, "--json"])
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 1
+    assert captured.err == ""
+    assert result["ok"] is False
+    assert invalid_name in result["error"]["message"]
+
+    connection = connect_database(database_path)
+    try:
+        count = connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+    finally:
+        connection.close()
+
+    assert count == 0
+
+
+@pytest.mark.parametrize("option", ["--cwd", "--file", "--glob"])
+def test_cli_multiple_runs_refuse_per_command_options(
+    option: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Options that target one command cannot be applied to several names."""
+    with pytest.raises(SystemExit) as error:
+        main(["run", "one", "two", option, "value", "--json"])
+
+    result = json.loads(capsys.readouterr().out)
+
+    assert error.value.code == 2
+    assert result["error"]["code"] == "usage"
+    assert "several named commands" in result["error"]["message"]
 
 
 def test_cli_manual_named_run_reports_command_without_executing_or_resolving_targets(
