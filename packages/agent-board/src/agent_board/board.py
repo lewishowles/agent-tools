@@ -21,6 +21,7 @@ ROLES = set(ACTIVITY_LABELS)
 # A blocked row is looked up without its wait time.
 STATUS_SYMBOLS = {
     "needs you": "●",
+    "stale": "●",
     "stuck": "●",
     "blocked": "✕",
     "implementing": "▶",
@@ -81,7 +82,8 @@ def render_board(
 
     The lines start with a blank line, then the frame. Teams that need you come
     first under WAITING ON YOU: blocked teams with their longest wait, then
-    stuck teams and teams whose agents are all waiting with nothing unread.
+    stale teams, stuck teams and teams whose agents are all waiting with
+    nothing unread.
     Working teams follow under WORKING, after a blank line when both groups
     show. A heading is left out when its group is empty.
     Below 30 columns, plain rows replace the frame and headings, with a blank
@@ -152,6 +154,17 @@ def render_board(
                     f"blocked · {_format_age(age)}",
                 )
             )
+        # hcom can move a worker onto a background Codex session that then
+        # stops updating, so the worker stays active and hcom holds messages for it.
+        # That session no longer matches the worker's transcript.
+        elif any(
+            agent["status"] == "active"
+            and (session_id := agent.get("session_id"))
+            and (transcript_path := agent.get("transcript_path"))
+            and session_id not in transcript_path
+            for agent, _ in members
+        ):
+            needs_you.append(((1, 0, label), repository, label_rest, "stale"))
         elif not any(status in {"active", "launching"} for status in statuses) and any(
             agent["status"] == "listening"
             and agent["unread_count"] > 0
@@ -159,7 +172,7 @@ def render_board(
             and now - unread_since[agent["name"]] > STUCK_AFTER_SECONDS
             for agent, _ in members
         ):
-            needs_you.append(((1, 0, label), repository, label_rest, "stuck"))
+            needs_you.append(((2, 0, label), repository, label_rest, "stuck"))
         elif partly_running:
             status = _working_status(members)
 
@@ -171,11 +184,12 @@ def render_board(
             agent["status"] == "listening" and agent["unread_count"] == 0
             for agent, _ in members
         ):
-            needs_you.append(((1, 0, label), repository, label_rest, "needs you"))
+            needs_you.append(((2, 0, label), repository, label_rest, "needs you"))
         else:
             working.append((label, repository, label_rest, _working_status(members)))
 
-    # Blocked teams sort by longest wait; every other team sorts by name.
+    # Blocked teams come first, longest wait first. Stale teams follow, then
+    # stuck and waiting teams, each group by name. Working teams sort by name.
     needs_you.sort(key=lambda row: row[0])
     working.sort(key=lambda row: row[0])
 

@@ -432,6 +432,94 @@ def test_active_and_unread_teams_remain_working_rows() -> None:
     assert lines == ["WORKING", "○ coordinating  Agent-Tools", "◌ checking      Custom"]
 
 
+def test_mismatched_active_session_needs_attention() -> None:
+    """An active agent bound to another transcript makes its team stale."""
+    orchestrator = agent("Agent-Tools", "orchestrator", status="active")
+    orchestrator.update(
+        session_id="current-session",
+        transcript_path="/transcripts/other-session.jsonl",
+    )
+
+    assert board_content([orchestrator, agent("Agent-Tools", "scout")]) == [
+        "WAITING ON YOU",
+        "● stale  Agent-Tools",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("session_id", "transcript_path"),
+    [
+        ("current-session", "/transcripts/current-session.jsonl"),
+        (None, "/transcripts/other-session.jsonl"),
+        ("current-session", None),
+    ],
+)
+def test_active_session_needs_both_fields_and_a_mismatch(
+    session_id: str | None, transcript_path: str | None
+) -> None:
+    """Matching sessions and incomplete records leave an active team working."""
+    orchestrator = agent("Agent-Tools", "orchestrator", status="active")
+    orchestrator.update(session_id=session_id, transcript_path=transcript_path)
+
+    assert board_content([orchestrator, agent("Agent-Tools", "scout")]) == [
+        "WORKING",
+        "○ coordinating  Agent-Tools",
+    ]
+
+
+def test_listening_agent_with_mismatched_session_keeps_team_unchanged() -> None:
+    """A listening agent with a mismatched session leaves its team's row unchanged."""
+    agents = [agent("Agent-Tools", "orchestrator"), agent("Agent-Tools", "scout")]
+    without_session = board_content(agents)
+
+    agents[0].update(
+        session_id="current-session",
+        transcript_path="/transcripts/other-session.jsonl",
+    )
+
+    assert without_session == ["WAITING ON YOU", "● needs you  Agent-Tools"]
+    assert board_content(agents) == without_session
+
+
+def test_blocked_team_takes_priority_over_stale_agent() -> None:
+    """A team with a blocked teammate shows as blocked even when another agent is stale."""
+    orchestrator = agent("Agent-Tools", "orchestrator", status="active")
+    orchestrator.update(
+        session_id="current-session",
+        transcript_path="/transcripts/other-session.jsonl",
+    )
+
+    assert board_content(
+        [orchestrator, agent("Agent-Tools", "scout", status="blocked")]
+    ) == ["WAITING ON YOU", "✕ blocked · 1m  Agent-Tools"]
+
+
+def test_stale_team_sorts_before_stuck_team() -> None:
+    """A stale team appears ahead of a stuck team regardless of name."""
+    stale = agent("Agent-Tools-z-stale", "orchestrator", status="active")
+    stale.update(
+        session_id="current-session",
+        transcript_path="/transcripts/other-session.jsonl",
+    )
+    stuck = agent("Agent-Tools-a-stuck", "orchestrator", unread=1)
+    agents = [
+        stale,
+        agent("Agent-Tools-z-stale", "scout"),
+        stuck,
+        agent("Agent-Tools-a-stuck", "scout"),
+    ]
+
+    assert board_content(
+        agents,
+        unread_since={stuck["name"]: 0},
+        now=61,
+    ) == [
+        "WAITING ON YOU",
+        "● stale  Agent-Tools · z-stale",
+        "● stuck  Agent-Tools · a-stuck",
+    ]
+
+
 def test_unread_team_becomes_stuck_after_the_grace_period() -> None:
     """A listening team needs attention once unread messages have waited over a minute."""
     agents = [
