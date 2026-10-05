@@ -37,6 +37,7 @@ def extract_fixture(name: str, base_url: str | None = None) -> tuple[str, str, s
 		"valueless-attributes.html",
 		"inline-code-with-tag-text.html",
 		"banner-main-with-article.html",
+		"aria-hidden-content.html",
 	],
 )
 def test_every_fixture_runs_through_local_extraction_pipeline(
@@ -74,6 +75,24 @@ def test_small_main_falls_through_to_the_article() -> None:
 	assert "Choose plants that tolerate dry summers" in markdown
 	assert "Today's promotion" not in selected_html
 	assert "Today's promotion" not in markdown
+
+
+def test_aria_hidden_content_is_removed_but_hidden_tab_content_remains() -> None:
+	_, selected_html, markdown = extract_fixture("aria-hidden-content.html")
+
+	assert "Garden care guide" in markdown
+	assert "Keep watering in the morning" in markdown
+	assert "This tab explains how to mulch" in markdown
+	assert "Visible status" in markdown
+	assert "Valueless attribute content" in markdown
+	assert "This text is available to everyone" in markdown
+	assert "Duplicate menu item" not in selected_html
+	assert "Duplicate menu item" not in markdown
+	assert "Duplicate menu detail" not in markdown
+	assert "Search icon text" not in markdown
+	assert "Decorative picture" not in selected_html
+	assert 'aria-hidden="true"' not in selected_html
+	assert 'aria-hidden="TrUe"' not in selected_html
 
 
 def test_indentation_outside_main_does_not_change_content_selection() -> None:

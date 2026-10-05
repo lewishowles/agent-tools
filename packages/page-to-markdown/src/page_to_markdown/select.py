@@ -109,8 +109,11 @@ class _DomBuilder(HTMLParser):
 				self._strip_depth += 1
 			return
 
-		if tag in STRIP_TAGS:
-			self._strip_depth = 1
+		if tag in STRIP_TAGS or _is_aria_hidden(attrs):
+			# A void element has no end tag, so it is dropped without opening a
+			# stripped region that would never close.
+			if tag not in VOID_TAGS:
+				self._strip_depth = 1
 			return
 
 		node = _DomNode(tag, attrs, self._stack[-1])
@@ -123,7 +126,7 @@ class _DomBuilder(HTMLParser):
 		tag = tag.lower()
 		if self._strip_depth > 0:
 			return
-		if tag in STRIP_TAGS:
+		if tag in STRIP_TAGS or _is_aria_hidden(attrs):
 			return
 		node = _DomNode(tag, attrs, self._stack[-1])
 		self._stack[-1].children.append(node)
@@ -147,6 +150,20 @@ class _DomBuilder(HTMLParser):
 		if self._strip_depth > 0:
 			return
 		self._stack[-1].add_text(data)
+
+
+def _is_aria_hidden(attrs):
+	"""Report whether an element is marked aria-hidden="true".
+
+	The value is matched in any letter case, with surrounding spaces ignored.
+
+	Such an element and its contents are left out like a stripped tag. An
+	aria-hidden attribute with no value, or any other value, keeps the element.
+	"""
+	return any(
+		name == "aria-hidden" and (value or "").strip().lower() == "true"
+		for name, value in attrs
+	)
 
 
 def _serialise(node):

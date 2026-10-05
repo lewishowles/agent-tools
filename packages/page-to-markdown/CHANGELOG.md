@@ -7,6 +7,7 @@ All notable changes to `page-to-markdown` are documented here. The format is bas
 ### Fixed
 
 - A `main`, `article` or `role="main"` element that holds less than a fifth of the page's text is now skipped, so a page whose main element is only a small banner keeps its article.
+- Text inside elements marked `aria-hidden="true"`, such as icon labels and duplicate menus, is now left out of converted pages.
 
 ## [0.1.2] - 2026-08-25
 
