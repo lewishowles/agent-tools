@@ -4,9 +4,9 @@ A collection of independently installed command-line tools that make common agen
 
 ## Package layout
 
-The root `pyproject.toml` is a virtual uv workspace. It discovers packages under `packages/`, but it is not a package itself.
+The root `pyproject.toml` is a virtual uv workspace. It discovers Python packages under `packages/`, but it is not a package itself. `packages/retina-shrink` is a Swift package excluded from the uv workspace.
 
-Each package owns its own:
+Each Python package owns its own:
 
 - `pyproject.toml`
 - version
@@ -26,7 +26,11 @@ packages/
 
 [page-to-markdown](packages/page-to-markdown/README.md) converts a URL, local HTML file, or piped HTML into compact Markdown and reports its confidence in the selected content.
 
-## Add an independent package
+## Retina shrink
+
+[retina-shrink](packages/retina-shrink/README.md) halves Retina screenshots so agents read a smaller image. It is built with Swift and installed separately from the uv workspace.
+
+## Add an independent Python package
 
 1. Create `packages/<package-name>/`.
 2. Add a package-owned `pyproject.toml` with the package name, version, dependencies, and command-line entry points.

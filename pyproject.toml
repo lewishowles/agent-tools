@@ -1,5 +1,6 @@
 [tool.uv.workspace]
 members = ["packages/*"]
+exclude = ["packages/retina-shrink"]
 
 [dependency-groups]
 dev = ["pytest", "ruff"]
