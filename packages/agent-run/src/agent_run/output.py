@@ -66,6 +66,15 @@ def render_success_status(*, label: str) -> str:
     )
 
 
+def render_error_status(*, label: str) -> str:
+    """Return the error marker and label for a command that failed or timed out."""
+    return status(
+        type="error",
+        label=label,
+        **_RENDER_OPTIONS,
+    )
+
+
 def render_success(
     *,
     json_mode: bool,

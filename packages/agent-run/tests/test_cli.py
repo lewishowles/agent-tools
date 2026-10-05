@@ -743,7 +743,7 @@ def test_cli_multiple_runs_report_every_result_and_summary(
     assert exit_code == 1
     assert captured.err == ""
     assert captured.out.count("Command completed") == 2
-    assert "Error: Command exited with status 7." in captured.out
+    assert "Command exited with status 7\n$ " in captured.out
     assert captured.out.index("$ " + sys.executable) < captured.out.index("Summary")
     summary = captured.out.split("Summary\n", 1)[1]
     summary_lines = summary.splitlines()
@@ -841,7 +841,8 @@ def test_cli_multiple_runs_text_reports_failure_in_last_block(
 
     assert main(["run", "second", "fourth"]) == 1
     failed_output = capsys.readouterr().out
-    assert "\n\nError: Command exited with status 8." in failed_output
+    assert "Command exited with status 8\n$ " in failed_output
+    assert "Failure output was not recognised." in failed_output
     assert "\n\nSummary\n" in failed_output
     assert "\n\n\n" not in failed_output
 
@@ -1800,6 +1801,8 @@ def test_cli_recognises_coloured_vitest_failures_in_both_modes(
     human_output = capsys.readouterr()
     assert "suite > first" in human_output.err
     assert "AssertionError: broken" in human_output.err
+    assert "First failure\n| " in human_output.err
+    assert "Run ID" in human_output.err
     assert "\x1b" not in human_output.err
 
     assert main(["run", "--json", "--", str(command_path)]) == 1
@@ -1864,12 +1867,12 @@ def test_cli_run_requires_arguments_after_separator(
     assert "agent-run run: error:" in captured.err
 
 
-def test_cli_run_text_failure_prints_output_before_error(
+def test_cli_run_text_failure_uses_the_run_block(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Text-mode failures report the status and log without child output."""
+    """Text-mode failures show the run facts and marked output on stderr."""
     root = _initialise_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
@@ -1890,10 +1893,48 @@ def test_cli_run_text_failure_prints_output_before_error(
 
     assert exit_code == 1
     assert captured.out == ""
-    assert "Error: Command exited with status 9." in captured.err
-    assert "run ID:" in captured.err
-    assert "log path:" in captured.err
-    assert "Failure output (last 1 line):" in captured.err
+    assert "Command exited with status 9\n$ " in captured.err
+    assert f"$ {sys.executable} -c " in captured.err
+    assert "Exit code  9\nDuration " in captured.err
+    assert "\nRun ID " in captured.err
+    assert "\nLog " in captured.err
+    assert "Last lines of output\n| captured" in captured.err
+    assert "run ID:" not in captured.err
+    assert "log path:" not in captured.err
+
+
+def test_cli_run_text_timeout_uses_the_run_block(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A timed-out command shows its status, facts and output on stderr."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    exit_code = main(
+        [
+            "run",
+            "--timeout",
+            "0.1",
+            "--",
+            sys.executable,
+            "-c",
+            "import time; time.sleep(10)",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert captured.out == ""
+    assert "Command killed after 0.1 seconds\n$ " in captured.err
+    assert "Exit code" in captured.err
+    assert "\nRun ID " in captured.err
+    assert "\nLog " in captured.err
+    assert "Last lines of output\n| Failure output was not recognised." in captured.err
+    assert "run ID:" not in captured.err
+    assert "log path:" not in captured.err
 
 
 def test_cli_retrieves_saved_run_records_logs_and_failures(

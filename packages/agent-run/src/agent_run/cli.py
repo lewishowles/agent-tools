@@ -57,6 +57,7 @@ from agent_run.output import (
     _EXIT_CODES,
     render_empty_state,
     render_error,
+    render_error_status,
     render_quote_block,
     render_row_group,
     render_success,
@@ -1984,7 +1985,11 @@ def _perform_run(
 
         return _RunOutcome(status=RUN_PASSED, exit_code=0, data=data, text=text)
 
-    failure_message = (
+    # The block's status line says only what happened, with no full stop, like
+    # "Command completed". The run ID and log path have their own rows there,
+    # so only JSON errors and interrupted runs keep the full message.
+    status_message = failure_message.removesuffix(".")
+    json_message = (
         f"{failure_message} run ID: {record.run_id}; log path: {record.log_path}"
     )
     failure_data = _run_record(result, record, resolved_file_paths)
@@ -2007,8 +2012,8 @@ def _perform_run(
             failure_report = read_failure_report(result.argv, log_text)
 
         failure_data["failure"] = _failure_report_record(failure_report)
-        failure_text = (
-            f"Error: {failure_message}\n\n{_format_failure_report(failure_report)}"
+        failure_text = _format_failed_run(
+            result, record, status_message, failure_report
         )
 
     if interrupted:
@@ -2025,9 +2030,9 @@ def _perform_run(
         if interrupted
         else _EXIT_CODES["check-failed"],
         data=failure_data,
-        text=failure_text or f"Error: {failure_message}",
+        text=failure_text or f"Error: {json_message}",
         error_code="check-failed",
-        message=failure_message,
+        message=json_message,
     )
 
 
@@ -2534,11 +2539,23 @@ def _format_failure_report(report: FailureReport) -> str:
             [f"Failure output (last {tail_count} {tail_unit}):", *report.tail]
         )
 
-    lines = ["First failure:", _format_failure_line(report.first)]
+    return "\n".join(
+        ["First failure:", *_format_recognised_failure_lines(report.first, report)]
+    )
+
+
+def _format_recognised_failure_lines(
+    first: Failure, report: FailureReport
+) -> list[str]:
+    """Return the lines of a recognised failure report that follow its heading.
+
+    Failed runs and the failures command both show these lines, each under its
+    own heading. `first` is the report's first failure, passed separately because
+    callers have already checked that it exists.
+    """
+    lines = [_format_failure_line(first)]
     lines.extend(
-        line
-        for line in report.first.detail
-        if not _is_repeated_failure_location(line, report.first)
+        line for line in first.detail if not _is_repeated_failure_location(line, first)
     )
 
     if report.more:
@@ -2553,7 +2570,7 @@ def _format_failure_report(report: FailureReport) -> str:
     if report.truncated:
         lines.append("Some failure details were truncated by the limit.")
 
-    return "\n".join(lines)
+    return lines
 
 
 def _is_repeated_failure_location(line: str, failure: Failure) -> bool:
@@ -2586,6 +2603,49 @@ def _format_failure_line(failure: Failure) -> str:
 
 def _format_run(result: RunResult, record: RunRecord, summary: SuccessSummary) -> str:
     """Format one human-readable result block for a completed command."""
+    # The summary lines come from the command's output, except when the command
+    # printed nothing or its log could not be read, when agent-run says so.
+    output = render_quote_block(
+        lines=summary.lines,
+        title="Summary" if summary.recognised else "Last lines of output",
+    )
+
+    return _format_run_block(
+        result, record, render_success_status(label="Command completed"), output
+    )
+
+
+def _format_failed_run(
+    result: RunResult, record: RunRecord, message: str, report: FailureReport
+) -> str:
+    """Format one human-readable result block for a failed or timed-out command.
+
+    The output block holds the failure report. A recognised failure appears under
+    "First failure"; otherwise the last lines of output appear as they do for a
+    completed command.
+    """
+    if report.recognised and report.first is not None:
+        title = "First failure"
+        lines = _format_recognised_failure_lines(report.first, report)
+    else:
+        title = "Last lines of output"
+        lines = (
+            list(report.tail) if report.tail else ["Failure output was not recognised."]
+        )
+
+    output = render_quote_block(lines=lines, title=title)
+    status_line = render_error_status(label=message)
+
+    return _format_run_block(result, record, status_line, output)
+
+
+def _format_run_block(
+    result: RunResult, record: RunRecord, status_line: str, output: str
+) -> str:
+    """Join the status line, command, run facts and marked output into one block.
+
+    Completed, failed and timed-out runs all print this layout.
+    """
     # The facts agent-run reports about the run, in display order.
     facts = (
         ("Exit code", result.exit_status),
@@ -2603,20 +2663,12 @@ def _format_run(result: RunResult, record: RunRecord, summary: SuccessSummary) -
         ]
     )
 
-    # The summary lines, marked as quoted output. They come from the command's
-    # output, except when the command printed nothing or its log could not be
-    # read, when agent-run's short note says so instead.
-    output = render_quote_block(
-        lines=summary.lines,
-        title="Summary" if summary.recognised else "Last lines of output",
-    )
-
     # The empty strings leave a blank line above the block, between the facts
     # and the command's output, and below the block.
     return "\n".join(
         [
             "",
-            render_success_status(label="Command completed"),
+            status_line,
             f"$ {shlex.join(result.argv)}",
             details,
             "",
