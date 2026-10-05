@@ -75,6 +75,15 @@ def render_error_status(*, label: str) -> str:
     )
 
 
+def render_warning_status(*, label: str) -> str:
+    """Return the warning marker and label for an interrupted command."""
+    return status(
+        type="warning",
+        label=label,
+        **_RENDER_OPTIONS,
+    )
+
+
 def render_success(
     *,
     json_mode: bool,

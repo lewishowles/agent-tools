@@ -51,6 +51,7 @@ from agent_run.failures import (
     Failure,
     FailureReport,
     strip_ansi,
+    summarise_output,
 )
 from agent_run.locking import RunBusyError, RunLock, acquire_run_lock
 from agent_run.output import (
@@ -62,6 +63,7 @@ from agent_run.output import (
     render_row_group,
     render_success,
     render_success_status,
+    render_warning_status,
 )
 from agent_run.readers import SuccessSummary, read_failure_report, summarise_success
 from agent_run.repository import (
@@ -1969,10 +1971,13 @@ def _perform_run(
     elif result.exit_status != 0:
         failure_message = f"Command exited with status {result.exit_status}."
 
+    try:
+        log_text = record.log_path.read_bytes().decode("utf-8", errors="replace")
+    except OSError:
+        log_text = None
+
     if failure_message is None:
-        try:
-            log_text = record.log_path.read_bytes().decode("utf-8", errors="replace")
-        except OSError:
+        if log_text is None:
             summary = SuccessSummary(
                 lines=["Output could not be read."], recognised=False
             )
@@ -1985,21 +1990,32 @@ def _perform_run(
 
         return _RunOutcome(status=RUN_PASSED, exit_code=0, data=data, text=text)
 
-    # The block's status line says only what happened, with no full stop, like
-    # "Command completed". The run ID and log path have their own rows there,
-    # so only JSON errors and interrupted runs keep the full message.
-    status_message = failure_message.removesuffix(".")
     json_message = (
         f"{failure_message} run ID: {record.run_id}; log path: {record.log_path}"
     )
     failure_data = _run_record(result, record, resolved_file_paths)
-    # Interrupted runs stop part-way, so their output is not read for failures.
-    failure_text = None
 
-    if not interrupted:
-        try:
-            log_text = record.log_path.read_bytes().decode("utf-8", errors="replace")
-        except OSError:
+    if interrupted:
+        # An interrupted run stops part-way, so its last lines are shown as
+        # they are rather than read for a failure.
+        if log_text is None:
+            lines = ["Output could not be read."]
+        else:
+            lines = summarise_output(log_text)
+
+        output = render_quote_block(lines=lines, title="Last lines of output")
+        signal_name = "Ctrl+C" if interrupt_signal == signal.SIGINT else "SIGTERM"
+        status_line = render_warning_status(
+            label=f"Command interrupted ({signal_name})"
+        )
+        failure_text = _format_run_block(result, record, status_line, output)
+    else:
+        # The block's status line says only what happened, with no full stop, like
+        # "Command completed". The run ID and log path have their own rows there,
+        # so only JSON errors keep the full message.
+        status_message = failure_message.removesuffix(".")
+
+        if log_text is None:
             failure_report = FailureReport(
                 recognised=False,
                 first=None,
@@ -2030,7 +2046,7 @@ def _perform_run(
         if interrupted
         else _EXIT_CODES["check-failed"],
         data=failure_data,
-        text=failure_text or f"Error: {json_message}",
+        text=failure_text,
         error_code="check-failed",
         message=json_message,
     )
@@ -2644,7 +2660,7 @@ def _format_run_block(
 ) -> str:
     """Join the status line, command, run facts and marked output into one block.
 
-    Completed, failed and timed-out runs all print this layout.
+    Completed, failed, timed-out and interrupted runs all print this layout.
     """
     # The facts agent-run reports about the run, in display order.
     facts = (

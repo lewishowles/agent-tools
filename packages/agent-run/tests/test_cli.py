@@ -918,8 +918,11 @@ def test_cli_multiple_runs_stop_after_an_interrupt(
         assert main(["add", name, "--", sys.executable, "-c", "print('done')"]) == 0
         capsys.readouterr()
 
-    def interrupt(*_args: object, **_kwargs: object) -> None:
-        """Simulate a stopped child after the run record starts."""
+    def interrupt(
+        _argv: object, _cwd: object, _timeout: object, log_path: Path, **_kwargs: object
+    ) -> None:
+        """Leave partial output before stopping the child."""
+        log_path.write_text("partial output\n")
         raise interruption
 
     monkeypatch.setattr("agent_run.cli.run_command", interrupt)
@@ -939,7 +942,14 @@ def test_cli_multiple_runs_stop_after_an_interrupt(
 
     assert text_exit_code == expected_status
     assert text_output.err == ""
-    assert "Error: Command interrupted." in text_output.out
+    signal_name = "Ctrl+C" if expected_status == 130 else "SIGTERM"
+    assert f"Command interrupted ({signal_name})\n$ " in text_output.out
+    assert "Exit code" in text_output.out
+    assert "\nRun ID " in text_output.out
+    assert "\nLog " in text_output.out
+    assert "Last lines of output\n| partial output" in text_output.out
+    assert "run ID:" not in text_output.out
+    assert "log path:" not in text_output.out
     assert "\n\nSummary\n" in text_output.out
     assert any(
         "first" in line and "interrupted" in line
@@ -1660,7 +1670,14 @@ def test_cli_run_returns_130_after_interrupt(
     monkeypatch.chdir(root)
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
 
-    def interrupt_run(*_arguments: object, **_options: object) -> None:
+    def interrupt_run(
+        _argv: object,
+        _cwd: object,
+        _timeout: object,
+        log_path: Path,
+        **_options: object,
+    ) -> None:
+        """Check the run is recorded as running, leave partial output, then stop."""
         connection = connect_database(tmp_path / "agent-run.db")
         try:
             row = connection.execute(
@@ -1670,6 +1687,7 @@ def test_cli_run_returns_130_after_interrupt(
             connection.close()
 
         assert row == ("running", os.getpid(), None, None)
+        log_path.write_text("FAILED partial result\n")
         raise KeyboardInterrupt
 
     monkeypatch.setattr("agent_run.cli.run_command", interrupt_run)
@@ -1680,9 +1698,14 @@ def test_cli_run_returns_130_after_interrupt(
 
     assert exit_code == 130
     assert captured.out == ""
-    assert "Error: Command interrupted." in captured.err
-    assert "run ID:" in captured.err
-    assert "log path:" in captured.err
+    assert "Command interrupted (Ctrl+C)\n$ echo" in captured.err
+    assert "Exit code  -2\nDuration " in captured.err
+    assert "\nRun ID " in captured.err
+    assert "\nLog " in captured.err
+    assert "Last lines of output\n| FAILED partial result" in captured.err
+    assert "First failure" not in captured.err
+    assert "run ID:" not in captured.err
+    assert "log path:" not in captured.err
 
     connection = connect_database(tmp_path / "agent-run.db")
     try:
@@ -1693,6 +1716,36 @@ def test_cli_run_returns_130_after_interrupt(
         connection.close()
 
     assert row == ("finished", os.getpid(), -signal.SIGINT, 0)
+
+
+def test_cli_run_interrupt_uses_fallback_when_log_cannot_be_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An interrupted run says when its log could not be read."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    def interrupt_run(*_arguments: object, **_options: object) -> None:
+        """Stop the run before it completes."""
+        raise KeyboardInterrupt
+
+    def unreadable_log(_path: Path) -> bytes:
+        """Simulate a log that cannot be read."""
+        raise OSError("log unavailable")
+
+    monkeypatch.setattr("agent_run.cli.run_command", interrupt_run)
+    monkeypatch.setattr(Path, "read_bytes", unreadable_log)
+
+    exit_code = main(["run", "--timeout", "5", "--", "echo"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 130
+    assert captured.out == ""
+    assert "Command interrupted (Ctrl+C)\n$ echo" in captured.err
+    assert "Last lines of output\n| Output could not be read." in captured.err
 
 
 def test_cli_run_returns_143_after_terminate_request(
@@ -1725,9 +1778,13 @@ def test_cli_run_returns_143_after_terminate_request(
 
     assert exit_code == 143
     assert captured.out == ""
-    assert "Error: Command interrupted." in captured.err
-    assert "run ID:" in captured.err
-    assert "log path:" in captured.err
+    assert "Command interrupted (SIGTERM)\n$ echo" in captured.err
+    assert "Exit code  -15\nDuration " in captured.err
+    assert "\nRun ID " in captured.err
+    assert "\nLog " in captured.err
+    assert "Last lines of output\n| No output." in captured.err
+    assert "run ID:" not in captured.err
+    assert "log path:" not in captured.err
 
     connection = connect_database(tmp_path / "agent-run.db")
     try:
