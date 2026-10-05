@@ -1,6 +1,6 @@
 # page-to-markdown
 
-Turn a URL, local HTML file, or piped HTML into compact Markdown. It strips page chrome (nav, footer, scripts, ads), selects the main content, and reports a confidence verdict so you know what it picked and why.
+Turn a URL, local HTML file, or piped HTML into compact Markdown. It picks out the page's main content, leaves out navigation and other page furniture, and reports a confidence verdict so you know what it picked and why.
 
 It won't render JavaScript; for JS-rendered pages, pipe rendered HTML in from `web-audit render` instead (see [Combining with web-audit](#combining-with-web-audit)).
 
@@ -52,6 +52,18 @@ verdict: high-confidence
 
 `verdict` is one of `high-confidence`, `medium-confidence`, or `low-confidence`. A low-confidence verdict includes `reason:` lines explaining why (e.g. a JS app shell with almost no body text. Use `web-audit render` first in that case).
 
+## What gets removed
+
+- Scripts, styles, `noscript` blocks, and inline SVG.
+- The page's header, footer, navigation, sidebars (`aside`), and forms.
+- Anything marked `aria-hidden="true"`, such as icon labels and duplicate menus, because screen readers skip it too. Content hidden only by the `hidden` attribute or an inline `display` style is kept, because tabs and accordions use those for real content.
+
+To choose the main content, it uses the first `main`, `article`, or `role="main"` element that holds at least a fifth of the page's text, checked in that order. If none does, it uses the whole body. This stops a small banner marked as `main` from hiding the real article.
+
+It does not look for ads, cookie banners, share buttons, or related-post lists, so these can still appear in the output.
+
+A page saved while a dialog was open can come out nearly empty. Sites often mark everything behind an open dialog `aria-hidden="true"`, so that content is removed along with it.
+
 ## Multiple sources at once
 
 Pass more than one URL or file and they combine into a single Markdown document:
@@ -84,17 +96,17 @@ If one source fails to fetch, the rest still convert; the failed one shows a `##
 
 ## Flags
 
-| Flag            | Effect                                                                                                                                                                                                                                                   |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--stdin`       | Read HTML from stdin instead of a URL/file argument. Cannot be combined with source arguments.                                                                                                                                                           |
-| `--output PATH` | Write Markdown to a file instead of stdout.                                                                                                                                                                                                              |
-| `--copy`        | Copy the generated Markdown to the clipboard (macOS only, via `pbcopy`). Without `--output`, prints a short formatted preview (length, a 300-character truncated excerpt, a success/failure status) instead of dumping the full content to the terminal. |
-| `--confidence`  | Also print the confidence report to stdout (it always goes to stderr regardless of this flag).                                                                                                                                                           |
-| `--metadata`    | Alongside `--output`, also write a `<output>.json` sidecar with `title`, `url`, and `timestamp`. Requires `--output`, and only supports a single source (ambiguous with a batch).                                                                        |
-| `--list-headings` | List each heading's level, plain text, and unique anchor selector from one source. Headings inside code blocks are skipped. |
-| `--heading HEADING` | Return one section by its anchor selector or heading text from one source. Text matching ignores case, repeated spaces, and inline Markdown. Duplicate text needs a selector. |
-| `--without-children` | With `--heading`, stop at the next heading of any level. By default, child sections are included. |
-| `--json` | Write the heading list or selected section as JSON. Requires `--list-headings` or `--heading`; cannot be combined with `--confidence` or `--copy`. |
+| Flag                 | Effect                                                                                                                                                                                                                                                   |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--stdin`            | Read HTML from stdin instead of a URL/file argument. Cannot be combined with source arguments.                                                                                                                                                           |
+| `--output PATH`      | Write Markdown to a file instead of stdout.                                                                                                                                                                                                              |
+| `--copy`             | Copy the generated Markdown to the clipboard (macOS only, via `pbcopy`). Without `--output`, prints a short formatted preview (length, a 300-character truncated excerpt, a success/failure status) instead of dumping the full content to the terminal. |
+| `--confidence`       | Also print the confidence report to stdout (it always goes to stderr regardless of this flag).                                                                                                                                                           |
+| `--metadata`         | Alongside `--output`, also write a `<output>.json` sidecar with `title`, `url`, and `timestamp`. Requires `--output`, and only supports a single source (ambiguous with a batch).                                                                        |
+| `--list-headings`    | List each heading's level, plain text, and unique anchor selector from one source. Headings inside code blocks are skipped.                                                                                                                              |
+| `--heading HEADING`  | Return one section by its anchor selector or heading text from one source. Text matching ignores case, repeated spaces, and inline Markdown. Duplicate text needs a selector.                                                                            |
+| `--without-children` | With `--heading`, stop at the next heading of any level. By default, child sections are included.                                                                                                                                                        |
+| `--json`             | Write the heading list or selected section as JSON. Requires `--list-headings` or `--heading`; cannot be combined with `--confidence` or `--copy`.                                                                                                       |
 
 Use the selector from `--list-headings` to pick a duplicate heading:
 
