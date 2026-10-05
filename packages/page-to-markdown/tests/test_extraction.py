@@ -36,6 +36,7 @@ def extract_fixture(name: str, base_url: str | None = None) -> tuple[str, str, s
 		"short-page.html",
 		"valueless-attributes.html",
 		"inline-code-with-tag-text.html",
+		"banner-main-with-article.html",
 	],
 )
 def test_every_fixture_runs_through_local_extraction_pipeline(
@@ -64,6 +65,29 @@ def test_blog_fixture_removes_page_chrome_and_reports_selection() -> None:
 	assert report.selected_content_root == "main"
 	assert report.removed_elements_total >= 1
 	assert report.verdict == "high-confidence"
+
+
+def test_small_main_falls_through_to_the_article() -> None:
+	_, selected_html, markdown = extract_fixture("banner-main-with-article.html")
+
+	assert "A guide to resilient gardens" in markdown
+	assert "Choose plants that tolerate dry summers" in markdown
+	assert "Today's promotion" not in selected_html
+	assert "Today's promotion" not in markdown
+
+
+def test_indentation_outside_main_does_not_change_content_selection() -> None:
+	main_text = (
+		"Choose drought-tolerant plants and group them by watering needs so the "
+		"garden keeps growing through dry summers without wasting water."
+	)
+	empty_blocks = "\n".join("        <div></div>" for _ in range(100))
+	html = f"<body>\n  <main><p>{main_text}</p></main>\n{empty_blocks}\n  <p>Home</p>\n</body>"
+
+	selected_html = select_content(html)
+
+	assert main_text in selected_html
+	assert "Home" not in selected_html
 
 
 def test_docs_fixture_matches_checked_in_markdown() -> None:

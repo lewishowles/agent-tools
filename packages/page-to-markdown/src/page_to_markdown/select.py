@@ -2,7 +2,8 @@
 
 Strips page chrome (script, style, nav, header, footer, etc.) and selects
 the main content region using deterministic rules: main, then article,
-then [role=main], followed by the remaining body content or root.
+then [role=main], followed by the remaining body content or root. A region
+is skipped when it holds less than a fifth of the page's text.
 
 Uses only the standard library (html.parser) to preserve nested markup
 for later Markdown conversion.
@@ -72,8 +73,12 @@ class _DomNode:
 
 	@property
 	def text_length(self):
-		"""Length of all descendant text, excluding whitespace."""
-		return len(self.full_text.strip())
+		"""The number of characters in this element's text, not counting whitespace.
+
+		Indentation and line breaks in the HTML source are left out, so the count
+		does not depend on how the page is formatted.
+		"""
+		return len("".join(self.full_text.split()))
 
 	@property
 	def tag_count(self):
@@ -195,23 +200,30 @@ def _find_all(root, predicate, results=None):
 
 
 def select_content(html):
-	"""Select semantic content, falling back to the body or root if absent."""
+	"""Select the main content region of a page and return it as HTML.
+
+	Tries the first main, article and [role=main] element in that order and
+	uses the first one that holds at least a fifth of the page's text. Falls
+	back to the body, or the whole document when there is no body.
+	"""
 	builder = _DomBuilder()
 	builder.feed(html)
 	builder.close()
 	root = builder.root
 
-	main = _find_first(root, lambda n: n.tag == "main")
-	if main:
-		return _serialise(main)
+	# The amount of text on the page, not counting stripped tags such as nav and footer.
+	page_text_length = root.text_length
 
-	article = _find_first(root, lambda n: n.tag == "article")
-	if article:
-		return _serialise(article)
-
-	role_main = _find_first(root, lambda n: n.attrs.get("role", "").lower() == "main")
-	if role_main:
-		return _serialise(role_main)
+	# A small region, such as a main element that holds only a banner, is
+	# skipped so the article elsewhere on the page is not lost.
+	for predicate in (
+		lambda n: n.tag == "main",
+		lambda n: n.tag == "article",
+		lambda n: n.attrs.get("role", "").lower() == "main",
+	):
+		candidate = _find_first(root, predicate)
+		if candidate and candidate.text_length * 5 >= page_text_length:
+			return _serialise(candidate)
 
 	body = _find_first(root, lambda n: n.tag == "body")
 	return _serialise(body or root)
