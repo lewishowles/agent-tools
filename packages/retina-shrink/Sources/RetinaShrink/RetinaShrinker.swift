@@ -35,6 +35,24 @@ public enum ShrinkError: Error {
   case cannotWrite
 }
 
+/// The image bytes and sizes produced by the shared Retina rule.
+public struct ImageShrinkResult {
+  /// The smaller PNG, or nil when the source image should stay as it is.
+  public let outputData: Data?
+  /// The number of bytes in the source image.
+  public let originalBytes: Int
+  /// The number of bytes in the image to use: the smaller PNG, or the source when it stays.
+  public let outputBytes: Int
+  /// The stored width of the source image in pixels.
+  public let originalWidth: Int
+  /// The stored height of the source image in pixels.
+  public let originalHeight: Int
+  /// The width in pixels of the image to use.
+  public let outputWidth: Int
+  /// The height in pixels of the image to use.
+  public let outputHeight: Int
+}
+
 /// Halves Retina images so an agent opens the smaller copy, and leaves every other image alone.
 public struct RetinaShrinker {
   /// The folder that holds halved copies, so the same image is only halved once.
@@ -61,8 +79,73 @@ public struct RetinaShrinker {
   ///   `ShrinkError.cannotWrite` when the halved copy cannot be encoded or saved.
   public func shrink(path: String) throws -> ShrinkResult {
     let sourceURL = URL(fileURLWithPath: path)
-    guard let sourceData = try? Data(contentsOf: sourceURL),
+    guard let sourceData = try? Data(contentsOf: sourceURL) else {
+      throw ShrinkError.unreadable
+    }
+
+    let digest = SHA256.hash(data: sourceData).map { String(format: "%02x", $0) }.joined()
+    let outputURL = cacheDirectory.appendingPathComponent("\(digest).png")
+
+    // A cached copy exists only for an image that was halved before, so return it without
+    // encoding the image again. The image hook calls this on every image an agent opens.
+    if let cachedData = try? Data(contentsOf: outputURL),
+      let cachedSource = CGImageSourceCreateWithData(cachedData as CFData, nil),
+      let cachedImage = CGImageSourceCreateImageAtIndex(cachedSource, 0, nil),
       let imageSource = CGImageSourceCreateWithData(sourceData as CFData, nil),
+      let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil)
+    {
+      return ShrinkResult(
+        path: outputURL.path, halved: true,
+        originalBytes: sourceData.count, outputBytes: cachedData.count,
+        originalWidth: image.width, originalHeight: image.height,
+        outputWidth: cachedImage.width, outputHeight: cachedImage.height
+      )
+    }
+
+    let imageResult = try shrink(data: sourceData, retinaScaleFactor: 2)
+    guard let outputData = imageResult.outputData else {
+      return ShrinkResult(
+        path: path, halved: false,
+        originalBytes: imageResult.originalBytes, outputBytes: imageResult.outputBytes,
+        originalWidth: imageResult.originalWidth, originalHeight: imageResult.originalHeight,
+        outputWidth: imageResult.outputWidth, outputHeight: imageResult.outputHeight
+      )
+    }
+
+    do {
+      try FileManager.default.createDirectory(
+        at: cacheDirectory, withIntermediateDirectories: true
+      )
+      try outputData.write(to: outputURL, options: .atomic)
+    } catch {
+      throw ShrinkError.cannotWrite
+    }
+
+    return ShrinkResult(
+      path: outputURL.path, halved: true,
+      originalBytes: imageResult.originalBytes, outputBytes: imageResult.outputBytes,
+      originalWidth: imageResult.originalWidth, originalHeight: imageResult.originalHeight,
+      outputWidth: imageResult.outputWidth, outputHeight: imageResult.outputHeight
+    )
+  }
+
+  /// Returns a smaller PNG of the image data when it uses fewer bytes than the original.
+  ///
+  /// An image counts as Retina when both its horizontal and vertical DPI are 144 or more, and
+  /// each dimension is divided by the scale factor for its kind. `outputData` is nil when the
+  /// image should stay as it is: it has no scale factor, it is smaller than the factor, or the
+  /// smaller PNG would not save bytes.
+  ///
+  /// - Parameters:
+  ///   - data: The image bytes to check.
+  ///   - retinaScaleFactor: The divisor for both dimensions of a Retina image.
+  ///   - otherScaleFactor: The divisor for other images, or nil to leave them unchanged.
+  /// - Throws: `ShrinkError.unreadable` for undecodable data, or `ShrinkError.cannotWrite`
+  ///   if ImageIO cannot encode the smaller PNG.
+  public func shrink(
+    data: Data, retinaScaleFactor: Int, otherScaleFactor: Int? = nil
+  ) throws -> ImageShrinkResult {
+    guard let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
       let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil)
     else {
       throw ShrinkError.unreadable
@@ -70,9 +153,8 @@ public struct RetinaShrinker {
 
     let width = image.width
     let height = image.height
-    let original = ShrinkResult(
-      path: path, halved: false,
-      originalBytes: sourceData.count, outputBytes: sourceData.count,
+    let original = ImageShrinkResult(
+      outputData: nil, originalBytes: data.count, outputBytes: data.count,
       originalWidth: width, originalHeight: height,
       outputWidth: width, outputHeight: height
     )
@@ -80,30 +162,18 @@ public struct RetinaShrinker {
     let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any]
     let horizontalDPI = (properties?[kCGImagePropertyDPIWidth] as? NSNumber)?.doubleValue ?? 0
     let verticalDPI = (properties?[kCGImagePropertyDPIHeight] as? NSNumber)?.doubleValue ?? 0
-    guard horizontalDPI >= 144, verticalDPI >= 144, width >= 2, height >= 2 else {
+    let isRetina = horizontalDPI >= 144 && verticalDPI >= 144
+    guard let scaleFactor = isRetina ? retinaScaleFactor : otherScaleFactor,
+      scaleFactor >= 2, width >= scaleFactor, height >= scaleFactor
+    else {
       return original
-    }
-
-    let digest = SHA256.hash(data: sourceData).map { String(format: "%02x", $0) }.joined()
-    let outputURL = cacheDirectory.appendingPathComponent("\(digest).png")
-
-    if let cachedData = try? Data(contentsOf: outputURL),
-      let cachedSource = CGImageSourceCreateWithData(cachedData as CFData, nil),
-      let cachedImage = CGImageSourceCreateImageAtIndex(cachedSource, 0, nil)
-    {
-      return ShrinkResult(
-        path: outputURL.path, halved: true,
-        originalBytes: sourceData.count, outputBytes: cachedData.count,
-        originalWidth: width, originalHeight: height,
-        outputWidth: cachedImage.width, outputHeight: cachedImage.height
-      )
     }
 
     // ImageIO applies EXIF orientation and carries the source colour profile into the PNG.
     let thumbnailOptions: [CFString: Any] = [
       kCGImageSourceCreateThumbnailFromImageAlways: true,
       kCGImageSourceCreateThumbnailWithTransform: true,
-      kCGImageSourceThumbnailMaxPixelSize: max(width, height) / 2,
+      kCGImageSourceThumbnailMaxPixelSize: max(width, height) / scaleFactor,
     ]
     guard
       let scaledImage = CGImageSourceCreateThumbnailAtIndex(
@@ -135,22 +205,12 @@ public struct RetinaShrinker {
     }
 
     let outputData = pngData as Data
-    guard outputData.count < sourceData.count else {
+    guard outputData.count < data.count else {
       return original
     }
 
-    do {
-      try FileManager.default.createDirectory(
-        at: cacheDirectory, withIntermediateDirectories: true
-      )
-      try outputData.write(to: outputURL, options: .atomic)
-    } catch {
-      throw ShrinkError.cannotWrite
-    }
-
-    return ShrinkResult(
-      path: outputURL.path, halved: true,
-      originalBytes: sourceData.count, outputBytes: outputData.count,
+    return ImageShrinkResult(
+      outputData: outputData, originalBytes: data.count, outputBytes: outputData.count,
       originalWidth: width, originalHeight: height,
       outputWidth: outputWidth, outputHeight: outputHeight
     )

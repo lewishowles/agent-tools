@@ -40,6 +40,32 @@ import UniformTypeIdentifiers
     #expect(repeated.outputBytes == result.outputBytes)
   }
 
+  /// Path mode returns a decoded cached copy before it tries to encode the image again.
+  @Test func reusesCachedImageSizes() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let source = directory.appendingPathComponent("retina.png")
+    let alternative = directory.appendingPathComponent("alternative.png")
+    try makeImage(at: source, width: 512, height: 512, dpi: 144, noisy: true)
+    try makeImage(at: alternative, width: 128, height: 128, dpi: 72, noisy: false)
+
+    let shrinker = RetinaShrinker(cacheDirectory: directory.appendingPathComponent("cache"))
+    let first = try shrinker.shrink(path: source.path)
+    let cachedData = try Data(contentsOf: alternative)
+    try cachedData.write(to: URL(fileURLWithPath: first.path), options: .atomic)
+
+    let repeated = try shrinker.shrink(path: source.path)
+
+    #expect(repeated.path == first.path)
+    #expect(repeated.originalWidth == 512)
+    #expect(repeated.originalHeight == 512)
+    #expect(repeated.outputWidth == 128)
+    #expect(repeated.outputHeight == 128)
+    #expect(repeated.outputBytes == cachedData.count)
+    #expect(try Data(contentsOf: URL(fileURLWithPath: first.path)) == cachedData)
+  }
+
   /// A halved Display P3 image keeps its colour profile in the PNG.
   @Test func keepsDisplayP3ColourSpace() throws {
     let directory = try temporaryDirectory()
@@ -222,6 +248,236 @@ import UniformTypeIdentifiers
     #expect(response.stderr.isEmpty)
     #expect((envelope["ok"] as? Bool) == false)
     #expect((error["code"] as? String) == "environment")
+  }
+
+  /// Shrinking image data in memory produces the same PNG that path mode caches.
+  @Test func sharesTheRetinaRuleWithPathMode() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let source = directory.appendingPathComponent("retina.png")
+    try makeImage(at: source, width: 512, height: 512, dpi: 144, noisy: true)
+
+    let shrinker = RetinaShrinker(cacheDirectory: directory.appendingPathComponent("cache"))
+    let dataResult = try shrinker.shrink(data: Data(contentsOf: source), retinaScaleFactor: 2)
+    let outputData = try #require(dataResult.outputData)
+    let pathResult = try shrinker.shrink(path: source.path)
+
+    #expect(outputData == (try Data(contentsOf: URL(fileURLWithPath: pathResult.path))))
+    #expect(dataResult.outputWidth == pathResult.outputWidth)
+    #expect(dataResult.outputHeight == pathResult.outputHeight)
+    #expect(dataResult.outputBytes < dataResult.originalBytes)
+  }
+
+  /// Halving image data in memory leaves ordinary images and images without byte savings unchanged.
+  @Test func keepsImagesThatWouldNotShrink() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let ordinary = directory.appendingPathComponent("ordinary.png")
+    let tiny = directory.appendingPathComponent("tiny.png")
+    try makeImage(at: ordinary, width: 64, height: 64, dpi: 72, noisy: true)
+    try makeImage(at: tiny, width: 2, height: 2, dpi: 144, noisy: false)
+
+    let shrinker = RetinaShrinker()
+    let ordinaryResult = try shrinker.shrink(data: Data(contentsOf: ordinary), retinaScaleFactor: 2)
+    let tinyResult = try shrinker.shrink(data: Data(contentsOf: tiny), retinaScaleFactor: 2)
+
+    #expect(ordinaryResult.outputData == nil)
+    #expect(tinyResult.outputData == nil)
+    #expect(ordinaryResult.originalBytes == ordinaryResult.outputBytes)
+    #expect(tinyResult.originalBytes == tinyResult.outputBytes)
+  }
+
+  /// CleanShot and Preview images may include a file link or a private pasteboard type.
+  @Test func shrinksEmbeddedClipboardImagesWithAllowedExtras() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let source = directory.appendingPathComponent("retina.png")
+    try makeImage(at: source, width: 512, height: 512, dpi: 144, noisy: true)
+    let imageData = try Data(contentsOf: source)
+    let decision = ClipboardImageDecision()
+    let cleanShot = ClipboardImageItem(
+      types: ["public.file-url", "public.png"],
+      dataByType: [
+        "public.file-url": Data(source.absoluteString.utf8),
+        "public.png": imageData,
+      ])
+    let preview = ClipboardImageItem(
+      types: ["public.png", "dyn.example"],
+      dataByType: ["public.png": imageData, "dyn.example": Data("private".utf8)])
+
+    for item in [cleanShot, preview] {
+      guard case .image(let result) = try decision.decide(item: item) else {
+        Issue.record("The embedded image should reach the shrink rule.")
+        return
+      }
+      #expect(result.outputData != nil)
+      #expect(result.outputWidth == 128)
+      #expect(result.outputHeight == 128)
+    }
+
+    #expect(try Data(contentsOf: source) == imageData)
+  }
+
+  /// Salamander and Finder links read one image file without changing it.
+  @Test func shrinksLinkedClipboardImages() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let source = directory.appendingPathComponent("retina.png")
+    try makeImage(at: source, width: 512, height: 512, dpi: 144, noisy: true)
+    let originalData = try Data(contentsOf: source)
+    let urlData = Data(source.absoluteString.utf8)
+    let salamander = ClipboardImageItem(
+      types: ["public.file-url"], dataByType: ["public.file-url": urlData])
+    let decision = ClipboardImageDecision()
+
+    for text in [source.lastPathComponent, source.path] {
+      let finder = ClipboardImageItem(
+        types: [
+          "public.file-url", "public.utf16-external-plain-text",
+          "public.utf8-plain-text", "com.apple.icns",
+        ],
+        dataByType: [
+          "public.file-url": urlData,
+          "public.utf16-external-plain-text": try #require(text.data(using: .utf16)),
+          "public.utf8-plain-text": Data(text.utf8),
+          "com.apple.icns": Data("icon".utf8),
+        ])
+
+      for item in [salamander, finder] {
+        guard case .image(let result) = try decision.decide(item: item) else {
+          Issue.record("The linked image should reach the shrink rule.")
+          return
+        }
+        #expect(result.outputData != nil)
+        #expect(result.outputWidth == 128)
+        #expect(result.outputHeight == 128)
+      }
+    }
+
+    #expect(try Data(contentsOf: source) == originalData)
+  }
+
+  /// Text, rich content, unrelated registered types, and unreadable links stay untouched.
+  @Test func refusesOtherClipboardContent() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let imageURL = directory.appendingPathComponent("retina.png")
+    let textURL = directory.appendingPathComponent("note.txt")
+    try makeImage(at: imageURL, width: 512, height: 512, dpi: 144, noisy: true)
+    try Data("not an image".utf8).write(to: textURL)
+    let imageData = try Data(contentsOf: imageURL)
+    let textData = Data("other".utf8)
+    let decision = ClipboardImageDecision()
+    let rejectedItems = [
+      ClipboardImageItem(
+        types: ["public.utf8-plain-text"],
+        dataByType: ["public.utf8-plain-text": textData]),
+      ClipboardImageItem(
+        types: ["public.png", "public.html"],
+        dataByType: ["public.png": imageData, "public.html": textData]),
+      ClipboardImageItem(
+        types: ["public.png", "public.rtf"],
+        dataByType: ["public.png": imageData, "public.rtf": textData]),
+      ClipboardImageItem(
+        types: ["public.png", "com.example.other"],
+        dataByType: ["public.png": imageData, "com.example.other": textData]),
+      ClipboardImageItem(
+        types: ["public.file-url", "public.utf8-plain-text"],
+        dataByType: [
+          "public.file-url": Data(imageURL.absoluteString.utf8),
+          "public.utf8-plain-text": textData,
+        ]),
+      ClipboardImageItem(
+        types: ["public.file-url"],
+        dataByType: ["public.file-url": Data(textURL.absoluteString.utf8)]),
+      ClipboardImageItem(types: ["public.png"], dataByType: [:]),
+    ]
+
+    for item in rejectedItems {
+      guard case .unchanged = try decision.decide(item: item) else {
+        Issue.record("Other clipboard content should stay unchanged.")
+        return
+      }
+    }
+
+  }
+
+  /// An ordinary clipboard image shrinks by half, while a Retina image shrinks to a quarter.
+  @Test func choosesClipboardScaleFromDPI() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let retina = directory.appendingPathComponent("retina.png")
+    let ordinary = directory.appendingPathComponent("ordinary.png")
+    try makeImage(at: retina, width: 512, height: 512, dpi: 144, noisy: true)
+    try makeImage(at: ordinary, width: 512, height: 512, dpi: 72, noisy: true)
+
+    let decision = ClipboardImageDecision()
+    let retinaItem = ClipboardImageItem(
+      types: ["public.png"], dataByType: ["public.png": try Data(contentsOf: retina)])
+    let ordinaryItem = ClipboardImageItem(
+      types: ["public.png"], dataByType: ["public.png": try Data(contentsOf: ordinary)])
+
+    guard case .image(let retinaResult) = try decision.decide(item: retinaItem),
+      case .image(let ordinaryResult) = try decision.decide(item: ordinaryItem)
+    else {
+      Issue.record("Both image-only items should be decoded.")
+      return
+    }
+
+    #expect(retinaResult.outputData != nil)
+    #expect(retinaResult.outputWidth == 128)
+    #expect(retinaResult.outputHeight == 128)
+    #expect(ordinaryResult.outputData != nil)
+    #expect(ordinaryResult.outputWidth == 256)
+    #expect(ordinaryResult.outputHeight == 256)
+  }
+
+  /// A clipboard image stays untouched when its smaller PNG would use at least as many bytes.
+  @Test func keepsClipboardImageWithoutByteSavings() throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let source = directory.appendingPathComponent("tiny.png")
+    try makeImage(at: source, width: 2, height: 2, dpi: 72, noisy: false)
+    let item = ClipboardImageItem(
+      types: ["public.png"], dataByType: ["public.png": try Data(contentsOf: source)])
+
+    guard case .image(let result) = try ClipboardImageDecision().decide(item: item) else {
+      Issue.record("The tiny image should be decoded.")
+      return
+    }
+
+    #expect(result.outputData == nil)
+    #expect(result.originalBytes == result.outputBytes)
+  }
+
+  /// The early type check accepts the two observed image item shapes.
+  @Test func acceptsClipboardImageTypes() {
+    let decision = ClipboardImageDecision()
+
+    #expect(decision.accepts(types: ["public.png"]))
+    #expect(decision.accepts(types: ["public.tiff"]))
+    #expect(decision.accepts(types: ["public.png", "public.tiff"]))
+    #expect(decision.accepts(types: ["public.file-url", "public.png"]))
+    #expect(decision.accepts(types: ["public.png", "dyn.example"]))
+    #expect(decision.accepts(types: ["public.file-url"]))
+    #expect(
+      decision.accepts(types: [
+        "public.file-url", "public.utf16-external-plain-text",
+        "public.utf8-plain-text", "com.apple.icns",
+      ]))
+    #expect(!decision.accepts(types: []))
+
+    for otherType in ["public.utf8-plain-text", "public.html", "public.rtf", "com.example.other"] {
+      #expect(!decision.accepts(types: [otherType]))
+      #expect(!decision.accepts(types: ["public.png", otherType]))
+    }
   }
 
   /// Gives each test an isolated location for source and cached files.
