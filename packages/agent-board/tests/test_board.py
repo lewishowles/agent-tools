@@ -3,7 +3,12 @@
 import re
 
 import pytest
-from agent_board.board import ANSI_STYLE_PATTERN, render_board, render_error
+from agent_board.board import (
+    ANSI_STYLE_PATTERN,
+    quiet_team_members,
+    render_board,
+    render_error,
+)
 from agent_board.cli import _update_unread_since
 
 
@@ -32,15 +37,24 @@ def board_content(
     *,
     colour: bool = False,
     unread_since: dict[str, float] | None = None,
+    last_activity: dict[str, float] | None = None,
+    quiet_reasons: dict[str, str | None] | None = None,
     now: float = 0,
 ) -> list[str]:
     """Return the content rows as drawn inside the frame, including headings."""
+    quiet_members = (
+        quiet_team_members(agents, last_activity, now)
+        if last_activity is not None
+        else {}
+    )
     framed = render_board(
         agents,
         width=80,
         current_time="12:34:56",
         colour=colour,
         unread_since=unread_since,
+        quiet_members=quiet_members,
+        quiet_reasons=quiet_reasons,
         now=now,
     )
     rows = []
@@ -430,6 +444,76 @@ def test_active_and_unread_teams_remain_working_rows() -> None:
     )
 
     assert lines == ["WORKING", "○ coordinating  Agent-Tools", "◌ checking      Custom"]
+
+
+def test_active_team_becomes_stuck_after_five_minutes_without_events() -> None:
+    """A silent active member needs attention once the whole team goes quiet."""
+    workers = [
+        agent("Agent-Tools", "orchestrator"),
+        agent("Agent-Tools", "scout", status="active"),
+    ]
+    last_activity = {member["name"]: 0 for member in workers}
+
+    assert board_content(workers, last_activity=last_activity, now=299) == [
+        "WORKING",
+        "◌ checking  Agent-Tools",
+    ]
+    assert board_content(workers, last_activity=last_activity, now=300) == [
+        "WAITING ON YOU",
+        "● stuck  Agent-Tools",
+    ]
+
+
+def test_recent_teammate_event_or_missing_event_keeps_team_working() -> None:
+    """The board waits for every member's event time before calling a team quiet."""
+    workers = [
+        agent("Agent-Tools", "orchestrator"),
+        agent("Agent-Tools", "scout", status="active"),
+    ]
+
+    assert board_content(
+        workers,
+        last_activity={workers[0]["name"]: 250, workers[1]["name"]: 0},
+        now=300,
+    ) == ["WORKING", "◌ checking  Agent-Tools"]
+    assert board_content(
+        workers,
+        last_activity={workers[1]["name"]: 0},
+        now=300,
+    ) == ["WORKING", "◌ checking  Agent-Tools"]
+
+
+def test_quiet_team_shows_a_known_terminal_reason() -> None:
+    """A matched failure adds a reason without changing the stuck symbol."""
+    worker = agent("Agent-Tools", "scout", status="active")
+
+    assert board_content(
+        [worker],
+        last_activity={worker["name"]: 0},
+        quiet_reasons={worker["name"]: "model at capacity"},
+        now=300,
+    ) == ["WAITING ON YOU", "● stuck · model at capacity  Agent-Tools"]
+
+
+def test_blocked_and_stale_rows_take_priority_over_quiet() -> None:
+    """Existing attention states remain visible when a team is also quiet."""
+    orchestrator = agent("Agent-Tools", "orchestrator", status="blocked")
+    scout = agent("Agent-Tools", "scout", status="active")
+    last_activity = {member["name"]: 0 for member in (orchestrator, scout)}
+
+    assert board_content(
+        [orchestrator, scout], last_activity=last_activity, now=300
+    ) == ["WAITING ON YOU", "✕ blocked · 1m  Agent-Tools"]
+
+    orchestrator["status"] = "active"
+    orchestrator.update(
+        session_id="current-session",
+        transcript_path="/transcripts/other-session.jsonl",
+    )
+
+    assert board_content(
+        [orchestrator, scout], last_activity=last_activity, now=300
+    ) == ["WAITING ON YOU", "● stale  Agent-Tools"]
 
 
 def test_mismatched_active_session_needs_attention() -> None:

@@ -68,6 +68,48 @@ MAX_FRAME_WIDTH = 80
 # wait means delivery has stalled and the team needs you.
 STUCK_AFTER_SECONDS = 60
 
+# A working team needs attention when none of its members has had an HCOM
+# event for this long.
+QUIET_AFTER_SECONDS = 300
+
+
+def active_team_members(agents: list[dict]) -> list[dict]:
+    """Return members of teams that currently have an active agent."""
+    return [
+        agent
+        for members in _group_teams(agents).values()
+        if any(member["status"] == "active" for member, _ in members)
+        for agent, _ in members
+    ]
+
+
+def quiet_team_members(
+    agents: list[dict], last_activity: dict[str, float], now: float
+) -> dict[tuple[str, str], str]:
+    """Find the active member to blame for each team that has gone quiet.
+
+    A team is quiet when it has an active member and none of its members has
+    had an event for QUIET_AFTER_SECONDS. The result maps each quiet team's
+    key to the name of its active member that has been silent longest, whose
+    terminal the board reads for a reason. A member with no known event time
+    keeps its team working until that time is known.
+    """
+    quiet = {}
+
+    for key, members in _group_teams(agents).items():
+        active = [agent for agent, _ in members if agent["status"] == "active"]
+
+        if not active or any(
+            agent["name"] not in last_activity
+            or now - last_activity[agent["name"]] < QUIET_AFTER_SECONDS
+            for agent, _ in members
+        ):
+            continue
+
+        quiet[key] = min(active, key=lambda agent: last_activity[agent["name"]])["name"]
+
+    return quiet
+
 
 def render_board(
     agents: list[dict],
@@ -76,6 +118,8 @@ def render_board(
     current_time: str,
     colour: bool = False,
     unread_since: dict[str, float] | None = None,
+    quiet_members: dict[tuple[str, str], str] | None = None,
+    quiet_reasons: dict[str, str | None] | None = None,
     now: float = 0,
 ) -> list[str]:
     """Build the framed board lines for one `hcom list --json` snapshot.
@@ -100,24 +144,16 @@ def render_board(
             working rows and team names after the repository.
         unread_since: The first time each listening agent was seen with unread
             messages, keyed by agent name.
+        quiet_members: The active member to blame for each quiet team, keyed
+            by team. Its terminal gives the stuck reason.
+        quiet_reasons: Known terminal failure reasons, keyed by active agent name.
         now: The monotonic time for this refresh, in seconds.
     """
-    teams = defaultdict(list)
+    teams = _group_teams(agents)
     unread_since = unread_since or {}
 
-    for agent in agents:
-        if agent["status"] == "inactive":
-            continue
-
-        tag = agent.get("tag")
-
-        if tag:
-            prefix, role, kind = _split_tag(tag)
-        else:
-            # An untagged agent forms its own team so it stays on the board.
-            prefix, role, kind = agent["name"], None, "standard"
-
-        teams[(prefix, kind)].append((agent, role))
+    quiet_members = quiet_members or {}
+    quiet_reasons = quiet_reasons or {}
 
     needs_you = []
     working = []
@@ -165,6 +201,10 @@ def render_board(
             for agent, _ in members
         ):
             needs_you.append(((1, 0, label), repository, label_rest, "stale"))
+        elif (quiet_member := quiet_members.get((prefix, kind))) is not None:
+            reason = quiet_reasons.get(quiet_member)
+            status = f"stuck · {reason}" if reason else "stuck"
+            needs_you.append(((2, 0, label), repository, label_rest, status))
         elif not any(status in {"active", "launching"} for status in statuses) and any(
             agent["status"] == "listening"
             and agent["unread_count"] > 0
@@ -425,6 +465,29 @@ def _shorten_visible(line: str, width: int) -> str:
     return (
         shortened + RESET_STYLE if ANSI_STYLE_PATTERN.search(shortened) else shortened
     )
+
+
+def _group_teams(
+    agents: list[dict],
+) -> dict[tuple[str, str], list[tuple[dict, str | None]]]:
+    """Group live agents by their team tag for polling and display."""
+    teams = defaultdict(list)
+
+    for agent in agents:
+        if agent["status"] == "inactive":
+            continue
+
+        tag = agent.get("tag")
+
+        if tag:
+            prefix, role, kind = _split_tag(tag)
+        else:
+            # An untagged agent forms its own team so it stays on the board.
+            prefix, role, kind = agent["name"], None, "standard"
+
+        teams[(prefix, kind)].append((agent, role))
+
+    return teams
 
 
 def _working_status(members: list[tuple[dict, str | None]]) -> str:
