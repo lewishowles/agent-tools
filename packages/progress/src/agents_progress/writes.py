@@ -885,8 +885,12 @@ class WriteStore(_StoreBase):
 		position: int | None = None,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Create a pending chunk at the next position for a current-project task.
+		"""Create a pending chunk in a current-project task, at the end by default.
 
+		At a taken position, the new chunk goes before the chunk there, and a
+		position past the last chunk places it last. Every add renumbers the task's
+		chunks from 1 with no gaps, so the returned position can be lower than
+		requested and a position of 0 becomes 1.
 		The review question is the one question a reviewer answers about the chunk.
 		"""
 		validate_object_id(task_id, TASK_PREFIX)
@@ -900,11 +904,25 @@ class WriteStore(_StoreBase):
 				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
 
 			chunk_id = _new_id(connection, CHUNK_PREFIX, "chunks")
-			chunk_position = (
-				position
-				if position is not None
-				else _next_chunk_position(connection, task_id)
+			chunk_rows = connection.execute(
+				"SELECT id, position FROM chunks WHERE task_id = ? ORDER BY position, id",
+				(task_id,),
+			).fetchall()
+			next_position = chunk_rows[-1]["position"] + 1 if chunk_rows else 1
+			chunk_position = position if position is not None else next_position
+			ordered_ids = [row["id"] for row in chunk_rows]
+			positions = {row["id"]: row["position"] for row in chunk_rows}
+			# Keep the requested order and renumber from 1 without gaps.
+			insert_index = next(
+				(
+					index
+					for index, row in enumerate(chunk_rows)
+					if row["position"] >= chunk_position
+				),
+				len(chunk_rows),
 			)
+			ordered_ids.insert(insert_index, chunk_id)
+			positions[chunk_id] = chunk_position
 			connection.execute(
 				"""
 				INSERT INTO chunks (
@@ -922,6 +940,14 @@ class WriteStore(_StoreBase):
 					review_question,
 				),
 			)
+			for index, ordered_id in enumerate(ordered_ids, start=1):
+				if positions[ordered_id] == index:
+					continue
+
+				connection.execute(
+					"UPDATE chunks SET position = ? WHERE id = ?",
+					(index, ordered_id),
+				)
 
 			return _chunk_dict(connection, chunk_id, project.id)
 
@@ -2279,19 +2305,6 @@ def _reorder_task_queue(
 		before_task_id,
 		after_task_id,
 	)
-
-
-def _next_chunk_position(connection: sqlite3.Connection, task_id: str) -> int:
-	"""Return the first unused positive position in one task's chunk list."""
-	rows = connection.execute(
-		"SELECT position FROM chunks WHERE task_id = ?", (task_id,)
-	).fetchall()
-	used_positions = {row["position"] for row in rows}
-	position = 1
-	while position in used_positions:
-		position += 1
-
-	return position
 
 
 def _task_row(

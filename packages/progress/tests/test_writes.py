@@ -237,7 +237,7 @@ def _add_release_in_process(database_path: str, slug: str, results) -> None:
 		results.put(("ok", result["slug"]))
 
 
-def test_explicit_zero_positions_are_preserved(tmp_path: Path) -> None:
+def test_chunk_add_renumbers_an_explicit_zero_position_from_one(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add(
 		"zero-release", "Zero release", overview="Zero release overview", position=0
@@ -249,7 +249,7 @@ def test_explicit_zero_positions_are_preserved(tmp_path: Path) -> None:
 
 	assert release["position"] == 0
 	assert task["position"] == 0
-	assert chunk["position"] == 0
+	assert chunk["position"] == 1
 
 
 def test_task_defaults_use_the_next_free_position_in_each_queue(
@@ -522,14 +522,154 @@ def test_task_move_validates_release_and_position_target(
 		)
 
 
-def test_chunk_defaults_use_the_next_free_position(tmp_path: Path) -> None:
+def test_chunk_add_without_position_goes_last_after_a_removal(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	task = _add_task(store, "chunk-positions", "Chunk positions")
-	first = _add_chunk(store, task["id"], "First", position=1)
-	third = _add_chunk(store, task["id"], "Third", position=3)
+	first = _add_chunk(store, task["id"], "First")
+	second = _add_chunk(store, task["id"], "Second")
+	third = _add_chunk(store, task["id"], "Third")
+	store.chunk_remove(second["id"])
+
+	last = _add_chunk(store, task["id"], "Last")
+	items = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)["items"]
+
+	assert last["position"] == 3
+	assert [item["id"] for item in items] == [first["id"], third["id"], last["id"]]
+	assert [item["position"] for item in items] == [1, 2, 3]
+
+
+def test_chunk_add_at_position_one_moves_existing_chunks_down(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "chunk-first", "Chunk first")
+	first = _add_chunk(store, task["id"], "First")
+	second = _add_chunk(store, task["id"], "Second")
+	third = _add_chunk(store, task["id"], "Third")
+
+	inserted = _add_chunk(store, task["id"], "Inserted", position=1)
+	items = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)["items"]
+
+	assert inserted["position"] == 1
+	assert [item["id"] for item in items] == [
+		inserted["id"],
+		first["id"],
+		second["id"],
+		third["id"],
+	]
+	assert [item["position"] for item in items] == [1, 2, 3, 4]
+
+
+def test_chunk_add_at_position_one_closes_a_gap_before_the_first_chunk(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "chunk-first-gap", "Chunk first gap")
+	first = _add_chunk(store, task["id"], "First")
+	second = _add_chunk(store, task["id"], "Second")
+	third = _add_chunk(store, task["id"], "Third")
+	store.chunk_remove(first["id"])
+
+	inserted = _add_chunk(store, task["id"], "Inserted", position=1)
+	items = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)["items"]
+
+	assert inserted["position"] == 1
+	assert [item["id"] for item in items] == [
+		inserted["id"],
+		second["id"],
+		third["id"],
+	]
+	assert [item["position"] for item in items] == [1, 2, 3]
+
+
+def test_chunk_add_shifts_chunks_at_and_after_an_occupied_position(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "chunk-insert", "Chunk insert")
+	first = _add_chunk(store, task["id"], "First")
+	second = _add_chunk(store, task["id"], "Second")
+	third = _add_chunk(store, task["id"], "Third")
+	other_task = _add_task(store, "other-task", "Other task")
+	other_chunk = _add_chunk(store, other_task["id"], "Other chunk")
+
+	inserted = _add_chunk(store, task["id"], "Inserted", position=2)
+	items = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)["items"]
+	other_items = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		other_task["id"]
+	)["items"]
+
+	assert inserted["position"] == 2
+	assert [item["id"] for item in items] == [
+		first["id"],
+		inserted["id"],
+		second["id"],
+		third["id"],
+	]
+	assert [item["position"] for item in items] == [1, 2, 3, 4]
+	assert [
+		(item["title"], item["description"], item["review_question"], item["status"])
+		for item in items
+		if item["id"] != inserted["id"]
+	] == [
+		(
+			chunk["title"],
+			chunk["description"],
+			chunk["review_question"],
+			chunk["status"],
+		)
+		for chunk in (first, second, third)
+	]
+	assert [item["id"] for item in other_items] == [other_chunk["id"]]
+	assert [item["position"] for item in other_items] == [1]
+
+
+def test_chunk_add_at_an_occupied_position_closes_an_earlier_gap(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "chunk-gap", "Chunk gap")
+	first = _add_chunk(store, task["id"], "First")
+	second = _add_chunk(store, task["id"], "Second")
+	third = _add_chunk(store, task["id"], "Third")
+	fourth = _add_chunk(store, task["id"], "Fourth")
+	store.chunk_remove(second["id"])
+
+	inserted = _add_chunk(store, task["id"], "Inserted", position=4)
+	items = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)["items"]
+
+	assert inserted["position"] == 3
+	assert [item["id"] for item in items] == [
+		first["id"],
+		third["id"],
+		inserted["id"],
+		fourth["id"],
+	]
+	assert [item["position"] for item in items] == [1, 2, 3, 4]
+
+
+def test_chunk_add_places_a_position_past_the_end_last(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "chunk-append", "Chunk append")
+	first = _add_chunk(store, task["id"], "First")
 	second = _add_chunk(store, task["id"], "Second")
 
-	assert [first["position"], second["position"], third["position"]] == [1, 2, 3]
+	last = _add_chunk(store, task["id"], "Last", position=99)
+	items = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)["items"]
+
+	assert last["position"] == 3
+	assert [item["id"] for item in items] == [first["id"], second["id"], last["id"]]
+	assert [item["position"] for item in items] == [1, 2, 3]
 
 
 def test_chunk_move_reorders_only_the_task_chunks(tmp_path: Path) -> None:

@@ -523,8 +523,11 @@ progress chunk add --task <task_id> --title <title> --description <description> 
   about this chunk. A question that needs "and" to join two separate concerns
   usually means the chunk should be split. Doctor reports pending and active
   chunks that have no review question
-- `--position <position>`: optional ordering position; when omitted, the chunk
-  uses the first unused positive position in its task
+- `--position <position>`: optional ordering position. At an occupied position,
+  the new chunk goes before the chunk already there. A position past the end, or
+  no position, places the new chunk last. Every add renumbers the task's chunks
+  from 1 with no gaps, so the returned position can be lower than requested and
+  a position of 0 becomes 1
 
 Running `progress chunk add` at a real terminal without every required flag
 prompts for whatever is missing, the same way `progress task add` does.
