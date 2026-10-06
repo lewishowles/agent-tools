@@ -24,10 +24,12 @@ _EXIT_CODES = {
     "internal": 3,
 }
 
-# The options every cli-style call receives. cli-style picks colour and width
-# from the terminal, and prints plain text when its executable is not
-# installed instead of failing the command. Tests replace these options with
-# plain output at a fixed width so their expected text never changes.
+# The options every cli-style call receives. cli-style picks colour from the
+# terminal, and prints plain text when its executable is not installed instead
+# of failing the command. cli-style cannot see the terminal width itself, so
+# output that wraps takes agent-run's width separately. Tests
+# replace these options with plain output at a fixed width so their expected
+# text never changes.
 _RENDER_OPTIONS: dict[str, object] = {"raise_on_missing": False}
 
 
@@ -40,21 +42,51 @@ def render_empty_state(*, title: str, detail: str = "") -> str:
     )
 
 
-def render_row_group(rows: Sequence[dict[str, object]]) -> str:
-    """Return label and value rows with the values lined up in one column."""
+def render_row_group(
+    rows: Sequence[dict[str, object]], *, width: int | None = None
+) -> str:
+    """Return label and value rows with the values lined up in one column.
+
+    Args:
+        rows: The label and value rows, in display order.
+        width: The terminal width in columns, or None to use cli-style's
+            fallback of the COLUMNS variable or 80 columns.
+    """
     return row_group(
         rows=list(rows),
-        **_RENDER_OPTIONS,
+        **_render_options(width),
     )
 
 
-def render_quote_block(*, lines: Sequence[str], title: str) -> str:
-    """Return command output lines under a heading, each marked as a quote."""
+def render_quote_block(
+    *, lines: Sequence[str], title: str, width: int | None = None
+) -> str:
+    """Return command output lines under a heading, each marked as a quote.
+
+    Args:
+        lines: The output lines, already stripped of colour codes.
+        title: The heading shown above the lines.
+        width: The terminal width in columns, or None to use cli-style's
+            fallback of the COLUMNS variable or 80 columns. Lines longer than
+            the width wrap inside the quote.
+    """
     return quote_block(
         lines=list(lines),
         title=title,
-        **_RENDER_OPTIONS,
+        **_render_options(width),
     )
+
+
+def _render_options(width: int | None) -> dict[str, object]:
+    """Return the shared render options, with the terminal width when known.
+
+    Leaving the width out when it is None keeps cli-style's own fallback, and
+    keeps the fixed width that tests set.
+    """
+    if width is None:
+        return _RENDER_OPTIONS
+
+    return _RENDER_OPTIONS | {"width": width}
 
 
 def render_success_status(*, label: str) -> str:

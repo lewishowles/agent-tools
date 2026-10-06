@@ -332,6 +332,67 @@ def test_cli_run_success_supports_text_and_json(
     assert json_output.err == ""
 
 
+@pytest.mark.parametrize("is_tty", [True, False])
+def test_cli_run_passes_terminal_width_to_output_only_for_a_tty(
+    is_tty: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A text run uses stdout's width only when stdout is a terminal."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    monkeypatch.setattr("agent_run.output._RENDER_OPTIONS", {"plain": True})
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: is_tty)
+    monkeypatch.setattr(sys.stdout, "fileno", lambda: 1, raising=False)
+    terminal_size = Mock(return_value=os.terminal_size((120, 40)))
+    quote_block = Mock(return_value="Last lines of output\n| output")
+    monkeypatch.setattr("agent_run.cli.os.get_terminal_size", terminal_size)
+    monkeypatch.setattr("agent_run.output.quote_block", quote_block)
+
+    exit_code = main(["run", "--", sys.executable, "-c", "print('output')"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.err == ""
+    assert "Last lines of output\n| output" in captured.out
+    if is_tty:
+        assert quote_block.call_args.kwargs["width"] == 120
+    else:
+        assert "width" not in quote_block.call_args.kwargs
+
+
+@pytest.mark.parametrize("raises_error", [False, True])
+def test_cli_run_omits_unusable_terminal_width(
+    raises_error: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A text run uses the renderer's fallback when stdout has no usable width."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    monkeypatch.setattr("agent_run.output._RENDER_OPTIONS", {"plain": True})
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "fileno", lambda: 1, raising=False)
+    terminal_size = Mock(return_value=os.terminal_size((0, 40)))
+    if raises_error:
+        terminal_size.side_effect = OSError("terminal size unavailable")
+    quote_block = Mock(return_value="Last lines of output\n| output")
+    monkeypatch.setattr("agent_run.cli.os.get_terminal_size", terminal_size)
+    monkeypatch.setattr("agent_run.output.quote_block", quote_block)
+
+    exit_code = main(["run", "--", sys.executable, "-c", "print('output')"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.err == ""
+    assert "Last lines of output\n| output" in captured.out
+    assert "width" not in quote_block.call_args.kwargs
+
+
 def test_cli_run_strips_coloured_output_but_keeps_raw_logs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -743,7 +804,7 @@ def test_cli_multiple_runs_report_every_result_and_summary(
     assert exit_code == 1
     assert captured.err == ""
     assert captured.out.count("Command completed") == 2
-    assert "Command exited with status 7\n$ " in captured.out
+    assert "Command exited with status 7\n\n$ " in captured.out
     assert captured.out.index("$ " + sys.executable) < captured.out.index("Summary")
     summary = captured.out.split("Summary\n", 1)[1]
     summary_lines = summary.splitlines()
@@ -770,6 +831,46 @@ def test_cli_multiple_runs_report_every_result_and_summary(
         connection.close()
 
     assert names == ["first", "second", "third"]
+
+
+def test_cli_multiple_runs_pass_terminal_width_to_blocks_and_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Saved runs and their summary use the width of stdout's terminal."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    for name in ("first", "second"):
+        assert main(["add", name, "--", sys.executable, "-c", "print('output')"]) == 0
+        capsys.readouterr()
+
+    monkeypatch.setattr("agent_run.output._RENDER_OPTIONS", {"plain": True})
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "fileno", lambda: 1, raising=False)
+    terminal_size = Mock(return_value=os.terminal_size((120, 40)))
+    quote_block = Mock(return_value="Last lines of output\n| output")
+    row_group = Mock(return_value="rows")
+    monkeypatch.setattr("agent_run.cli.os.get_terminal_size", terminal_size)
+    monkeypatch.setattr("agent_run.output.quote_block", quote_block)
+    monkeypatch.setattr("agent_run.output.row_group", row_group)
+
+    exit_code = main(["run", "first", "second"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert captured.err == ""
+    assert "Summary\nrows" in captured.out
+    assert len(quote_block.call_args_list) == 2
+    assert all(call.kwargs["width"] == 120 for call in quote_block.call_args_list)
+    assert len(row_group.call_args_list) == 3
+    assert all(call.kwargs["width"] == 120 for call in row_group.call_args_list)
+    assert [row["label"] for row in row_group.call_args_list[-1].kwargs["rows"]] == [
+        "first",
+        "second",
+    ]
 
 
 def test_cli_multiple_runs_json_reports_success(
@@ -841,7 +942,7 @@ def test_cli_multiple_runs_text_reports_failure_in_last_block(
 
     assert main(["run", "second", "fourth"]) == 1
     failed_output = capsys.readouterr().out
-    assert "Command exited with status 8\n$ " in failed_output
+    assert "Command exited with status 8\n\n$ " in failed_output
     assert "Failure output was not recognised." in failed_output
     assert "\n\nSummary\n" in failed_output
     assert "\n\n\n" not in failed_output
@@ -943,7 +1044,7 @@ def test_cli_multiple_runs_stop_after_an_interrupt(
     assert text_exit_code == expected_status
     assert text_output.err == ""
     signal_name = "Ctrl+C" if expected_status == 130 else "SIGTERM"
-    assert f"Command interrupted ({signal_name})\n$ " in text_output.out
+    assert f"Command interrupted ({signal_name})\n\n$ " in text_output.out
     assert "Exit code" in text_output.out
     assert "\nRun ID " in text_output.out
     assert "\nLog " in text_output.out
@@ -1698,7 +1799,7 @@ def test_cli_run_returns_130_after_interrupt(
 
     assert exit_code == 130
     assert captured.out == ""
-    assert "Command interrupted (Ctrl+C)\n$ echo" in captured.err
+    assert "Command interrupted (Ctrl+C)\n\n$ echo" in captured.err
     assert "Exit code  -2\nDuration " in captured.err
     assert "\nRun ID " in captured.err
     assert "\nLog " in captured.err
@@ -1744,7 +1845,7 @@ def test_cli_run_interrupt_uses_fallback_when_log_cannot_be_read(
 
     assert exit_code == 130
     assert captured.out == ""
-    assert "Command interrupted (Ctrl+C)\n$ echo" in captured.err
+    assert "Command interrupted (Ctrl+C)\n\n$ echo" in captured.err
     assert "Last lines of output\n| Output could not be read." in captured.err
 
 
@@ -1778,7 +1879,7 @@ def test_cli_run_returns_143_after_terminate_request(
 
     assert exit_code == 143
     assert captured.out == ""
-    assert "Command interrupted (SIGTERM)\n$ echo" in captured.err
+    assert "Command interrupted (SIGTERM)\n\n$ echo" in captured.err
     assert "Exit code  -15\nDuration " in captured.err
     assert "\nRun ID " in captured.err
     assert "\nLog " in captured.err
@@ -1950,13 +2051,41 @@ def test_cli_run_text_failure_uses_the_run_block(
 
     assert exit_code == 1
     assert captured.out == ""
-    assert "Command exited with status 9\n$ " in captured.err
+    assert "Command exited with status 9\n\n$ " in captured.err
     assert f"$ {sys.executable} -c " in captured.err
     assert "Exit code  9\nDuration " in captured.err
     assert "\nRun ID " in captured.err
     assert "\nLog " in captured.err
     assert "Last lines of output\n| captured" in captured.err
     assert "run ID:" not in captured.err
+
+
+def test_cli_run_passes_terminal_width_to_failure_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A failed run wraps its output to the width of stdout's terminal."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    monkeypatch.setattr("agent_run.output._RENDER_OPTIONS", {"plain": True})
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "fileno", lambda: 1, raising=False)
+    terminal_size = Mock(return_value=os.terminal_size((120, 40)))
+    quote_block = Mock(return_value="Last lines of output\n| failed")
+    monkeypatch.setattr("agent_run.cli.os.get_terminal_size", terminal_size)
+    monkeypatch.setattr("agent_run.output.quote_block", quote_block)
+
+    exit_code = main(
+        ["run", "--", sys.executable, "-c", "print('failed'); raise SystemExit(9)"]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert captured.out == ""
+    assert "Last lines of output\n| failed" in captured.err
+    assert quote_block.call_args.kwargs["width"] == 120
     assert "log path:" not in captured.err
 
 
@@ -1985,7 +2114,7 @@ def test_cli_run_text_timeout_uses_the_run_block(
 
     assert exit_code == 1
     assert captured.out == ""
-    assert "Command killed after 0.1 seconds\n$ " in captured.err
+    assert "Command killed after 0.1 seconds\n\n$ " in captured.err
     assert "Exit code" in captured.err
     assert "\nRun ID " in captured.err
     assert "\nLog " in captured.err
@@ -2842,8 +2971,8 @@ def test_success_block_keeps_command_and_log_on_single_lines(
 
     assert rendered == (
         "\n"
-        "OK Command completed\n"
-        f"$ {shlex.join(result.argv)}\n"
+        "OK Command completed\n\n"
+        f"$ {shlex.join(result.argv)}\n\n"
         "Exit code  0\n"
         "Duration   0.123s\n"
         "Run ID     run-1\n"

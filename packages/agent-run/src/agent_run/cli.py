@@ -178,6 +178,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     # is a command argument rather than a request for JSON output.
     separator_index = values.index("--") if "--" in values else len(values)
     json_mode = "--json" in values[:separator_index]
+    # The width of the user's terminal, so the run block wraps where the
+    # terminal does. The cli-style renderer runs in its own process and cannot
+    # see the terminal, so without this it uses the COLUMNS variable, or 80
+    # columns. Piped and JSON output keep that fallback, as does a terminal
+    # that reports no size or a width of zero. The width comes from
+    # stdout even for failure blocks printed to stderr, since both normally
+    # share one terminal.
+    output_width = None
+    if not json_mode and sys.stdout.isatty():
+        try:
+            terminal_width = os.get_terminal_size(sys.stdout.fileno()).columns
+        except OSError:
+            pass
+        else:
+            if terminal_width > 0:
+                output_width = terminal_width
 
     parser = _ArgumentParser(
         prog="agent-run",
@@ -930,6 +946,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 names=parsed.names,
                 json_mode=parsed.json,
                 timeout=parsed.timeout,
+                width=output_width,
             )
 
         return _execute_run(
@@ -940,6 +957,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             timeout=parsed.timeout,
             file_paths=parsed.file,
             globs=parsed.glob,
+            width=output_width,
         )
 
     if parsed.command == "again":
@@ -1006,6 +1024,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 json_mode=parsed.json,
                 name=record.command_name,
                 file_paths=file_paths,
+                width=output_width,
             )
 
         return _execute_run(
@@ -1013,6 +1032,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             direct_arguments=record.argv,
             cwd=record.working_directory,
             timeout=record.timeout_seconds,
+            width=output_width,
         )
 
     if parsed.command == "add":
@@ -1636,7 +1656,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _execute_multiple_runs(
-    *, names: Sequence[str], json_mode: bool, timeout: float | None
+    *, names: Sequence[str], json_mode: bool, timeout: float | None, width: int | None
 ) -> int:
     """Run several saved commands one after another and summarise the results.
 
@@ -1646,6 +1666,9 @@ def _execute_multiple_runs(
     command. A failed or timed-out command does not stop the set; a command
     that cannot start, or an interrupt, ends it and is the last summary row.
     JSON reports the same attempted runs in one document.
+
+    Text output wraps to width columns, or to cli-style's fallback when width
+    is None.
     """
     try:
         repository = identify_repository()
@@ -1681,6 +1704,7 @@ def _execute_multiple_runs(
             name=command.name,
             timeout=timeout,
             command=command,
+            width=width,
         )
         run = {
             "name": command.name,
@@ -1719,7 +1743,7 @@ def _execute_multiple_runs(
             {"label": run["name"], "value": run["status"], "wrap": False}
             for run in runs
         ]
-        print("\n\n".join([*blocks, f"Summary\n{render_row_group(rows)}"]))
+        print("\n\n".join([*blocks, f"Summary\n{render_row_group(rows, width=width)}"]))
 
     return exit_code
 
@@ -1733,8 +1757,13 @@ def _execute_run(
     timeout: float | None = None,
     file_paths: Sequence[str] = (),
     globs: Sequence[str] = (),
+    width: int | None = None,
 ) -> int:
-    """Print one command's usual result and return its exit code."""
+    """Print one command's usual result and return its exit code.
+
+    Text output wraps to width columns, or to cli-style's fallback when width
+    is None.
+    """
     outcome = _perform_run(
         json_mode=json_mode,
         name=name,
@@ -1743,6 +1772,7 @@ def _execute_run(
         timeout=timeout,
         file_paths=file_paths,
         globs=globs,
+        width=width,
     )
 
     if outcome.error_code is not None:
@@ -1769,6 +1799,7 @@ def _perform_run(
     file_paths: Sequence[str] = (),
     globs: Sequence[str] = (),
     command: Command | None = None,
+    width: int | None = None,
 ) -> _RunOutcome:
     """Run and record one command, returning its result without printing it.
 
@@ -1780,7 +1811,8 @@ def _perform_run(
     each.
 
     A caller that has already looked up the saved command can pass it as
-    command to skip a second lookup.
+    command to skip a second lookup. The result text wraps to width columns,
+    or to cli-style's fallback when width is None.
     """
     connection: sqlite3.Connection | None = None
     log_path: Path | None = None
@@ -1986,7 +2018,7 @@ def _perform_run(
 
         data = _run_record(result, record, resolved_file_paths)
         data["summary"] = summary.lines
-        text = _format_run(result, record, summary)
+        text = _format_run(result, record, summary, width=width)
 
         return _RunOutcome(status=RUN_PASSED, exit_code=0, data=data, text=text)
 
@@ -2003,12 +2035,16 @@ def _perform_run(
         else:
             lines = summarise_output(log_text)
 
-        output = render_quote_block(lines=lines, title="Last lines of output")
+        output = render_quote_block(
+            lines=lines, title="Last lines of output", width=width
+        )
         signal_name = "Ctrl+C" if interrupt_signal == signal.SIGINT else "SIGTERM"
         status_line = render_warning_status(
             label=f"Command interrupted ({signal_name})"
         )
-        failure_text = _format_run_block(result, record, status_line, output)
+        failure_text = _format_run_block(
+            result, record, status_line, output, width=width
+        )
     else:
         # The block's status line says only what happened, with no full stop, like
         # "Command completed". The run ID and log path have their own rows there,
@@ -2029,7 +2065,7 @@ def _perform_run(
 
         failure_data["failure"] = _failure_report_record(failure_report)
         failure_text = _format_failed_run(
-            result, record, status_message, failure_report
+            result, record, status_message, failure_report, width=width
         )
 
     if interrupted:
@@ -2617,28 +2653,49 @@ def _format_failure_line(failure: Failure) -> str:
     return f"{location}: {failure.title}" if location else failure.title
 
 
-def _format_run(result: RunResult, record: RunRecord, summary: SuccessSummary) -> str:
-    """Format one human-readable result block for a completed command."""
+def _format_run(
+    result: RunResult,
+    record: RunRecord,
+    summary: SuccessSummary,
+    *,
+    width: int | None = None,
+) -> str:
+    """Format one human-readable result block for a completed command.
+
+    The block wraps to width columns, or to cli-style's fallback when width is
+    None.
+    """
     # The summary lines come from the command's output, except when the command
     # printed nothing or its log could not be read, when agent-run says so.
     output = render_quote_block(
         lines=summary.lines,
         title="Summary" if summary.recognised else "Last lines of output",
+        width=width,
     )
 
     return _format_run_block(
-        result, record, render_success_status(label="Command completed"), output
+        result,
+        record,
+        render_success_status(label="Command completed"),
+        output,
+        width=width,
     )
 
 
 def _format_failed_run(
-    result: RunResult, record: RunRecord, message: str, report: FailureReport
+    result: RunResult,
+    record: RunRecord,
+    message: str,
+    report: FailureReport,
+    *,
+    width: int | None = None,
 ) -> str:
     """Format one human-readable result block for a failed or timed-out command.
 
     The output block holds the failure report. A recognised failure appears under
     "First failure"; otherwise the last lines of output appear as they do for a
-    completed command.
+    completed command. The block wraps to width columns, or to cli-style's
+    fallback when width is None.
     """
     if report.recognised and report.first is not None:
         title = "First failure"
@@ -2649,18 +2706,25 @@ def _format_failed_run(
             list(report.tail) if report.tail else ["Failure output was not recognised."]
         )
 
-    output = render_quote_block(lines=lines, title=title)
+    output = render_quote_block(lines=lines, title=title, width=width)
     status_line = render_error_status(label=message)
 
-    return _format_run_block(result, record, status_line, output)
+    return _format_run_block(result, record, status_line, output, width=width)
 
 
 def _format_run_block(
-    result: RunResult, record: RunRecord, status_line: str, output: str
+    result: RunResult,
+    record: RunRecord,
+    status_line: str,
+    output: str,
+    *,
+    width: int | None = None,
 ) -> str:
     """Join the status line, command, run facts and marked output into one block.
 
     Completed, failed, timed-out and interrupted runs all print this layout.
+    The facts and output wrap to width columns, or to cli-style's fallback when
+    width is None.
     """
     # The facts agent-run reports about the run, in display order.
     facts = (
@@ -2676,16 +2740,19 @@ def _format_run_block(
         [
             {"label": label, "value": value, "labelColour": "muted", "wrap": False}
             for label, value in facts
-        ]
+        ],
+        width=width,
     )
 
-    # The empty strings leave a blank line above the block, between the facts
-    # and the command's output, and below the block.
+    # Blank lines go above the block, between each of the status line, command,
+    # facts and output, and below the block.
     return "\n".join(
         [
             "",
             status_line,
+            "",
             f"$ {shlex.join(result.argv)}",
+            "",
             details,
             "",
             output,
