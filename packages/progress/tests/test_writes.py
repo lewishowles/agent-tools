@@ -248,24 +248,158 @@ def test_chunk_add_renumbers_an_explicit_zero_position_from_one(tmp_path: Path) 
 	chunk = _add_chunk(store, task["id"], "Zero chunk", position=0)
 
 	assert release["position"] == 0
-	assert task["position"] == 0
+	assert task["position"] == 1
 	assert chunk["position"] == 1
 
 
-def test_task_defaults_use_the_next_free_position_in_each_queue(
+def test_task_add_without_position_goes_last_after_a_removal_in_each_queue(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("release", "Release", overview="Release overview")
-	_add_task(store, "first", "First", release_id=release["id"], position=1)
-	_add_task(store, "third", "Third", release_id=release["id"], position=3)
-	_add_task(store, "unassigned-first", "Unassigned first", position=1)
+	first = _add_task(store, "first", "First", release_id=release["id"])
+	release_gap = _add_task(
+		store, "release-gap", "Release gap", release_id=release["id"]
+	)
+	third = _add_task(store, "third", "Third", release_id=release["id"])
+	unassigned_first = _add_task(store, "unassigned-first", "Unassigned first")
+	unassigned_gap = _add_task(store, "unassigned-gap", "Unassigned gap")
+	unassigned_third = _add_task(store, "unassigned-third", "Unassigned third")
+	store.task_remove(release_gap["id"])
+	store.task_remove(unassigned_gap["id"])
 
-	release_task = _add_task(store, "second", "Second", release_id=release["id"])
-	unassigned_task = _add_task(store, "unassigned-second", "Unassigned second")
+	release_last = _add_task(
+		store, "release-last", "Release last", release_id=release["id"]
+	)
+	unassigned_last = _add_task(store, "unassigned-last", "Unassigned last")
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list(
+		show_all=True
+	)["items"]
+	release_items = [item for item in items if item["release_id"] == release["id"]]
+	unassigned_items = [item for item in items if item["release_id"] is None]
 
-	assert release_task["position"] == 2
-	assert unassigned_task["position"] == 2
+	assert release_last["position"] == 3
+	assert unassigned_last["position"] == 3
+	assert [item["id"] for item in release_items] == [
+		first["id"],
+		third["id"],
+		release_last["id"],
+	]
+	assert [item["position"] for item in release_items] == [1, 2, 3]
+	assert [item["id"] for item in unassigned_items] == [
+		unassigned_first["id"],
+		unassigned_third["id"],
+		unassigned_last["id"],
+	]
+	assert [item["position"] for item in unassigned_items] == [1, 2, 3]
+
+
+def test_task_add_at_an_occupied_position_reorders_only_its_queue(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Release overview")
+	other_release = store.release_add(
+		"other-release", "Other release", overview="Other release overview"
+	)
+	first = _add_task(store, "first", "First", release_id=release["id"])
+	second = _add_task(store, "second", "Second", release_id=release["id"])
+	third = _add_task(store, "third", "Third", release_id=release["id"])
+	store.task_complete(second["id"])
+	other = _add_task(store, "other", "Other", release_id=other_release["id"])
+	unassigned = _add_task(store, "unassigned", "Unassigned")
+
+	inserted = _add_task(
+		store, "inserted", "Inserted", release_id=release["id"], position=2
+	)
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list(
+		show_all=True
+	)["items"]
+	release_items = [item for item in items if item["release_id"] == release["id"]]
+	other_items = [item for item in items if item["release_id"] == other_release["id"]]
+	unassigned_items = [item for item in items if item["release_id"] is None]
+
+	assert inserted["position"] == 2
+	assert [item["id"] for item in release_items] == [
+		first["id"],
+		inserted["id"],
+		second["id"],
+		third["id"],
+	]
+	assert [item["position"] for item in release_items] == [1, 2, 3, 4]
+	assert [
+		(item["slug"], item["title"], item["overview"], item["status"])
+		for item in release_items
+		if item["id"] != inserted["id"]
+	] == [
+		(task["slug"], task["title"], task["overview"], status)
+		for task, status in ((first, "ready"), (second, "done"), (third, "ready"))
+	]
+	assert [item["id"] for item in other_items] == [other["id"]]
+	assert [item["position"] for item in other_items] == [1]
+	assert [item["id"] for item in unassigned_items] == [unassigned["id"]]
+	assert [item["position"] for item in unassigned_items] == [1]
+
+
+def test_task_add_at_position_one_moves_existing_tasks_down(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first", "First")
+	second = _add_task(store, "second", "Second")
+	third = _add_task(store, "third", "Third")
+
+	inserted = _add_task(store, "inserted", "Inserted", position=1)
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list()[
+		"items"
+	]
+
+	assert inserted["position"] == 1
+	assert [item["id"] for item in items] == [
+		inserted["id"],
+		first["id"],
+		second["id"],
+		third["id"],
+	]
+	assert [item["position"] for item in items] == [1, 2, 3, 4]
+
+
+def test_task_add_places_a_position_past_the_end_last(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first", "First")
+	second = _add_task(store, "second", "Second")
+
+	last = _add_task(store, "last", "Last", position=99)
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list()[
+		"items"
+	]
+
+	assert last["position"] == 3
+	assert [item["id"] for item in items] == [first["id"], second["id"], last["id"]]
+	assert [item["position"] for item in items] == [1, 2, 3]
+
+
+def test_task_add_at_an_occupied_position_closes_an_earlier_gap(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first", "First")
+	second = _add_task(store, "second", "Second")
+	third = _add_task(store, "third", "Third")
+	fourth = _add_task(store, "fourth", "Fourth")
+	store.task_remove(second["id"])
+
+	inserted = _add_task(store, "inserted", "Inserted", position=4)
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list()[
+		"items"
+	]
+
+	assert inserted["position"] == 3
+	assert [item["id"] for item in items] == [
+		first["id"],
+		third["id"],
+		inserted["id"],
+		fourth["id"],
+	]
+	assert [item["position"] for item in items] == [1, 2, 3, 4]
 
 
 def test_task_move_reorders_only_the_task_queue(tmp_path: Path) -> None:

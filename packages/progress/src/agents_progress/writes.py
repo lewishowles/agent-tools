@@ -306,7 +306,14 @@ class WriteStore(_StoreBase):
 		position: int | None = None,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Create a task and derive its initial status from its dependencies."""
+		"""Create a task at the end of its release or unassigned queue by default.
+
+		At a taken position, the new task goes before the task there, and a
+		position past the last task places it last. Every add renumbers the queue
+		from 1 with no gaps, so the returned position can be lower than requested
+		and a position of 0 becomes 1. The task starts ready, or blocked while any
+		dependency is unresolved.
+		"""
 		_require_text(slug, "task slug")
 		_require_text(title, "task title")
 		_require_text(overview, "task overview")
@@ -358,11 +365,32 @@ class WriteStore(_StoreBase):
 				None if status == "ready" else _dependency_reason(dependency_rows)
 			)
 			created_at = utc_timestamp()
-			task_position = (
-				position
-				if position is not None
-				else _next_task_position(connection, project.id, release_id)
+			queue_filter = (
+				"project_id = ? AND release_id IS NULL"
+				if release_id is None
+				else "project_id = ? AND release_id = ?"
 			)
+			queue_parameters = (
+				(project.id,) if release_id is None else (project.id, release_id)
+			)
+			task_rows = connection.execute(
+				f"SELECT id, position FROM tasks WHERE {queue_filter} ORDER BY position, id",
+				queue_parameters,
+			).fetchall()
+			next_position = task_rows[-1]["position"] + 1 if task_rows else 1
+			task_position = position if position is not None else next_position
+			ordered_ids = [row["id"] for row in task_rows]
+			positions = {row["id"]: row["position"] for row in task_rows}
+			insert_index = next(
+				(
+					index
+					for index, row in enumerate(task_rows)
+					if row["position"] >= task_position
+				),
+				len(task_rows),
+			)
+			ordered_ids.insert(insert_index, task_id)
+			positions[task_id] = task_position
 			try:
 				connection.execute(
 					"""
@@ -404,6 +432,14 @@ class WriteStore(_StoreBase):
 
 			_write_task_values(connection, "contract", task_id, contract_steps)
 			_write_task_values(connection, "files", task_id, file_paths)
+			for index, ordered_id in enumerate(ordered_ids, start=1):
+				if positions[ordered_id] == index:
+					continue
+
+				connection.execute(
+					"UPDATE tasks SET position = ? WHERE id = ?",
+					(index, ordered_id),
+				)
 
 			return _task_dict(connection, task_id, project.id)
 

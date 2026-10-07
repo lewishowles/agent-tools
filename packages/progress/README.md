@@ -266,8 +266,11 @@ progress task add --slug <slug> --title <title> --overview <overview> --contract
 - `--verification <verification>`: optional verification instructions
 - `--release <release_id>` or `--release-id <release_id>`: associate the task with a release
 - `--depends-on <task_id>` or `--dependency <task_id>`: add a dependency on another task
-- `--position <position>`: optional ordering position; when omitted, the task
-  uses the first unused positive position in its release or unassigned queue
+- `--position <position>`: optional ordering position. At an occupied position,
+  the new task goes before the task already there in its release or unassigned
+  queue. A position past the end, or no position, places the new task last.
+  Every add renumbers that queue from 1 with no gaps, so the returned position
+  can be lower than requested and a position of 0 becomes 1
 
 The new task is `ready` when its dependencies allow it to start, or `blocked`
 when it still has unresolved dependencies.
