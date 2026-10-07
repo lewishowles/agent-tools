@@ -35,7 +35,7 @@ the database and another Git checkout needs to use it.
 The complete command shape is:
 
 ```text
-progress [--json] [--database <path>] {next,summary,checkout,project,release,task,chunk,inbox,discovery,decision,context}
+progress [--json] [--database <path>] {next,summary,show,checkout,project,release,task,chunk,inbox,discovery,decision,context}
 ```
 
 Throughout this reference, commands use:
@@ -92,6 +92,20 @@ command.
 ```bash
 progress summary
 ```
+
+### `progress show`
+
+Show a project, release, task, chunk, discovery, decision, or inbox note from
+its ID alone:
+
+```text
+progress show <id> [--json] [--database <path>]
+```
+
+The ID is required, and the command never falls back to the current task or
+chunk. A malformed ID, or one with an unknown prefix, returns `invalid-id`; a
+valid ID with no matching record returns `not-found`. Release, task, and chunk
+output matches their `get` commands.
 
 ### `progress checkout detach`
 

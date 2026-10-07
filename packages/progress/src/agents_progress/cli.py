@@ -15,7 +15,14 @@ from prompt_toolkit import prompt
 from . import __version__
 from .database import Database
 from .errors import NotFoundError, ProgressError, WrongObjectIdTypeError
-from .ids import CHUNK_PREFIX, TASK_PREFIX, object_id_prefix
+from .ids import (
+	CHUNK_PREFIX,
+	NOTE_PREFIX,
+	PROJECT_PREFIX,
+	RELEASE_PREFIX,
+	TASK_PREFIX,
+	object_id_prefix,
+)
 from .projects import ProjectStore
 from .reads import DEFAULT_LIMIT, MAX_LIMIT, ReadStore
 from .render import render
@@ -286,6 +293,12 @@ def _add_command_specs(
 _COMMAND_SPECS = (
 	_CommandSpec("next", "show the next queued task and active chunk"),
 	_CommandSpec("summary", "show current work across every stored project"),
+	_CommandSpec(
+		"show",
+		"show a project, release, task, chunk, discovery, decision, or "
+		"inbox note by ID",
+		arguments=(_argument("object_id", help="ID of the record to show"),),
+	),
 	_CommandSpec(
 		"checkout",
 		"manage recorded checkout paths",
@@ -1337,6 +1350,32 @@ def _run_complete(args: argparse.Namespace, database: Database) -> tuple[object,
 	raise WrongObjectIdTypeError((TASK_PREFIX, CHUNK_PREFIX), args.object_id)
 
 
+def _run_show(args: argparse.Namespace, database: Database) -> tuple[object, str]:
+	"""Return the record an ID names and the render command for its type.
+
+	Unlike task get and chunk get, this never falls back to the current selection.
+	Raise invalid-id for a malformed or unknown-prefix ID and not-found when no
+	record matches.
+	"""
+	prefix = object_id_prefix(args.object_id)
+	store = ReadStore(database)
+
+	if prefix == PROJECT_PREFIX:
+		return store.project_get(args.object_id), "show project"
+	if prefix == RELEASE_PREFIX:
+		return store.release_get(args.object_id), "release get"
+	if prefix == TASK_PREFIX:
+		return store.task_get(args.object_id), "task get"
+	if prefix == CHUNK_PREFIX:
+		return store.chunk_get(args.object_id), "chunk get"
+	if prefix == NOTE_PREFIX:
+		return store.note_get(args.object_id), "show note"
+
+	# Any other valid ID is an inbox note, because object_id_prefix accepts only
+	# these six prefixes.
+	return store.inbox_get(args.object_id), "show inbox"
+
+
 def _run_command(
 	args: argparse.Namespace, *, include_release_titles: bool = False
 ) -> tuple[object, str]:
@@ -1353,6 +1392,7 @@ def _run_command(
 	human_output = include_release_titles
 	dispatch = {
 		("complete", None): lambda: _run_complete(args, database),
+		("show", None): lambda: _run_show(args, database),
 		("next", None): lambda: (
 			(
 				ReadStore(database).next(include_position_totals=True)

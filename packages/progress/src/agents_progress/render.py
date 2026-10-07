@@ -105,6 +105,10 @@ def render(command: str, data: object) -> str:
 		return _render_task(data)
 	if command == "chunk get" and isinstance(data, dict):
 		return _render_chunk(data)
+	if command == "show note" and isinstance(data, dict):
+		return _render_single_note(data)
+	if command == "show inbox" and isinstance(data, dict):
+		return _render_inbox_list({"items": [data]})
 	if command == "doctor":
 		return _render_doctor(data)
 	if command == "task clean":
@@ -882,24 +886,39 @@ def _render_note_list(command: str, data: dict[str, object]) -> str:
 	blocks = [render_span(f"{note_label} notes")]
 
 	for note in note_records:
-		task_id = note.get("task_id")
-		release_id = note.get("release_id")
-		owner_type = "task" if task_id else "release"
-		owner_id = task_id or release_id or ""
-		blocks.append(
-			"\n".join(
-				[
-					str(note.get("body", "")),
-					render_span(f"{owner_type} {owner_id}", "muted", weight="normal"),
-				]
-			)
-		)
+		blocks.append(_render_note_entry(note))
 
 	if data.get("has_more"):
 		next_offset = int(data.get("offset", 0)) + int(data.get("limit", 0))
 		blocks.append(render_hint(f"More results: use --offset {next_offset}."))
 
 	return "\n\n".join(blocks)
+
+
+def _render_single_note(note: dict[str, object]) -> str:
+	"""Show one discovery or decision with its owner and ID."""
+	note_type = str(note.get("type", "")).capitalize()
+	return "\n\n".join(
+		[
+			render_span(f"{note_type} note"),
+			_render_note_entry(note),
+			render_span(str(note.get("id", "")), "muted", weight="normal"),
+		]
+	)
+
+
+def _render_note_entry(note: dict[str, object]) -> str:
+	"""Show a note's body and the task or release that owns it."""
+	task_id = note.get("task_id")
+	release_id = note.get("release_id")
+	owner_type = "task" if task_id else "release"
+	owner_id = task_id or release_id or ""
+	return "\n".join(
+		[
+			str(note.get("body", "")),
+			render_span(f"{owner_type} {owner_id}", "muted", weight="normal"),
+		]
+	)
 
 
 def _render_inbox_list(data: dict[str, object]) -> str:

@@ -29,6 +29,141 @@ def _stderr_error_message(captured_err: str) -> str:
 
 
 @pytest.mark.parametrize(
+	"prefix, method_name, render_command, record",
+	[
+		("prj_", "project_get", "project current", {"name": "Agent tools"}),
+		("rel_", "release_get", "release get", {"title": "First release"}),
+		("tsk_", "task_get", "task get", {"title": "First task"}),
+		("chk_", "chunk_get", "chunk get", {"title": "First chunk"}),
+		(
+			"nte_",
+			"note_get",
+			"show note",
+			{"type": "discovery", "body": "A useful finding", "task_id": "tsk_owner"},
+		),
+		(
+			"nte_",
+			"note_get",
+			"show note",
+			{"type": "decision", "body": "The chosen path", "task_id": "tsk_owner"},
+		),
+		(
+			"inb_",
+			"inbox_get",
+			"show inbox",
+			{"text": "Review this", "created_at": "2026-01-01T00:00:00+00:00"},
+		),
+	],
+)
+@pytest.mark.parametrize("json_mode", [False, True], ids=["human", "json"])
+def test_show_reads_one_record_from_its_id(
+	tmp_path: Path,
+	monkeypatch,
+	capsys,
+	prefix: str,
+	method_name: str,
+	render_command: str,
+	record: dict[str, object],
+	json_mode: bool,
+) -> None:
+	identifier = prefix + "a" * 22
+	data = {"id": identifier, **record}
+	calls = []
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def __getattr__(self, name):
+			assert name == method_name
+
+			def get(identifier_arg):
+				calls.append(identifier_arg)
+				return data
+
+			return get
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+	arguments = ["show", identifier, "--database", str(tmp_path / "db")]
+	if json_mode:
+		arguments.append("--json")
+
+	assert cli.main(arguments) == 0
+	output = capsys.readouterr()
+	assert calls == [identifier]
+	assert output.err == ""
+	if json_mode:
+		assert json.loads(output.out) == {"ok": True, "data": data}
+	else:
+		plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", output.out)
+		expected = render_module._ANSI_ESCAPE_PATTERN.sub(
+			"", render_module.render(render_command, data)
+		)
+		assert plain_output.strip() == expected.strip()
+		if prefix == "nte_":
+			assert (
+				plain_output.strip().splitlines()[0]
+				== f"{data['type'].capitalize()} note"
+			)
+			assert str(data["body"]) in plain_output
+			assert identifier in plain_output
+		if prefix == "inb_":
+			assert str(data["text"]) in plain_output
+			assert identifier in plain_output
+
+
+@pytest.mark.parametrize("identifier", ["tsk_short", "xyz_" + "a" * 22])
+def test_show_rejects_invalid_ids_before_reading(
+	tmp_path: Path, monkeypatch, capsys, identifier: str
+) -> None:
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pytest.fail("An invalid ID must not reach the read store")
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert (
+		cli.main(["show", identifier, "--database", str(tmp_path / "db"), "--json"])
+		== 1
+	)
+	assert json.loads(capsys.readouterr().out)["error"]["code"] == "invalid-id"
+
+
+@pytest.mark.parametrize("prefix", ["prj_", "rel_", "tsk_", "chk_", "nte_", "inb_"])
+def test_show_reports_missing_records(
+	tmp_path: Path, monkeypatch, capsys, prefix: str
+) -> None:
+	identifier = prefix + "a" * 22
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def __getattr__(self, name):
+			def get(identifier_arg):
+				raise NotFoundError(
+					f"record {identifier_arg} was not found", {"id": identifier_arg}
+				)
+
+			return get
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert (
+		cli.main(["show", identifier, "--database", str(tmp_path / "db"), "--json"])
+		== 1
+	)
+	response = json.loads(capsys.readouterr().out)
+	assert response["error"]["code"] == "not-found"
+	assert response["error"]["details"] == {"id": identifier}
+
+
+def test_show_requires_an_id(capsys) -> None:
+	assert cli.main(["show", "--json"]) == 2
+	assert json.loads(capsys.readouterr().out)["error"]["code"] == "usage"
+
+
+@pytest.mark.parametrize(
 	"command, explicit_id, selected_kind, method_name",
 	[
 		(["task", "get"], "tsk_explicit", "task", "task_get"),
