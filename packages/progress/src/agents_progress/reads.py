@@ -12,6 +12,9 @@ from .errors import (
 )
 from .ids import (
 	CHUNK_PREFIX,
+	INBOX_PREFIX,
+	NOTE_PREFIX,
+	PROJECT_PREFIX,
 	RELEASE_PREFIX,
 	TASK_PREFIX,
 	is_valid_object_id,
@@ -849,6 +852,20 @@ class ReadStore(_StoreBase):
 
 			return response
 
+	def project_get(
+		self, project_id: str, path: str | Path | None = None
+	) -> dict[str, object]:
+		"""Return the current project when the ID matches it, or raise not-found."""
+		validate_object_id(project_id, PROJECT_PREFIX)
+		project = self.current_project(path)
+
+		if project.id != project_id:
+			raise NotFoundError(
+				f"project {project_id} was not found", {"id": project_id}
+			)
+
+		return project.to_dict()
+
 	def release_get(
 		self,
 		release_id: str,
@@ -1300,6 +1317,25 @@ class ReadStore(_StoreBase):
 			"next_chunk": next_active or next_pending,
 		}
 
+	def inbox_get(
+		self, note_id: str, path: str | Path | None = None
+	) -> dict[str, object]:
+		"""Return one current-project inbox note by ID or raise not-found."""
+		validate_object_id(note_id, INBOX_PREFIX)
+		project = self.current_project(path)
+
+		with self.database.connection() as connection:
+			row = connection.execute(
+				"SELECT id, project_id, text, created_at FROM inbox_notes "
+				"WHERE id = ? AND project_id = ?",
+				(note_id, project.id),
+			).fetchone()
+
+		if row is None:
+			raise NotFoundError(f"inbox note {note_id} was not found", {"id": note_id})
+
+		return dict(row)
+
 	def inbox_list(
 		self,
 		limit: int = DEFAULT_LIMIT,
@@ -1321,6 +1357,24 @@ class ReadStore(_StoreBase):
 			).fetchone()[0]
 
 		return page_response([dict(row) for row in rows], limit, offset, total)
+
+	def note_get(
+		self, note_id: str, path: str | Path | None = None
+	) -> dict[str, object]:
+		"""Return one current-project discovery or decision by ID, with its type, or raise not-found."""
+		validate_object_id(note_id, NOTE_PREFIX)
+		project = self.current_project(path)
+
+		with self.database.connection() as connection:
+			row = connection.execute(
+				f"SELECT {_NOTE_COLUMNS} FROM notes WHERE id = ? AND project_id = ?",
+				(note_id, project.id),
+			).fetchone()
+
+		if row is None:
+			raise NotFoundError(f"note {note_id} was not found", {"id": note_id})
+
+		return Note.from_row(row).to_dict()
 
 	def discovery_list(
 		self,

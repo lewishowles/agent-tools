@@ -3,7 +3,11 @@ from pathlib import Path
 import pytest
 
 from agents_progress.database import Database
-from agents_progress.errors import NotFoundError, WrongObjectIdTypeError
+from agents_progress.errors import (
+	InvalidObjectIdError,
+	NotFoundError,
+	WrongObjectIdTypeError,
+)
 from agents_progress.ids import RELEASE_PREFIX, TASK_PREFIX
 from agents_progress.projects import Project
 from agents_progress.reads import ReadStore, resolve_identifier
@@ -17,6 +21,7 @@ CHUNK_A = "chk_" + "a" * 22
 DISCOVERY_A = "nte_" + "a" * 22
 DISCOVERY_B = "nte_" + "b" * 22
 DECISION_A = "nte_" + "c" * 22
+INBOX_A = "inb_" + "a" * 22
 
 
 class _ProjectStore:
@@ -1007,6 +1012,148 @@ def test_task_get_rejects_a_wrong_object_type_before_lookup(tmp_path: Path) -> N
 
 	with pytest.raises(WrongObjectIdTypeError):
 		store.task_get(CHUNK_A)
+
+
+def test_project_get_returns_only_the_current_project(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	other_project_id = "prj_" + "q" * 22
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(other_project_id, "other", "Other project", "2026-01-02T00:00:00+00:00"),
+		)
+
+	project = store.project_get(PROJECT_ID)
+
+	assert project == {
+		"id": PROJECT_ID,
+		"slug": "agents",
+		"name": "Agent configuration",
+	}
+
+	with pytest.raises(NotFoundError):
+		store.project_get(other_project_id)
+
+
+@pytest.mark.parametrize(
+	("note_id", "note_type", "body"),
+	[
+		(DISCOVERY_A, "discovery", "First discovery."),
+		(DECISION_A, "decision", "First decision."),
+	],
+)
+def test_note_get_returns_the_note_and_its_kind(
+	tmp_path: Path, note_id: str, note_type: str, body: str
+) -> None:
+	store = _seed_store(tmp_path)
+
+	note = store.note_get(note_id)
+
+	assert note["id"] == note_id
+	assert note["project_id"] == PROJECT_ID
+	assert note["task_id"] == TASK_A
+	assert note["type"] == note_type
+	assert note["body"] == body
+
+
+def test_inbox_get_returns_the_stored_note(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO inbox_notes (id, project_id, text, created_at) VALUES (?, ?, ?, ?)",
+			(INBOX_A, PROJECT_ID, "Follow up", "2026-01-02T00:00:00+00:00"),
+		)
+
+	note = store.inbox_get(INBOX_A)
+
+	assert note == {
+		"id": INBOX_A,
+		"project_id": PROJECT_ID,
+		"text": "Follow up",
+		"created_at": "2026-01-02T00:00:00+00:00",
+	}
+
+
+def test_note_and_inbox_get_reject_other_project_records(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	other_project_id = "prj_" + "q" * 22
+	other_release_id = "rel_" + "b" * 22
+	other_note_id = "nte_" + "d" * 22
+	other_inbox_id = "inb_" + "b" * 22
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(other_project_id, "other", "Other project", "2026-01-02T00:00:00+00:00"),
+		)
+		connection.execute(
+			"INSERT INTO releases (id, project_id, slug, title, overview, status, position) "
+			"VALUES (?, ?, ?, ?, ?, ?, ?)",
+			(
+				other_release_id,
+				other_project_id,
+				"other",
+				"Other release",
+				"Overview",
+				"planned",
+				1,
+			),
+		)
+		connection.execute(
+			"INSERT INTO notes (id, project_id, release_id, type, body, created_at) "
+			"VALUES (?, ?, ?, ?, ?, ?)",
+			(
+				other_note_id,
+				other_project_id,
+				other_release_id,
+				"discovery",
+				"Other note",
+				"2026-01-02T00:00:00+00:00",
+			),
+		)
+		connection.execute(
+			"INSERT INTO inbox_notes (id, project_id, text, created_at) VALUES (?, ?, ?, ?)",
+			(
+				other_inbox_id,
+				other_project_id,
+				"Other inbox note",
+				"2026-01-02T00:00:00+00:00",
+			),
+		)
+
+	with pytest.raises(NotFoundError):
+		store.note_get(other_note_id)
+
+	with pytest.raises(NotFoundError):
+		store.inbox_get(other_inbox_id)
+
+
+@pytest.mark.parametrize(
+	("method_name", "missing_id", "malformed_id"),
+	[
+		("project_get", "prj_" + "z" * 22, "prj_short"),
+		("note_get", "nte_" + "z" * 22, "nte_short"),
+		("inbox_get", "inb_" + "z" * 22, "inb_short"),
+	],
+)
+def test_project_note_and_inbox_get_reject_wrong_type_missing_and_malformed_ids(
+	tmp_path: Path, method_name: str, missing_id: str, malformed_id: str
+) -> None:
+	store = _seed_store(tmp_path)
+	get_record = getattr(store, method_name)
+
+	with pytest.raises(WrongObjectIdTypeError):
+		get_record(TASK_A)
+
+	with pytest.raises(NotFoundError, match="was not found"):
+		get_record(missing_id)
+
+	with pytest.raises(InvalidObjectIdError):
+		get_record(malformed_id)
 
 
 @pytest.mark.parametrize(
