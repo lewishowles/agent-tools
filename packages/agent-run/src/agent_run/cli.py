@@ -6,6 +6,7 @@ import os
 import shlex
 import signal
 import sqlite3
+import subprocess
 import sys
 import time
 from collections.abc import Mapping, Sequence
@@ -109,6 +110,13 @@ RUN_FAILED = "failed"
 RUN_TIMED_OUT = "timed out"
 RUN_INTERRUPTED = "interrupted"
 RUN_NOT_STARTED = "not started"
+RUN_DECLINED = "declined"
+
+# Environment variables that Claude Code, Codex and other agent shells set. A
+# manual-only command is refused whenever one of them has a value, even at a
+# real terminal, because Claude Code's ! prefix gives the agent's shell a
+# terminal too.
+_AGENT_SHELL_MARKERS = ("CLAUDECODE", "AI_AGENT", "CODEX_SANDBOX", "CODEX_THREAD_ID")
 
 
 @dataclass(frozen=True)
@@ -121,10 +129,11 @@ class _RunOutcome:
     exit_code: int
     # The run data shown with --json, or details for an error.
     data: dict[str, object] | None = None
+    # Whether the command used the person's terminal without a run record.
+    manual: bool = False
     # The text shown without --json.
     text: str | None = None
-    # The error code from the shared CLI contract, set whenever the run did
-    # not pass.
+    # The error code from the shared CLI contract, set whenever the run did not pass.
     error_code: str | None = None
     # The one-line error message that goes with error_code.
     message: str | None = None
@@ -1660,8 +1669,10 @@ def _execute_multiple_runs(
 ) -> int:
     """Run several saved commands one after another and summarise the results.
 
-    Every name is looked up first, so an unknown or manual-only name refuses
-    the whole set before anything runs or a run record is saved.
+    Every name is looked up first, so an unknown name refuses the whole set
+    before anything runs or a run record is saved. A manual-only name does the
+    same for an agent; a person at a terminal is asked to confirm it when the
+    set reaches it, and declining skips it without stopping the set.
     Each command's result is shown, followed by one summary row per attempted
     command. A failed or timed-out command does not stop the set; a command
     that cannot start, or an interrupt, ends it and is the last summary row.
@@ -1680,7 +1691,7 @@ def _execute_multiple_runs(
             connection.close()
 
         for command in commands:
-            if command.manual:
+            if command.manual and not _can_run_manual_command():
                 return _manual_command_error(
                     json_mode=json_mode,
                     argv=command.argv,
@@ -1695,6 +1706,7 @@ def _execute_multiple_runs(
         return render_error(json_mode=json_mode, code="environment", message=str(error))
 
     runs: list[dict[str, object]] = []
+    outcomes: list[_RunOutcome] = []
     blocks: list[str] = []
     exit_code = 0
 
@@ -1723,6 +1735,7 @@ def _execute_multiple_runs(
             run["data"] = outcome.data
 
         runs.append(run)
+        outcomes.append(outcome)
 
         if not json_mode and outcome.text is not None:
             blocks.append(outcome.text.strip("\n"))
@@ -1740,12 +1753,25 @@ def _execute_multiple_runs(
         )
     else:
         rows = [
-            {"label": run["name"], "value": run["status"], "wrap": False}
-            for run in runs
+            {"label": run["name"], "value": _summary_status(outcome), "wrap": False}
+            for run, outcome in zip(runs, outcomes, strict=True)
         ]
         print("\n\n".join([*blocks, f"Summary\n{render_row_group(rows, width=width)}"]))
 
     return exit_code
+
+
+def _summary_status(outcome: _RunOutcome) -> str:
+    """Return the summary text for one run in a multi-name set.
+
+    A manual command a person ran shows its exit code beside the status,
+    because it has no log to look the code up in. A declined manual command
+    shows only its status.
+    """
+    if outcome.manual and outcome.status != RUN_DECLINED:
+        return f"{outcome.status} (exit {outcome.exit_code})"
+
+    return outcome.status
 
 
 def _execute_run(
@@ -1775,7 +1801,19 @@ def _execute_run(
         width=width,
     )
 
-    if outcome.error_code is not None:
+    if outcome.manual:
+        # The command already wrote to the terminal, so text mode has nothing to add.
+        if json_mode:
+            if outcome.error_code is not None:
+                render_error(
+                    json_mode=True,
+                    code=outcome.error_code,
+                    message=outcome.message,
+                    data=outcome.data,
+                )
+            else:
+                render_success(json_mode=True, data=outcome.data)
+    elif outcome.error_code is not None:
         render_error(
             json_mode=json_mode,
             code=outcome.error_code,
@@ -1807,8 +1845,9 @@ def _perform_run(
     any file targets added; cwd is ignored. Without a name, run
     direct_arguments from cwd. The timeout falls back to the saved command's
     timeout, then the default. Both run and again use this, so the
-    one-at-a-time lock and the manual-only and browser-runner refusals apply to
-    each.
+    one-at-a-time lock applies to each, and so does the choice between
+    refusing a manual-only or browser-runner command and asking a person at a
+    terminal to confirm it.
 
     A caller that has already looked up the saved command can pass it as
     command to skip a second lookup. The result text wraps to width columns,
@@ -1835,6 +1874,13 @@ def _perform_run(
             command_arguments = tuple(direct_arguments)
 
             if starts_browser_runner(command_arguments):
+                if _can_run_manual_command():
+                    return _run_manual_command(
+                        argv=command_arguments,
+                        cwd=repository.root / relative_working_directory,
+                        name=None,
+                    )
+
                 return _manual_run_outcome(
                     argv=command_arguments,
                     cwd=repository.root / relative_working_directory,
@@ -1846,10 +1892,15 @@ def _perform_run(
             # A manual-only command stops here, before file targets are resolved
             # or a log is opened, so nothing runs and no run record is saved.
             if command.manual:
+                manual_cwd = repository.root / command.working_directory
+
+                if _can_run_manual_command():
+                    return _run_manual_command(
+                        argv=command.argv, cwd=manual_cwd, name=command.name
+                    )
+
                 return _manual_run_outcome(
-                    argv=command.argv,
-                    cwd=repository.root / command.working_directory,
-                    name=command.name,
+                    argv=command.argv, cwd=manual_cwd, name=command.name
                 )
 
             run_lock = acquire_run_lock(
@@ -2151,6 +2202,98 @@ def _manual_run_outcome(
     )
 
 
+def _run_manual_command(
+    *, argv: Sequence[str], cwd: Path, name: str | None
+) -> _RunOutcome:
+    """Ask the person at the terminal to confirm, then run the command.
+
+    The command shares the terminal's input and output, so nothing is captured,
+    logged or saved to run history. This serves manual-only named commands and
+    direct Playwright or Cypress commands, which have no name. Anything other
+    than "y" declines: the command does not run and the exit status is 1.
+    Ctrl-C at the prompt, or a command ended by a signal, counts as an
+    interrupt with exit status 128 plus the signal number, so a set of named
+    runs stops there.
+    """
+    data: dict[str, object] = {
+        "name": name,
+        "cwd": str(cwd),
+        "argv": list(argv),
+        "manual": True,
+    }
+
+    print(f"Working folder: {cwd}", file=sys.stderr)
+    print(f"Command: {shlex.join(argv)}", file=sys.stderr)
+    print("Run this? [y/N] ", end="", file=sys.stderr, flush=True)
+
+    try:
+        answer = sys.stdin.readline().strip().lower()
+    except KeyboardInterrupt:
+        print("\nCommand interrupted.", file=sys.stderr)
+        data["exit_status"] = 130
+
+        return _RunOutcome(
+            status=RUN_INTERRUPTED,
+            exit_code=130,
+            data=data,
+            manual=True,
+            error_code="check-failed",
+            message="Command interrupted.",
+        )
+
+    if answer != "y":
+        print("Not run.", file=sys.stderr)
+        data["declined"] = True
+
+        return _RunOutcome(
+            status=RUN_DECLINED,
+            exit_code=1,
+            data=data,
+            manual=True,
+            error_code="check-failed",
+            message="Manual command was not run.",
+        )
+
+    def ignore_parent_interrupt(_signal_number: int, _frame: object) -> None:
+        """Leave Ctrl-C to the child command so it can clean up first.
+
+        A Python handler is used instead of SIG_IGN because an ignored signal
+        stays ignored in the child, while a handled one goes back to its
+        default there.
+        """
+
+    previous_handler = signal.signal(signal.SIGINT, ignore_parent_interrupt)
+
+    try:
+        returncode = subprocess.run(argv, cwd=cwd, check=False).returncode
+    finally:
+        signal.signal(signal.SIGINT, previous_handler)
+
+    if returncode < 0:
+        exit_code = 128 - returncode
+        status = RUN_INTERRUPTED
+        message = "Command interrupted."
+    elif returncode == 0:
+        exit_code = 0
+        status = RUN_PASSED
+        message = None
+    else:
+        exit_code = returncode
+        status = RUN_FAILED
+        message = f"Command exited with status {exit_code}."
+
+    data["exit_status"] = exit_code
+
+    return _RunOutcome(
+        status=status,
+        exit_code=exit_code,
+        data=data,
+        manual=True,
+        error_code="check-failed" if exit_code else None,
+        message=message,
+    )
+
+
 def _uninitialised_repository_error(
     *, json_mode: bool, error: RepositoryUninitialisedError
 ) -> int:
@@ -2199,6 +2342,16 @@ def _format_commands(commands: Sequence[Command]) -> str:
 def _is_interactive_terminal() -> bool:
     """Return whether someone at a terminal can answer the checkbox list."""
     return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _can_run_manual_command() -> bool:
+    """Return whether a person, not an agent, is at a terminal to confirm.
+
+    Agents get the manual-only refusal instead of the confirmation prompt.
+    """
+    return _is_interactive_terminal() and not any(
+        os.environ.get(marker) for marker in _AGENT_SHELL_MARKERS
+    )
 
 
 def _classify_candidate(

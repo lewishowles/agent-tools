@@ -58,8 +58,9 @@ pass `--cwd` to choose another directory inside it and `--timeout` to set the
 timeout used by named runs. If you leave out `--timeout`, named runs use the
 120-second default. Set `--capability file-list` when the command accepts file
 paths appended with `--file` or `--glob`; commands use the `none` capability by
-default. Add `--manual` when a command needs a human to run it instead of
-agent-run.
+default. Add `--manual` when only a person should run a command: agents are
+refused and given the command to hand over, and a person running it from their
+own terminal is asked to confirm first.
 
 Agent-run also marks commands that start Playwright or Cypress as manual-only.
 This includes commands run through `npx`, `pnpm exec`, `yarn`, `bunx`, or
@@ -167,10 +168,21 @@ and 130 or 143 on interrupt. A command that cannot start ends the set. `--timeou
 applies to each run; `--cwd`, `--file`, and `--glob` cannot be used with several
 names. With `--json`, one JSON document lists every run and its result.
 
-A command marked `--manual` still appears in `list`, but `run` refuses to
-execute it and prints the exact command and working directory for a human to
-run instead. Direct Playwright and Cypress commands are refused in the same
-way, before they start or create a run record.
+A command marked `--manual` still appears in `list`. When you run it in your
+own terminal, agent-run shows its working folder and command, then asks
+`Run this? [y/N]`. Only `y` runs it. The command uses your terminal directly,
+returns its own exit status (or 128 plus the signal number if a signal stops
+it), and creates no run record or log. With `--json`, one result follows the
+command's output with its name, folder, arguments, `exit_status`, and
+`manual: true`. A failed command uses the usual `error` result. Declining
+prints `Not run.` and exits with status 1; pressing Ctrl-C at the prompt exits
+with status 130. In a run with several names, a declined manual command is
+listed as declined and later commands still run. An interrupted command ends
+the set after its summary row.
+
+In an agent shell or without both terminal input and output, manual commands
+still refuse to run and print the exact command and working directory for a
+human to use. Direct Playwright and Cypress commands follow the same rule.
 
 ```sh
 agent-run run test
@@ -187,9 +199,10 @@ agent-run again RUN_ID --json
 Saved commands use their current arguments, working directory, capability and
 timeout. Recorded file targets are checked again; a timeout supplied only to the
 original `run` is not reused. Direct runs repeat their recorded arguments,
-working directory and timeout. Manual-only commands and browser runners are
-still refused. Runs recorded before agent-run stored command provenance cannot
-be repeated with `again`; use `run NAME` or `run -- ARGV` instead.
+working directory and timeout. Manual-only commands and browser runners use
+the same terminal confirmation or refusal as `run`. Runs recorded before
+agent-run stored command provenance cannot be repeated with `again`; use
+`run NAME` or `run -- ARGV` instead.
 
 The command's combined standard output and standard error is written to a
 private log file. Text output reports the exit status, duration, run ID, and log
