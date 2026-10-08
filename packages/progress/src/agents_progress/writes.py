@@ -1177,7 +1177,10 @@ class WriteStore(_StoreBase):
 	def task_start(
 		self, task_id: str, path: str | Path | None = None
 	) -> dict[str, object]:
-		"""Start a ready task by ID or project slug, activate its first pending chunk, and demote any other in-progress task to ready."""
+		"""Start a ready task by ID or project slug and activate its first pending chunk.
+
+		Other in-progress tasks and their active chunks stay as they are.
+		"""
 		task_id = validate_identifier(task_id, TASK_PREFIX)
 		project = self.current_project(path)
 
@@ -1204,29 +1207,6 @@ class WriteStore(_StoreBase):
 
 			now = utc_timestamp()
 
-			other_task = connection.execute(
-				f"SELECT {_TASK_COLUMNS} FROM tasks "
-				"WHERE project_id = ? AND status = 'in-progress' AND id != ? "
-				"ORDER BY position, id LIMIT 1",
-				(project.id, task_id),
-			).fetchone()
-
-			demoted_task = None
-			if other_task is not None:
-				connection.execute(
-					"UPDATE chunks SET status = 'pending', started_at = NULL WHERE task_id = ? AND status = 'active'",
-					(other_task["id"],),
-				)
-				connection.execute(
-					"UPDATE tasks SET status = 'ready', status_reason = NULL, updated_at = ? WHERE id = ?",
-					(now, other_task["id"]),
-				)
-				demoted_task = {
-					"id": other_task["id"],
-					"slug": other_task["slug"],
-					"title": other_task["title"],
-				}
-
 			connection.execute(
 				"""
 				UPDATE tasks
@@ -1247,9 +1227,7 @@ class WriteStore(_StoreBase):
 					(now, pending_chunk["id"]),
 				)
 
-			result = _task_dict(connection, task_id, project.id)
-			result["demoted_task"] = demoted_task
-			return result
+			return _task_dict(connection, task_id, project.id)
 
 	def task_complete(
 		self,

@@ -1268,59 +1268,76 @@ def test_task_complete_keeps_dependents_blocked_with_incomplete_dependencies(
 	assert blocked_dependent["status_reason"] == status_reason
 
 
-def test_starting_a_second_task_demotes_the_first_to_ready(tmp_path: Path) -> None:
+@pytest.mark.parametrize("start_second_first", [False, True])
+def test_starting_two_tasks_keeps_their_active_chunks(
+	tmp_path: Path, start_second_first: bool
+) -> None:
 	store = _seed_store(tmp_path)
 	first = _add_task(store, "first", "First")
-	first_chunk = _add_chunk(store, first["id"], "Chunk")
+	first_chunk = _add_chunk(store, first["id"], "First chunk")
 	second = _add_task(store, "second", "Second")
-	store.task_start(first["id"])
+	second_chunk = _add_chunk(store, second["id"], "Second chunk")
+	ordered_tasks = (second, first) if start_second_first else (first, second)
+	started_first = store.task_start(ordered_tasks[0]["id"])
+	store.task_start(ordered_tasks[1]["id"])
+	reader = ReadStore(store.database, _ProjectStore(store.database))
 
-	started_second = store.task_start(second["id"])
-	demoted_first = ReadStore(store.database, _ProjectStore(store.database)).task_get(
-		first["id"]
-	)
-	first_chunks = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
-		first["id"]
-	)
-
-	assert started_second["status"] == "in-progress"
-	assert started_second["demoted_task"] == {
-		"id": first["id"],
-		"slug": first["slug"],
-		"title": first["title"],
-	}
-	assert demoted_first["status"] == "ready"
-	assert demoted_first["status_reason"] is None
-	assert first_chunks["items"][0]["id"] == first_chunk["id"]
-	assert first_chunks["items"][0]["status"] == "pending"
+	assert "demoted_task" not in started_first
+	for task, chunk in ((first, first_chunk), (second, second_chunk)):
+		assert reader.task_get(task["id"])["status"] == "in-progress"
+		assert reader.chunk_get(chunk["id"])["status"] == "active"
+		assert reader.chunk_get(chunk["id"])["started_at"] is not None
 
 
-def test_starting_a_task_alone_reports_no_demotion(tmp_path: Path) -> None:
-	store = _seed_store(tmp_path)
-	task = _add_task(store, "only", "Only")
-
-	started = store.task_start(task["id"])
-
-	assert started["demoted_task"] is None
-
-
-def test_demoting_a_task_preserves_its_completed_chunks(tmp_path: Path) -> None:
+@pytest.mark.parametrize("complete_second", [False, True])
+def test_completing_either_task_leaves_the_other_active(
+	tmp_path: Path, complete_second: bool
+) -> None:
 	store = _seed_store(tmp_path)
 	first = _add_task(store, "first", "First")
-	completed_chunk = _add_chunk(store, first["id"], "Done chunk")
-	remaining_chunk = _add_chunk(store, first["id"], "Remaining chunk")
+	first_chunk = _add_chunk(store, first["id"], "First chunk")
 	second = _add_task(store, "second", "Second")
+	second_chunk = _add_chunk(store, second["id"], "Second chunk")
 	store.task_start(first["id"])
-	store.chunk_complete(completed_chunk["id"])
-
 	store.task_start(second["id"])
-	first_chunks = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
-		first["id"]
+	completed_task, completed_chunk = (
+		(second, second_chunk) if complete_second else (first, first_chunk)
 	)
-	chunks_by_id = {chunk["id"]: chunk for chunk in first_chunks["items"]}
+	other_task, other_chunk = (
+		(first, first_chunk) if complete_second else (second, second_chunk)
+	)
+	reader = ReadStore(store.database, _ProjectStore(store.database))
+	other_before = reader.task_get(other_task["id"])
+	other_chunk_before = reader.chunk_get(other_chunk["id"])
 
-	assert chunks_by_id[completed_chunk["id"]]["status"] == "done"
-	assert chunks_by_id[remaining_chunk["id"]]["status"] == "pending"
+	store.chunk_complete(completed_chunk["id"])
+	store.task_complete(completed_task["id"])
+
+	assert reader.task_get(completed_task["id"])["status"] == "done"
+	assert reader.task_get(other_task["id"]) == other_before
+	assert reader.chunk_get(other_chunk["id"]) == other_chunk_before
+
+
+def test_a_waiting_task_cannot_start_while_another_task_is_active(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	active = _add_task(store, "active", "Active")
+	active_chunk = _add_chunk(store, active["id"], "Active chunk")
+	dependency = _add_task(store, "dependency", "Dependency")
+	dependent = _add_task(
+		store, "dependent", "Dependent", depends_on=[dependency["id"]]
+	)
+	store.task_start(active["id"])
+	reader = ReadStore(store.database, _ProjectStore(store.database))
+	active_before = reader.task_get(active["id"])
+	chunk_before = reader.chunk_get(active_chunk["id"])
+
+	with pytest.raises(InvalidTransitionError, match="must be ready"):
+		store.task_start(dependent["id"])
+
+	assert reader.task_get(active["id"]) == active_before
+	assert reader.chunk_get(active_chunk["id"]) == chunk_before
 
 
 def test_blocking_returns_active_chunk_to_pending(tmp_path: Path) -> None:

@@ -366,10 +366,15 @@ def _task_response(
 def _in_progress_task_and_chunk(
 	connection: sqlite3.Connection, project_id: str
 ) -> tuple[sqlite3.Row | None, sqlite3.Row | None]:
-	"""Fetch the current in-progress task and its active chunk."""
+	"""Fetch the most recently started in-progress task and its active chunk.
+
+	Several tasks can be in progress at once, so the task the user started
+	last wins.
+	"""
 	task_row = connection.execute(
 		f"SELECT {_TASK_COLUMNS} FROM tasks "
-		"WHERE project_id = ? AND status = 'in-progress'",
+		"WHERE project_id = ? AND status = 'in-progress' "
+		"ORDER BY started_at DESC, position, id LIMIT 1",
 		(project_id,),
 	).fetchone()
 	chunk_row = (

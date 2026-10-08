@@ -66,8 +66,10 @@ returned in the standard error envelope.
 
 Show the next unfinished task and its active chunk for the current project.
 
-An in-progress task remains the first choice. Otherwise, `progress next` uses
-task position order across ready, blocked, and needs-decision tasks. It does not
+An in-progress task remains the first choice. When several tasks are in
+progress, it shows the one started most recently. When no task is in progress,
+`progress next` uses task position order across ready, blocked, and
+needs-decision tasks. It does not
 reorder tasks or change a blocked task's status. Blocked results include the
 stored blocking reason and dependency IDs so you can choose whether to unblock,
 move, or revise the task.
@@ -436,12 +438,9 @@ progress task start <task_id> [--json] [--database <path>]
 
 Starting a task requires the task to be `ready`, moves it to `in-progress`, and
 activates its first pending chunk, when it has one. Unfinished dependencies
-raise `UnresolvedDependenciesError`. The database permits only one
-`in-progress` task per project: if another task already holds that status,
-starting a new one demotes it back to `ready` (its active chunk, if any,
-reverts to `pending`; completed chunks are untouched) in the same
-transaction. The response's `demoted_task` field names the task that was
-demoted, or is `null` when nothing was.
+raise `UnresolvedDependenciesError`. Several tasks can be `in-progress` in
+one project. Starting a task leaves other tasks and their active chunks as
+they are.
 
 ### `progress complete`
 
@@ -840,28 +839,28 @@ also support `--status`, and `ready` lists the tasks that can start.
 This table lists every legal literal for each status and note type, and the
 command that sets or changes it.
 
-| Field            | Literal          | Set or reached by                                                                                                                                                 |
-| ---------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `release.status` | `planned`        | `release add --status planned`                                                                                                                                    |
-| `release.status` | `active`         | `release add --status active`                                                                                                                                     |
-| `release.status` | `done`           | `release add --status done`, or `release complete` from `planned` or `active`                                                                                     |
-| `task.status`    | `ready`          | `task add` when dependencies allow work, or `task unblock`                                                                                                        |
-| `task.status`    | `in-progress`    | `task start`                                                                                                                                                      |
-| `task.status`    | `waiting`        | `task add` or `task dependency add` when an unfinished dependency prevents work                                                                                   |
-| `task.status`    | `blocked`        | `task block` without `--needs-decision`; a manual block stays until `task unblock`, even when dependencies finish                                                  |
-| `task.status`    | `needs-decision` | `task block --needs-decision`                                                                                                                                     |
-| `task.status`    | `done`           | `task complete`                                                                                                                                                   |
-| `chunk.status`   | `pending`        | `chunk add`, `chunk start`/`task block`/`task start` demoting an active chunk to pending                                                                          |
-| `chunk.status`   | `active`         | `task start`, `chunk start`, or `chunk complete` activating the next pending chunk                                                                                |
-| `chunk.status`   | `done`           | `chunk complete`                                                                                                                                                  |
-| `chunk.status`   | `skipped`        | Schema-legal, but currently unreachable through any CLI command                                                                                                   |
-| `note.type`      | `discovery`      | `discovery add --release <release_id>` or `discovery add --task <task_id>`; immutable after creation                                                              |
-| `note.type`      | `decision`       | `decision add --release <release_id>` or `decision add --task <task_id>`; immutable after creation                                                                |
+| Field            | Literal          | Set or reached by                                                                                                 |
+| ---------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `release.status` | `planned`        | `release add --status planned`                                                                                    |
+| `release.status` | `active`         | `release add --status active`                                                                                     |
+| `release.status` | `done`           | `release add --status done`, or `release complete` from `planned` or `active`                                     |
+| `task.status`    | `ready`          | `task add` when dependencies allow work, or `task unblock`                                                        |
+| `task.status`    | `in-progress`    | `task start`                                                                                                      |
+| `task.status`    | `waiting`        | `task add` or `task dependency add` when an unfinished dependency prevents work                                   |
+| `task.status`    | `blocked`        | `task block` without `--needs-decision`; a manual block stays until `task unblock`, even when dependencies finish |
+| `task.status`    | `needs-decision` | `task block --needs-decision`                                                                                     |
+| `task.status`    | `done`           | `task complete`                                                                                                   |
+| `chunk.status`   | `pending`        | `chunk add`, `chunk start` or `task block` returning an active chunk to pending                                   |
+| `chunk.status`   | `active`         | `task start`, `chunk start`, or `chunk complete` activating the next pending chunk                                |
+| `chunk.status`   | `done`           | `chunk complete`                                                                                                  |
+| `chunk.status`   | `skipped`        | Schema-legal, but currently unreachable through any CLI command                                                   |
+| `note.type`      | `discovery`      | `discovery add --release <release_id>` or `discovery add --task <task_id>`; immutable after creation              |
+| `note.type`      | `decision`       | `decision add --release <release_id>` or `decision add --task <task_id>`; immutable after creation                |
 
 The available transitions are:
 
 - `release complete`: one or more `planned` or `active` releases → `done`; `done` → rejected, with the failing ID and current status named in the error
-- `task start`: `ready` → `in-progress`; unfinished dependencies raise `UnresolvedDependenciesError`. The database enforces one in-progress task per project, so another `in-progress` task in the same project is demoted to `ready` (its active chunk, if any, returned to `pending`) in the same transaction, and named in the response's `demoted_task` field
+- `task start`: `ready` → `in-progress`; unfinished dependencies raise `UnresolvedDependenciesError`. Other in-progress tasks and their active chunks stay as they are
 - `task block`: `ready` or `in-progress` → `blocked`, or → `needs-decision` with `--needs-decision`; an active chunk is returned to `pending`
 - Unfinished dependencies make a task `waiting`. Once every dependency is `done`, the task becomes `ready` automatically; a manual `blocked` status remains until `task unblock`
 - `task unblock`: `blocked` or `needs-decision` → `ready`; dependencies are re-checked, and unresolved dependencies reject the transition with `UnresolvedDependenciesError` naming the unfinished task IDs

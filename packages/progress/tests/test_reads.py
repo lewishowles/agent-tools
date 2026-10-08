@@ -151,6 +151,44 @@ def test_next_returns_the_task_chunk_and_next_command(tmp_path: Path) -> None:
 	assert result["hint_command"] == f"progress chunk complete {CHUNK_A}"
 
 
+def test_next_returns_the_task_started_second_with_its_active_chunk(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	writer = WriteStore(store.database, _ProjectStore(store.database))
+	third = writer.task_add(
+		"third",
+		"Third task",
+		overview="Third task overview",
+		contract=["Third task contract"],
+	)
+	writer.chunk_add(
+		third["id"],
+		"Third task chunk",
+		description="Work on the third task.",
+		review_question="Is the third task ready?",
+	)
+	fourth = writer.task_add(
+		"fourth",
+		"Fourth task",
+		overview="Fourth task overview",
+		contract=["Fourth task contract"],
+	)
+	fourth_chunk = writer.chunk_add(
+		fourth["id"],
+		"Fourth task chunk",
+		description="Work on the fourth task.",
+		review_question="Is the fourth task ready?",
+	)
+	writer.task_start(third["id"])
+	writer.task_start(fourth["id"])
+
+	result = store.next()
+
+	assert result["task"]["id"] == fourth["id"]
+	assert result["chunk"]["id"] == fourth_chunk["id"]
+
+
 def test_summary_uses_the_next_selection_and_lists_every_project(
 	tmp_path: Path,
 ) -> None:

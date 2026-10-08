@@ -395,7 +395,7 @@ def test_version_nine_migration_adds_project_owned_inbox_notes(tmp_path) -> None
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 9
+			== schema.SCHEMA_VERSION
 		)
 		connection.execute(
 			"INSERT INTO inbox_notes (id, project_id, text, created_at) VALUES (?, ?, ?, ?)",
@@ -420,6 +420,60 @@ def test_version_nine_migration_adds_project_owned_inbox_notes(tmp_path) -> None
 					"2026-01-01T00:00:00+00:00",
 				),
 			)
+
+
+def test_version_ten_migration_keeps_an_active_task_and_chunk(tmp_path) -> None:
+	database_path = tmp_path / "progress.db"
+	with sqlite3.connect(database_path) as connection:
+		for version in range(1, 10):
+			schema.MIGRATIONS[version](connection)
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.execute(
+			"INSERT INTO schema_migrations VALUES (9, '2026-01-01T00:00:00+00:00')"
+		)
+		project_id = generate_object_id(PROJECT_PREFIX)
+		active_task_id = generate_object_id(TASK_PREFIX)
+		second_task_id = generate_object_id(TASK_PREFIX)
+		active_chunk_id = generate_object_id(CHUNK_PREFIX)
+		_insert_project(connection, project_id)
+		_insert_current_task(
+			connection, project_id, active_task_id, "first", "in-progress"
+		)
+		connection.execute(
+			"INSERT INTO chunks (id, task_id, position, title, description, status) VALUES (?, ?, 1, 'Chunk', 'Description', 'active')",
+			(active_chunk_id, active_task_id),
+		)
+
+	with Database(database_path).connection() as connection:
+		assert (
+			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
+				0
+			]
+			== schema.SCHEMA_VERSION
+		)
+		assert (
+			connection.execute(
+				"SELECT status FROM tasks WHERE id = ?", (active_task_id,)
+			).fetchone()[0]
+			== "in-progress"
+		)
+		assert (
+			connection.execute(
+				"SELECT status FROM chunks WHERE id = ?", (active_chunk_id,)
+			).fetchone()[0]
+			== "active"
+		)
+		_insert_current_task(
+			connection, project_id, second_task_id, "second", "in-progress"
+		)
+		assert (
+			connection.execute(
+				"SELECT COUNT(*) FROM tasks WHERE status = 'in-progress'"
+			).fetchone()[0]
+			== 2
+		)
 
 
 def test_failed_version_six_migration_leaves_version_five_intact(
@@ -960,10 +1014,9 @@ def test_foreign_keys_and_uniqueness_constraints_protect_records(tmp_path) -> No
 			)
 
 		_insert_current_task(connection, project_id, task_id, "task", "in-progress")
-		with pytest.raises(sqlite3.IntegrityError):
-			_insert_current_task(
-				connection, project_id, second_task_id, "second", "in-progress"
-			)
+		_insert_current_task(
+			connection, project_id, second_task_id, "second", "in-progress"
+		)
 
 		connection.execute(
 			"""
