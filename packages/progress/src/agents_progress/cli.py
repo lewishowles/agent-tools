@@ -238,11 +238,19 @@ def _add_command_specs(
 ) -> None:
 	"""Build command parsers from the shared declarative command specification."""
 	for spec in specs:
+		# People often type "update" for "edit", so every edit command also
+		# accepts it. It stays out of help and the commands manifest.
+		is_edit = spec.name == "edit"
 		parser = commands.add_parser(
 			spec.name,
 			help=spec.help_text,
+			aliases=["update"] if is_edit else [],
 			formatter_class=ProgressHelpFormatter,
 		)
+		if is_edit:
+			# argparse lists an alias in help as "edit (update)". Showing the
+			# plain name keeps "update" hidden.
+			commands._choices_actions[-1].metavar = spec.name
 		# A group parser records itself so main() can show its help when it is
 		# named with no subcommand. Leaf parsers clear the value they would
 		# otherwise inherit from their group, so their command still dispatches.
@@ -1453,6 +1461,10 @@ def _run_command(
 
 	database = Database(getattr(args, "database", None))
 	subcommand_name = getattr(args, f"{command_name}_command", None)
+	# argparse records the name the person typed, so the "update" alias of an
+	# edit command is mapped back to "edit" before dispatch.
+	if subcommand_name == "update":
+		subcommand_name = "edit"
 
 	# include_release_titles is set only for human (non-JSON) output, so it also
 	# gates the human-only hidden-count hint on release list.

@@ -561,6 +561,19 @@ def test_nested_help_lists_commands_without_a_redundant_metavar(capsys) -> None:
 	assert "create and bind a project" in help_text
 
 
+@pytest.mark.parametrize("group", ["chunk", "task", "release"])
+def test_update_alias_stays_out_of_group_help(capsys, group: str) -> None:
+	with pytest.raises(SystemExit) as exception:
+		cli.build_parser().parse_args([group, "--help"])
+
+	help_text = capsys.readouterr().out
+
+	assert exception.value.code == 0
+	assert "update" not in help_text
+	assert "edit (update)" not in help_text
+	assert "{edit,update" not in help_text
+
+
 def test_commands_json_lists_the_registry_with_required_flags(
 	capsys,
 ) -> None:
@@ -571,6 +584,7 @@ def test_commands_json_lists_the_registry_with_required_flags(
 	commands = {item["path"]: item for item in manifest}
 
 	assert response["ok"] is True
+	assert all(not path.endswith(" update") for path in commands)
 	assert commands["task"]["help"] == "read task records"
 	assert commands["task"]["flags"] == []
 	assert commands["task dependency add"]["flags"] == [
@@ -1160,6 +1174,18 @@ def test_context_commands_pass_the_selected_task_to_the_store(
 			[
 				"release",
 				"edit",
+				"rel_" + "r" * 22,
+				"--overview",
+				"Updated overview",
+			],
+			"release_edit",
+			("rel_" + "r" * 22,),
+			{"overview": "Updated overview"},
+		),
+		(
+			[
+				"release",
+				"update",
 				"rel_" + "r" * 22,
 				"--overview",
 				"Updated overview",
@@ -5226,8 +5252,9 @@ def test_edit_rejects_blank_planning_text(
 	assert database_path.exists() is False
 
 
+@pytest.mark.parametrize("action", ["edit", "update"])
 def test_task_edit_dispatches_values_and_optional_clear_flags(
-	tmp_path: Path, monkeypatch, capsys
+	tmp_path: Path, monkeypatch, capsys, action: str
 ) -> None:
 	data = {"id": "tsk_test", "overview": "Updated"}
 	arguments_seen: dict[str, object] = {}
@@ -5247,7 +5274,7 @@ def test_task_edit_dispatches_values_and_optional_clear_flags(
 		cli.main(
 			[
 				"task",
-				"edit",
+				action,
 				"tsk_test",
 				"--overview",
 				"Updated",
@@ -5448,10 +5475,12 @@ def test_removed_task_contract_and_files_flags_are_rejected(capsys) -> None:
 	assert second["error"]["message"] == "unrecognized arguments: --files old"
 
 
+@pytest.mark.parametrize("action", ["edit", "update"])
 def test_chunk_edit_dispatches_description(
 	tmp_path: Path,
 	monkeypatch,
 	capsys,
+	action: str,
 ) -> None:
 	data = {"id": "chk_test", "description": "Updated"}
 	arguments_seen: dict[str, object] = {}
@@ -5471,7 +5500,7 @@ def test_chunk_edit_dispatches_description(
 		cli.main(
 			[
 				"chunk",
-				"edit",
+				action,
 				"chk_test",
 				"--description",
 				"Updated",

@@ -259,6 +259,8 @@ Replace a release overview:
 progress release edit <release_id> --overview <overview> [--json] [--database <path>]
 ```
 
+You can use `progress release update` with the same arguments.
+
 - `--overview <overview>`: non-empty replacement overview
 
 Release overviews are required and cannot be cleared. Pass replacement text
@@ -453,6 +455,8 @@ Update task planning fields:
 ```text
 progress task edit <task_id> [--overview <overview>] [--contract-step <contract_step> ...] [--file <file> ...] [--split-rationale <split_rationale>] [--verification <verification>] [--clear-files] [--clear-split-rationale] [--clear-verification] [--json] [--database <path>]
 ```
+
+You can use `progress task update` with the same arguments.
 
 `--overview`, each `--contract-step`, and `--split-rationale` value must contain
 text. `--overview` and `--contract-step` are required when creating a task and
@@ -656,6 +660,8 @@ Replace a chunk description, review question, or both:
 ```text
 progress chunk edit <chunk_id> [--description <description>] [--review-question <review_question>] [--json] [--database <path>]
 ```
+
+You can use `progress chunk update` with the same arguments.
 
 - `--description <description>`: non-empty replacement description
 - `--review-question <review_question>`: non-empty replacement review question
