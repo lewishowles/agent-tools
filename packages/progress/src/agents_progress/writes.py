@@ -31,6 +31,7 @@ from .projects import _StoreBase
 from .reads import (
 	_TASK_COLUMNS,
 	_TASK_LIST_TABLES,
+	_default_task_and_chunk,
 	_task_public_row,
 	resolve_identifier,
 	validate_identifier,
@@ -1175,11 +1176,13 @@ class WriteStore(_StoreBase):
 			return _chunk_dict(connection, chunk_id, project.id)
 
 	def task_start(
-		self, task_id: str, path: str | Path | None = None
+		self, task_id: str, path: str | Path | None = None, *, secondary: bool = False
 	) -> dict[str, object]:
 		"""Start a ready task by ID or project slug and activate its first pending chunk.
 
-		Other in-progress tasks and their active chunks stay as they are.
+		A plain start makes the task the project's default and is refused while
+		another default task is in progress. A secondary start never changes the
+		default. Other in-progress tasks and their active chunks stay as they are.
 		"""
 		task_id = validate_identifier(task_id, TASK_PREFIX)
 		project = self.current_project(path)
@@ -1205,6 +1208,13 @@ class WriteStore(_StoreBase):
 					},
 				)
 
+			default, _ = _default_task_and_chunk(connection, project.id)
+			if not secondary and default is not None:
+				raise InvalidTransitionError(
+					f"task {default['id']} is already the project's default task; use --secondary to run task {task_id} alongside it",
+					{"id": task_id, "default_task_id": default["id"]},
+				)
+
 			now = utc_timestamp()
 
 			connection.execute(
@@ -1216,6 +1226,11 @@ class WriteStore(_StoreBase):
 				""",
 				(now, now, task_id),
 			)
+			if not secondary:
+				connection.execute(
+					"UPDATE projects SET default_task_id = ? WHERE id = ?",
+					(task_id, project.id),
+				)
 			pending_chunk = connection.execute(
 				f"SELECT {_QUALIFIED_CHUNK_COLUMNS} FROM chunks "
 				"WHERE task_id = ? AND status = 'pending' ORDER BY position, id LIMIT 1",

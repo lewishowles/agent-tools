@@ -291,7 +291,11 @@ def _add_command_specs(
 
 # Every CLI command and its nested subcommands, in the order they should appear in --help.
 _COMMAND_SPECS = (
-	_CommandSpec("next", "show the next queued task and active chunk"),
+	_CommandSpec(
+		"next",
+		"show the default or a named task and its active chunk",
+		arguments=(_argument("--task", dest="task_id"),),
+	),
 	_CommandSpec("summary", "show current work across every stored project"),
 	_CommandSpec(
 		"show",
@@ -614,7 +618,10 @@ _COMMAND_SPECS = (
 			_CommandSpec(
 				"start",
 				"start a ready task",
-				arguments=(_argument("task_id"),),
+				arguments=(
+					_argument("task_id"),
+					_argument("--secondary", action="store_true"),
+				),
 			),
 			_CommandSpec(
 				"complete",
@@ -1394,10 +1401,8 @@ def _run_command(
 		("complete", None): lambda: _run_complete(args, database),
 		("show", None): lambda: _run_show(args, database),
 		("next", None): lambda: (
-			(
-				ReadStore(database).next(include_position_totals=True)
-				if include_release_titles
-				else ReadStore(database).next()
+			ReadStore(database).next(
+				task_id=args.task_id, include_position_totals=include_release_titles
 			),
 			"next",
 		),
@@ -1491,7 +1496,7 @@ def _run_command(
 		),
 		("task", "edit"): lambda: _run_task_edit(args, database),
 		("task", "start"): lambda: (
-			WriteStore(database).task_start(args.task_id),
+			WriteStore(database).task_start(args.task_id, secondary=args.secondary),
 			"task start",
 		),
 		("task", "complete"): lambda: (
@@ -1895,12 +1900,12 @@ def _human_hint(command: str, data: object) -> str | None:
 		"task dependency add": (
 			f"progress task start {object_id}" if object_id else None
 		),
-		"task start": "progress next" if object_id else None,
+		"task start": f"progress next --task {object_id}" if object_id else None,
 		"task complete": "progress next",
 		"task block": (f"progress task unblock {object_id}" if object_id else None),
 		"task unblock": (f"progress task start {object_id}" if object_id else None),
 		"chunk add": f"progress task start {task_id}" if task_id else None,
-		"chunk complete": "progress next",
+		"chunk complete": f"progress next --task {task_id}" if task_id else None,
 		"discovery add": "progress next",
 		"decision add": "progress next",
 		"context set": "progress next",

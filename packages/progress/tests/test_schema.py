@@ -476,6 +476,40 @@ def test_version_ten_migration_keeps_an_active_task_and_chunk(tmp_path) -> None:
 		)
 
 
+@pytest.mark.parametrize("active_count", [0, 1, 3])
+def test_version_eleven_migration_selects_the_latest_active_task(
+	tmp_path, active_count: int
+) -> None:
+	database_path = tmp_path / "progress.db"
+	with sqlite3.connect(database_path) as connection:
+		for version in range(1, 11):
+			schema.MIGRATIONS[version](connection)
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.execute(
+			"INSERT INTO schema_migrations VALUES (10, '2026-01-01T00:00:00+00:00')"
+		)
+		project_id = generate_object_id(PROJECT_PREFIX)
+		_insert_project(connection, project_id)
+		task_ids = [generate_object_id(TASK_PREFIX) for _ in range(active_count)]
+		for position, task_id in enumerate(task_ids):
+			_insert_current_task(
+				connection, project_id, task_id, f"task-{position}", "in-progress"
+			)
+			connection.execute(
+				"UPDATE tasks SET started_at = ?, position = ? WHERE id = ?",
+				(f"2026-01-0{position + 1}T00:00:00+00:00", position, task_id),
+			)
+
+	with Database(database_path).connection() as connection:
+		default = connection.execute(
+			"SELECT default_task_id FROM projects WHERE id = ?", (project_id,)
+		).fetchone()[0]
+
+	assert default == (task_ids[-1] if task_ids else None)
+
+
 def test_failed_version_six_migration_leaves_version_five_intact(
 	tmp_path, monkeypatch
 ) -> None:

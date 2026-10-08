@@ -1279,7 +1279,7 @@ def test_starting_two_tasks_keeps_their_active_chunks(
 	second_chunk = _add_chunk(store, second["id"], "Second chunk")
 	ordered_tasks = (second, first) if start_second_first else (first, second)
 	started_first = store.task_start(ordered_tasks[0]["id"])
-	store.task_start(ordered_tasks[1]["id"])
+	store.task_start(ordered_tasks[1]["id"], secondary=True)
 	reader = ReadStore(store.database, _ProjectStore(store.database))
 
 	assert "demoted_task" not in started_first
@@ -1287,6 +1287,39 @@ def test_starting_two_tasks_keeps_their_active_chunks(
 		assert reader.task_get(task["id"])["status"] == "in-progress"
 		assert reader.chunk_get(chunk["id"])["status"] == "active"
 		assert reader.chunk_get(chunk["id"])["started_at"] is not None
+
+
+def test_plain_start_requires_secondary_when_a_default_is_active(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first", "First")
+	second = _add_task(store, "second", "Second")
+	store.task_start(first["id"])
+
+	with pytest.raises(InvalidTransitionError, match="--secondary") as error:
+		store.task_start(second["id"])
+
+	assert f"task {first['id']} is already the project's default task" in str(
+		error.value
+	)
+	assert f"run task {second['id']} alongside it" in str(error.value)
+
+	reader = ReadStore(store.database, _ProjectStore(store.database))
+	assert reader.task_get(second["id"])["status"] == "ready"
+	assert reader.next()["task"]["id"] == first["id"]
+
+
+def test_secondary_start_does_not_claim_an_empty_default(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	secondary = _add_task(store, "secondary", "Secondary")
+	default = _add_task(store, "default", "Default")
+	store.task_start(secondary["id"], secondary=True)
+	reader = ReadStore(store.database, _ProjectStore(store.database))
+
+	assert reader.next()["task"]["id"] == default["id"]
+	store.task_start(default["id"])
+	assert reader.next()["task"]["id"] == default["id"]
 
 
 @pytest.mark.parametrize("complete_second", [False, True])
@@ -1299,7 +1332,7 @@ def test_completing_either_task_leaves_the_other_active(
 	second = _add_task(store, "second", "Second")
 	second_chunk = _add_chunk(store, second["id"], "Second chunk")
 	store.task_start(first["id"])
-	store.task_start(second["id"])
+	store.task_start(second["id"], secondary=True)
 	completed_task, completed_chunk = (
 		(second, second_chunk) if complete_second else (first, first_chunk)
 	)
@@ -1316,6 +1349,10 @@ def test_completing_either_task_leaves_the_other_active(
 	assert reader.task_get(completed_task["id"])["status"] == "done"
 	assert reader.task_get(other_task["id"]) == other_before
 	assert reader.chunk_get(other_chunk["id"]) == other_chunk_before
+	selected = reader.next()["task"]
+	assert (selected["id"] if selected is not None else None) == (
+		first["id"] if complete_second else None
+	)
 
 
 def test_a_waiting_task_cannot_start_while_another_task_is_active(

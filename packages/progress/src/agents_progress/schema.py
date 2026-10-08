@@ -11,7 +11,7 @@ from .errors import DatabaseBusyError, MigrationFailedError, StaleSchemaError
 Migration = Callable[[sqlite3.Connection], None]
 
 # the schema version this package writes when creating a database from empty
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 # the newest schema version this package knows how to migrate to
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION
 
@@ -490,6 +490,22 @@ def _migrate_to_version_10(connection: sqlite3.Connection) -> None:
 	connection.execute("DROP INDEX tasks_one_in_progress_per_project")
 
 
+def _migrate_to_version_11(connection: sqlite3.Connection) -> None:
+	"""Store each project's default task, starting with its most recently started active task."""
+	connection.execute(
+		"ALTER TABLE projects ADD COLUMN default_task_id TEXT REFERENCES tasks (id) ON DELETE SET NULL"
+	)
+	connection.execute(
+		"""
+		UPDATE projects SET default_task_id = (
+			SELECT id FROM tasks
+			WHERE tasks.project_id = projects.id AND status = 'in-progress'
+			ORDER BY started_at DESC, position, id LIMIT 1
+		)
+		"""
+	)
+
+
 # maps each supported schema version to the migration that produces it
 MIGRATIONS: dict[int, Migration] = {
 	1: _create_schema,
@@ -502,6 +518,7 @@ MIGRATIONS: dict[int, Migration] = {
 	8: _migrate_to_version_8,
 	9: _migrate_to_version_9,
 	10: _migrate_to_version_10,
+	11: _migrate_to_version_11,
 }
 
 

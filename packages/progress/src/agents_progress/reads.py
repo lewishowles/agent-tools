@@ -363,18 +363,19 @@ def _task_response(
 	}
 
 
-def _in_progress_task_and_chunk(
+def _default_task_and_chunk(
 	connection: sqlite3.Connection, project_id: str
 ) -> tuple[sqlite3.Row | None, sqlite3.Row | None]:
-	"""Fetch the most recently started in-progress task and its active chunk.
+	"""Fetch the project's default task and its active chunk.
 
-	Several tasks can be in progress at once, so the task the user started
-	last wins.
+	Both are None when no default is stored or the default task is no longer
+	in progress, so a finished or blocked default frees the slot.
 	"""
 	task_row = connection.execute(
-		f"SELECT {_TASK_COLUMNS} FROM tasks "
-		"WHERE project_id = ? AND status = 'in-progress' "
-		"ORDER BY started_at DESC, position, id LIMIT 1",
+		f"SELECT {_TASK_COLUMNS_QUALIFIED} FROM projects "
+		"JOIN tasks ON tasks.id = projects.default_task_id "
+		"AND tasks.project_id = projects.id "
+		"WHERE projects.id = ? AND tasks.status = 'in-progress'",
 		(project_id,),
 	).fetchone()
 	chunk_row = (
@@ -393,7 +394,7 @@ def _selected_task_response(
 	which are None when the project has nothing in progress or queued. Both
 	`progress next` and `progress summary` use this so they always agree.
 	"""
-	task_row, chunk_row = _in_progress_task_and_chunk(connection, project.id)
+	task_row, chunk_row = _default_task_and_chunk(connection, project.id)
 	if task_row is None:
 		# An active release's tasks outrank a planned release's, and
 		# release position breaks ties before falling back to task order.
@@ -651,9 +652,12 @@ class ReadStore(_StoreBase):
 		self,
 		path: str | Path | None = None,
 		*,
+		task_id: str | None = None,
 		include_position_totals: bool = False,
 	) -> dict[str, object]:
-		"""Return the next queued task, its active chunk, and a next-command hint.
+		"""Return the default or next queued task, its active chunk, and a next-command hint.
+
+		Pass task_id to read that task instead; it must be ready or in progress.
 
 		Set include_position_totals for human display: the response then
 		also carries task_rank and task_total and, when a chunk is active,
@@ -662,7 +666,41 @@ class ReadStore(_StoreBase):
 		project = self.current_project(path)
 
 		with self.database.connection() as connection:
-			response, task_row, chunk_row = _selected_task_response(connection, project)
+			if task_id is None:
+				response, task_row, chunk_row = _selected_task_response(
+					connection, project
+				)
+			else:
+				task_id = resolve_identifier(
+					connection, task_id, TASK_PREFIX, project.id
+				)
+				task_row = connection.execute(
+					f"SELECT {_TASK_COLUMNS} FROM tasks WHERE id = ? AND project_id = ?",
+					(task_id, project.id),
+				).fetchone()
+				if task_row is None:
+					raise NotFoundError(
+						f"task {task_id} was not found", {"id": task_id}
+					)
+				if task_row["status"] not in {"ready", "in-progress"}:
+					raise InvalidStatusError(
+						f"task {task_id} must be ready or in progress for progress next",
+						{"id": task_id, "status": task_row["status"]},
+					)
+				chunk_row = _active_chunk(connection, task_id)
+				response = _task_response(
+					connection,
+					project,
+					task_row,
+					chunk_row,
+					"progress task list",
+					_dependency_ids(connection, task_id),
+				)
+				default_task, _ = _default_task_and_chunk(connection, project.id)
+				if task_row["status"] == "ready" and default_task is not None:
+					response["hint_command"] = (
+						f"progress task start {task_id} --secondary"
+					)
 		if not include_position_totals or task_row is None:
 			return response
 

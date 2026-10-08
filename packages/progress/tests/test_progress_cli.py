@@ -647,13 +647,80 @@ def test_json_success_uses_the_stable_envelope(
 		def __init__(self, database) -> None:
 			pass
 
-		def next(self):
+		def next(self, *, task_id=None, include_position_totals=False):
 			return data
 
 	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
 
 	assert cli.main(["next", "--database", str(tmp_path / "db"), "--json"]) == 0
 
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+def test_next_task_flag_selects_the_named_task(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	task_id = "tsk_" + "t" * 22
+	data = {"project": {"id": "prj_test"}, "task": {"id": task_id}, "chunk": None}
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def next(self, *, task_id: str, include_position_totals: bool):
+			assert task_id == "named-task"
+			assert include_position_totals is False
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert (
+		cli.main(
+			[
+				"next",
+				"--task",
+				"named-task",
+				"--json",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+def test_task_start_secondary_flag_reaches_the_write_store(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	task_id = "tsk_" + "t" * 22
+	data = {"id": task_id, "status": "in-progress"}
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_start(self, selected_id: str, *, secondary: bool):
+			assert selected_id == task_id
+			assert secondary is True
+			return data
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"start",
+				task_id,
+				"--secondary",
+				"--json",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 
@@ -2150,7 +2217,7 @@ def test_human_success_renders_readable_output(
 		def __init__(self, database) -> None:
 			pass
 
-		def next(self, *, include_position_totals=False):
+		def next(self, *, task_id=None, include_position_totals=False):
 			assert include_position_totals is True
 			return data
 
@@ -3993,7 +4060,7 @@ def test_human_next_renders_release_before_task(
 		def __init__(self, database) -> None:
 			pass
 
-		def next(self, *, include_position_totals=False):
+		def next(self, *, task_id=None, include_position_totals=False):
 			assert include_position_totals is True
 			return data
 
@@ -4025,7 +4092,7 @@ def test_human_next_omits_release_without_one(
 		def __init__(self, database) -> None:
 			pass
 
-		def next(self, *, include_position_totals=False):
+		def next(self, *, task_id=None, include_position_totals=False):
 			assert include_position_totals is True
 			return data
 
@@ -4057,7 +4124,7 @@ def test_json_next_includes_the_release_data(
 		def __init__(self, database) -> None:
 			pass
 
-		def next(self):
+		def next(self, *, task_id=None, include_position_totals=False):
 			return data
 
 	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
@@ -4097,7 +4164,7 @@ def test_human_next_renders_done_chunk_with_success_status(
 		def __init__(self, database) -> None:
 			pass
 
-		def next(self, *, include_position_totals=False):
+		def next(self, *, task_id=None, include_position_totals=False):
 			assert include_position_totals is True
 			return data
 
@@ -5276,6 +5343,33 @@ def test_human_write_output_includes_a_next_command(
 	assert "Next: progress task start tsk_test" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("secondary", [False, True])
+def test_human_task_start_hint_selects_started_task(
+	tmp_path: Path, monkeypatch, capsys, secondary: bool
+) -> None:
+	task_id = "tsk_test"
+	data = {"id": task_id, "title": "Selected task", "status": "in-progress"}
+	expected_secondary = secondary
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_start(self, selected_id: str, *, secondary: bool):
+			assert selected_id == task_id
+			assert secondary is expected_secondary
+			return data
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+	arguments = ["task", "start", task_id, "--database", str(tmp_path / "db")]
+	if secondary:
+		arguments.append("--secondary")
+
+	assert cli.main(arguments) == 0
+
+	assert f"Next: progress next --task {task_id}" in capsys.readouterr().out
+
+
 def test_human_task_complete_output_is_concise(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -5399,15 +5493,15 @@ def test_human_chunk_complete_output_is_concise(
 	]
 
 	assert output.startswith("\n")
-	assert output.endswith("\n\nNext: progress next\n")
+	assert output.endswith("\n\nNext: progress next --task tsk_parent\n")
 	assert len(plain_lines) == 5
 	assert plain_lines[1].endswith("Completed chunk CLI output")
 	# Inequality after stripping ANSI proves the line carried styling.
 	assert plain_lines[1] != "Completed chunk CLI output"
 	assert plain_lines[2] == "Task ID: tsk_parent"
-	assert plain_lines[4] == "Next: progress next"
+	assert plain_lines[4] == "Next: progress next --task tsk_parent"
 	assert ("Task ID: tsk_parent", "muted", "normal") in render_spans
-	assert ("Next: progress next", "muted", "normal") in next_spans
+	assert ("Next: progress next --task tsk_parent", "muted", "normal") in next_spans
 	assert "chk_test" not in output
 
 

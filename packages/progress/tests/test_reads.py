@@ -5,6 +5,7 @@ import pytest
 from agents_progress.database import Database
 from agents_progress.errors import (
 	InvalidObjectIdError,
+	InvalidStatusError,
 	NotFoundError,
 	WrongObjectIdTypeError,
 )
@@ -103,6 +104,9 @@ def _seed_store(tmp_path: Path) -> ReadStore:
 				"Do the read queries return the stored records?",
 			),
 		)
+		connection.execute(
+			"UPDATE projects SET default_task_id = ? WHERE id = ?", (TASK_A, PROJECT_ID)
+		)
 		for note_id, task_id, note_type, body, created_at in (
 			(
 				DISCOVERY_B,
@@ -151,7 +155,18 @@ def test_next_returns_the_task_chunk_and_next_command(tmp_path: Path) -> None:
 	assert result["hint_command"] == f"progress chunk complete {CHUNK_A}"
 
 
-def test_next_returns_the_task_started_second_with_its_active_chunk(
+def test_next_named_ready_task_suggests_secondary_start_when_default_is_active(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+
+	result = store.next(task_id=TASK_B)
+
+	assert result["task"]["id"] == TASK_B
+	assert result["hint_command"] == f"progress task start {TASK_B} --secondary"
+
+
+def test_next_keeps_the_default_when_a_secondary_task_starts(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
@@ -180,13 +195,48 @@ def test_next_returns_the_task_started_second_with_its_active_chunk(
 		description="Work on the fourth task.",
 		review_question="Is the fourth task ready?",
 	)
-	writer.task_start(third["id"])
-	writer.task_start(fourth["id"])
+	writer.task_start(third["id"], secondary=True)
+	writer.task_start(fourth["id"], secondary=True)
 
 	result = store.next()
 
-	assert result["task"]["id"] == fourth["id"]
-	assert result["chunk"]["id"] == fourth_chunk["id"]
+	assert result["task"]["id"] == TASK_A
+	assert result["chunk"]["id"] == CHUNK_A
+	assert store.next(task_id=fourth["id"])["chunk"]["id"] == fourth_chunk["id"]
+	assert (
+		ReadStore(store.database, _ProjectStore(store.database)).next()["task"]["id"]
+		== TASK_A
+	)
+
+
+def test_next_named_task_rejects_done_unknown_and_other_project_tasks(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	other_project_id = "prj_" + "q" * 22
+	other_task_id = "tsk_" + "q" * 22
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (TASK_B,))
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, 'other', 'Other', ?)",
+			(other_project_id, "2026-01-01T00:00:00+00:00"),
+		)
+		connection.execute(
+			"INSERT INTO tasks (id, project_id, slug, title, overview, verification, split_rationale, status, position, created_at, updated_at) "
+			"VALUES (?, ?, 'other', 'Other', 'Overview', 'Verification', 'Reason', 'ready', 1, ?, ?)",
+			(
+				other_task_id,
+				other_project_id,
+				"2026-01-01T00:00:00+00:00",
+				"2026-01-01T00:00:00+00:00",
+			),
+		)
+
+	with pytest.raises(InvalidStatusError):
+		store.next(task_id=TASK_B)
+	for task_id in ("tsk_" + "z" * 22, other_task_id):
+		with pytest.raises(NotFoundError):
+			store.next(task_id=task_id)
 
 
 def test_summary_uses_the_next_selection_and_lists_every_project(
@@ -307,12 +357,12 @@ def test_next_uses_live_totals_and_ranks_after_sibling_removals(
 	writer.discovery_remove(DISCOVERY_B)
 	writer.task_remove(TASK_B)
 	writer.chunk_remove(first_chunk["id"])
-	writer.task_start(task["id"])
+	writer.task_start(task["id"], secondary=True)
 	writer.chunk_start(third_chunk["id"])
 
 	assert store.task_count_for_release(RELEASE_A) == 2
 
-	result = store.next(include_position_totals=True)
+	result = store.next(task_id=task["id"], include_position_totals=True)
 
 	assert result["task"]["id"] == task["id"]
 	assert [chunk["id"] for chunk in result["task"]["chunks"]] == [

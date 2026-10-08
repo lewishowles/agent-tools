@@ -66,16 +66,17 @@ returned in the standard error envelope.
 
 Show the next unfinished task and its active chunk for the current project.
 
-An in-progress task remains the first choice. When several tasks are in
-progress, it shows the one started most recently. When no task is in progress,
-`progress next` uses task position order across ready, blocked, and
-needs-decision tasks. It does not
-reorder tasks or change a blocked task's status. Blocked results include the
-stored blocking reason and dependency IDs so you can choose whether to unblock,
-move, or revise the task.
+`progress next` shows the project's default task while it remains in progress.
+When no default task is in progress, it uses task position order across ready,
+waiting, blocked, and needs-decision tasks. It never selects another
+in-progress task automatically. Blocked results include the stored blocking
+reason and dependency IDs so you can choose whether to unblock, move, or revise
+the task. Pass `--task` to read a named ready or in-progress task without
+changing the default.
 
 ```bash
 progress next
+progress next --task <task_id>
 ```
 
 ### `progress summary`
@@ -433,14 +434,17 @@ without one.
 Start a task:
 
 ```text
-progress task start <task_id> [--json] [--database <path>]
+progress task start <task_id> [--secondary] [--json] [--database <path>]
 ```
 
 Starting a task requires the task to be `ready`, moves it to `in-progress`, and
 activates its first pending chunk, when it has one. Unfinished dependencies
 raise `UnresolvedDependenciesError`. Several tasks can be `in-progress` in
-one project. Starting a task leaves other tasks and their active chunks as
-they are.
+one project. An ordinary start makes the task the project's default when no
+default task is in progress. If another task holds the default, use
+`--secondary` to start without changing it. A secondary start does not claim
+the default even when it is empty. Other tasks and their active chunks stay
+as they are.
 
 ### `progress complete`
 
