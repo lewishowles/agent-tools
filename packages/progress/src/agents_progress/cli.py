@@ -31,6 +31,7 @@ from .style import (
 	span as render_span,
 	status as render_status,
 )
+from .worktrees import WorktreeStore
 from .writes import WriteStore
 
 # Top-level commands removed by prior releases, mapped to their direct replacement.
@@ -317,6 +318,23 @@ _COMMAND_SPECS = (
 			),
 		),
 		destination="checkout_command",
+	),
+	_CommandSpec(
+		"worktree",
+		"create or inspect a task checkout",
+		children=(
+			_CommandSpec(
+				"ensure",
+				"create or reuse a task worktree",
+				arguments=(_argument("task_id", metavar="TASK_ID"),),
+			),
+			_CommandSpec(
+				"get",
+				"show a task's recorded worktree",
+				arguments=(_argument("task_id", metavar="TASK_ID"),),
+			),
+		),
+		destination="worktree_command",
 	),
 	_CommandSpec(
 		"complete",
@@ -1307,8 +1325,11 @@ def _render_human_output(command: str, data: object) -> str:
 
 	Single-record responses and every other command render as before. For a
 	list response, only the first rendered line of each record is kept unless
-	forced removal details need to be shown below it.
+	forced removal details need to be shown below it. The worktree commands
+	print only the checkout path, so a launcher can change into it directly.
 	"""
+	if command in {"worktree ensure", "worktree get"} and isinstance(data, dict):
+		return f"{data['path']}\n"
 	if command not in _MULTI_ID_WRITE_COMMANDS:
 		return render(command, data)
 	if isinstance(data, list):
@@ -1415,6 +1436,14 @@ def _run_command(
 		("checkout", "detach"): lambda: (
 			ProjectStore(database).detach_checkouts(args.paths, stale=args.stale),
 			"checkout detach",
+		),
+		("worktree", "ensure"): lambda: (
+			WorktreeStore(database).ensure(args.task_id),
+			"worktree ensure",
+		),
+		("worktree", "get"): lambda: (
+			WorktreeStore(database).get(args.task_id),
+			"worktree get",
 		),
 		("doctor", None): lambda: (ReadStore(database).doctor(), "doctor"),
 		("project", "init"): lambda: (_run_project(args, database), "project init"),
@@ -1666,7 +1695,10 @@ def _run_command(
 		# Records where progress ran, even when the command fails. A failure to record is
 		# ignored so that it never changes the command's result. The summary and checkout
 		# detach are not about the current project, so running them records nothing.
-		if command_name not in {"summary", "checkout"}:
+		# Worktree get also records nothing because it only reads the saved checkout.
+		if command_name not in {"summary", "checkout"} and not (
+			command_name == "worktree" and subcommand_name == "get"
+		):
 			with suppress(Exception):
 				ProjectStore(database).record_checkout()
 

@@ -417,6 +417,7 @@ def test_inbox_help_names_add_dismiss_and_list(capsys) -> None:
 			["get"],
 			"get",
 			[
+				"progress worktree get",
 				"progress release get",
 				"progress task get",
 				"progress chunk get",
@@ -5854,6 +5855,67 @@ def test_project_init_reports_the_existing_project(
 		assert existing_output.out.strip().endswith(current_output.out.strip())
 		assert "already_initialised" not in existing_output.out
 		assert "Already initialised:" not in existing_output.out
+
+
+def test_worktree_commands_return_the_task_checkout_without_creating_on_get(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	repository = tmp_path / "repository"
+	repository.mkdir()
+	subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+	subprocess.run(
+		[
+			"git",
+			"-C",
+			str(repository),
+			"-c",
+			"user.name=Test",
+			"-c",
+			"user.email=test@example.com",
+			"commit",
+			"--quiet",
+			"--allow-empty",
+			"-m",
+			"Initial commit",
+		],
+		check=True,
+	)
+	monkeypatch.chdir(repository)
+	database = Database(tmp_path / "progress.db")
+	project, _ = ProjectStore(database).init("agents", "Agent configuration")
+	task = WriteStore(database).task_add(
+		"first-task", "First task", "Work in isolation", ["Finish the work"]
+	)
+	arguments = ["--database", str(database.path), "--json"]
+
+	assert cli.main(["worktree", "get", task["id"], *arguments]) == 1
+	missing = json.loads(capsys.readouterr().out)
+	with database.connection() as connection:
+		assert (
+			connection.execute("SELECT COUNT(*) FROM task_worktrees").fetchone()[0] == 0
+		)
+		assert connection.execute("SELECT COUNT(*) FROM checkouts").fetchone()[0] == 0
+
+	assert missing["error"]["code"] == "not-found"
+	assert cli.main(["worktree", "ensure", task["id"], *arguments]) == 0
+	created = json.loads(capsys.readouterr().out)["data"]
+	assert created["project_id"] == project.id
+	assert created["created"] is True
+	assert Path(created["path"]).is_dir()
+	with database.connection() as connection:
+		checkouts = connection.execute("SELECT path FROM checkouts").fetchall()
+		assert [row["path"] for row in checkouts] == [str(repository)]
+
+	assert cli.main(["worktree", "get", task["id"], *arguments]) == 0
+	got = json.loads(capsys.readouterr().out)["data"]
+	assert got == {key: value for key, value in created.items() if key != "created"}
+	with database.connection() as connection:
+		assert connection.execute("SELECT COUNT(*) FROM checkouts").fetchone()[0] == 1
+	assert (
+		cli.main(["worktree", "ensure", task["id"], "--database", str(database.path)])
+		== 0
+	)
+	assert created["path"] in capsys.readouterr().out
 
 
 def test_dispatch_records_project_commands_once_and_skips_help_version_and_command_list(

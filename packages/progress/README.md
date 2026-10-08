@@ -35,7 +35,7 @@ the database and another Git checkout needs to use it.
 The complete command shape is:
 
 ```text
-progress [--json] [--database <path>] {next,summary,show,checkout,project,release,task,chunk,inbox,discovery,decision,context}
+progress [--json] [--database <path>] {next,summary,show,checkout,worktree,project,release,task,chunk,inbox,discovery,decision,context}
 ```
 
 Throughout this reference, commands use:
@@ -124,6 +124,27 @@ progress checkout detach [PATH...] [--stale] [--json] [--database <path>]
 ```
 
 Provide at least one path or `--stale`. They can be used together.
+
+### `progress worktree ensure` and `progress worktree get`
+
+Create a linked Git checkout for a ready or in-progress task, or return the
+checkout already recorded for it:
+
+```text
+progress worktree ensure TASK_ID [--json] [--database <path>]
+progress worktree get TASK_ID [--json] [--database <path>]
+```
+
+`ensure` creates a task branch from the current checkout's HEAD commit at
+`<database directory>/worktrees/<project ID>/<task ID>`. With the default
+database, this is under `~/.agents/worktrees`. A second `ensure` returns the
+same checkout without resetting its edits. The new checkout uses the repository's
+existing project binding. `get` only reads a recorded checkout and reports an
+error when none is recorded. Both commands check that the
+checkout still belongs to the same Git repository and project. Human output
+prints the checkout path; JSON also includes the task ID, project ID, and branch.
+`ensure` includes committed files only. It does not copy ignored files,
+installed packages, or uncommitted edits from the source checkout.
 
 ## Projects
 

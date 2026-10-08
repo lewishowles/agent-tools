@@ -11,7 +11,7 @@ from .errors import DatabaseBusyError, MigrationFailedError, StaleSchemaError
 Migration = Callable[[sqlite3.Connection], None]
 
 # the schema version this package writes when creating a database from empty
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 # the newest schema version this package knows how to migrate to
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION
 
@@ -552,6 +552,24 @@ def _migrate_to_version_12(connection: sqlite3.Connection) -> None:
 	)
 
 
+def _migrate_to_version_13(connection: sqlite3.Connection) -> None:
+	"""Record one managed Git worktree for each task without sharing paths."""
+	connection.execute(
+		"""
+		CREATE TABLE task_worktrees (
+			task_id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			path TEXT NOT NULL UNIQUE,
+			branch TEXT NOT NULL,
+			common_dir TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			FOREIGN KEY (task_id) REFERENCES tasks (id),
+			FOREIGN KEY (project_id) REFERENCES projects (id)
+		)
+		"""
+	)
+
+
 # maps each supported schema version to the migration that produces it
 MIGRATIONS: dict[int, Migration] = {
 	1: _create_schema,
@@ -566,6 +584,7 @@ MIGRATIONS: dict[int, Migration] = {
 	10: _migrate_to_version_10,
 	11: _migrate_to_version_11,
 	12: _migrate_to_version_12,
+	13: _migrate_to_version_13,
 }
 
 

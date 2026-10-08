@@ -17,8 +17,11 @@ class GitRepository:
 		candidate = Path(path) if path is not None else Path.cwd()
 		self.path = candidate.expanduser().resolve()
 
-	def _run(self, arguments: list[str]) -> subprocess.CompletedProcess[str]:
-		"""Run a Git command in this repository's path and return the result, raising NotAProjectError if Git cannot be launched."""
+	def run(self, arguments: list[str]) -> subprocess.CompletedProcess[str]:
+		"""Return the completed Git process without raising for a non-zero exit.
+
+		Raise NotAProjectError if Git cannot be launched.
+		"""
 		try:
 			return subprocess.run(
 				["git", "-C", str(self.path), *arguments],
@@ -34,7 +37,7 @@ class GitRepository:
 
 	def root(self) -> Path:
 		"""Return the repository root or raise for a non-Git path."""
-		result = self._run(["rev-parse", "--show-toplevel"])
+		result = self.run(["rev-parse", "--show-toplevel"])
 		if result.returncode != 0:
 			raise NotAProjectError(
 				f"{self.path} is not inside a Git repository",
@@ -43,10 +46,22 @@ class GitRepository:
 
 		return Path(result.stdout.strip()).resolve()
 
+	def common_dir(self) -> Path:
+		"""Return the Git directory shared by every worktree of this repository."""
+		self.root()
+		result = self.run(["rev-parse", "--git-common-dir"])
+		if result.returncode != 0:
+			raise NotAProjectError(
+				f"could not find the Git common directory for {self.path}: {result.stderr.strip()}",
+				{"path": str(self.path)},
+			)
+
+		return (self.path / result.stdout.strip()).resolve()
+
 	def get_binding(self) -> str | None:
 		"""Read the local progress project ID, if one is configured, raising NotAProjectError or GitBindingError on failure."""
 		self.root()
-		result = self._run(["config", "--local", "--get", _BINDING_KEY])
+		result = self.run(["config", "--local", "--get", _BINDING_KEY])
 		if result.returncode == 1:
 			return None
 		if result.returncode != 0:
@@ -60,7 +75,7 @@ class GitRepository:
 	def set_binding(self, project_id: str) -> None:
 		"""Set the local progress project ID, raising NotAProjectError or GitBindingError on failure."""
 		self.root()
-		result = self._run(["config", "--local", _BINDING_KEY, project_id])
+		result = self.run(["config", "--local", _BINDING_KEY, project_id])
 		if result.returncode != 0:
 			raise GitBindingError(
 				f"could not write {_BINDING_KEY}: {result.stderr.strip()}",
@@ -70,7 +85,7 @@ class GitRepository:
 	def clear_binding(self) -> None:
 		"""Remove the local progress project ID when it exists."""
 		self.root()
-		result = self._run(["config", "--local", "--unset-all", _BINDING_KEY])
+		result = self.run(["config", "--local", "--unset-all", _BINDING_KEY])
 		# 0 = removed, 1 = key was not present, 5 = --unset-all found nothing to unset;
 		# all three mean the binding is already clear, so clear_binding stays idempotent
 		if result.returncode in {0, 1, 5}:
