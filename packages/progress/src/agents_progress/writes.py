@@ -58,6 +58,12 @@ _CONTEXT_COLUMNS = (
 	"verify_with, stop_marker, updated_at"
 )
 
+# Handoff columns for a task's handoff. The tasks join supplies project_id, which
+# task_context lacks, and updated_at is qualified because both tables have it.
+_TASK_CONTEXT_COLUMNS = _CONTEXT_COLUMNS.replace(
+	"updated_at", "task_context.updated_at"
+)
+
 
 class WriteStore(_StoreBase):
 	"""Run current-project creation and lifecycle writes in short transactions."""
@@ -1553,17 +1559,27 @@ class WriteStore(_StoreBase):
 		stop_marker: str | None = None,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Replace the current project's single handoff context row."""
+		"""Replace the default task's handoff, or the project's when no default is in progress."""
 		project = self.current_project(path)
 		updated_at = utc_timestamp()
 		with self.database.transaction() as connection:
+			default, _ = _default_task_and_chunk(connection, project.id)
+			if default is not None:
+				table = "task_context"
+				owner_column = "task_id"
+				owner_id = default["id"]
+			else:
+				table = "context"
+				owner_column = "project_id"
+				owner_id = project.id
+
 			connection.execute(
-				"""
-				INSERT INTO context (
-					project_id, current_goal, previous_step, next_step, standing_context,
+				f"""
+				INSERT INTO {table} (
+					{owner_column}, current_goal, previous_step, next_step, standing_context,
 					verify_with, stop_marker, updated_at
 				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT(project_id) DO UPDATE SET
+				ON CONFLICT({owner_column}) DO UPDATE SET
 					current_goal = excluded.current_goal,
 					previous_step = excluded.previous_step,
 					next_step = excluded.next_step,
@@ -1573,7 +1589,7 @@ class WriteStore(_StoreBase):
 					updated_at = excluded.updated_at
 				""",
 				(
-					project.id,
+					owner_id,
 					current_goal,
 					previous_step,
 					next_step,
@@ -1584,10 +1600,18 @@ class WriteStore(_StoreBase):
 				),
 			)
 
-			row = connection.execute(
-				f"SELECT {_CONTEXT_COLUMNS} FROM context WHERE project_id = ?",
-				(project.id,),
-			).fetchone()
+			if default is None:
+				row = connection.execute(
+					f"SELECT {_CONTEXT_COLUMNS} FROM context WHERE project_id = ?",
+					(project.id,),
+				).fetchone()
+			else:
+				row = connection.execute(
+					f"SELECT {_TASK_CONTEXT_COLUMNS} FROM task_context "
+					"JOIN tasks ON tasks.id = task_context.task_id "
+					"WHERE task_context.task_id = ?",
+					(default["id"],),
+				).fetchone()
 
 		return Context.from_row(row).to_dict()
 

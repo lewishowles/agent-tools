@@ -11,7 +11,7 @@ from .errors import DatabaseBusyError, MigrationFailedError, StaleSchemaError
 Migration = Callable[[sqlite3.Connection], None]
 
 # the schema version this package writes when creating a database from empty
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 # the newest schema version this package knows how to migrate to
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION
 
@@ -506,6 +506,52 @@ def _migrate_to_version_11(connection: sqlite3.Connection) -> None:
 	)
 
 
+def _migrate_to_version_12(connection: sqlite3.Connection) -> None:
+	"""Give each task its own handoff and move existing handoffs onto in-progress default tasks.
+
+	A project whose default task is not in progress keeps its project handoff.
+	"""
+	connection.execute(
+		"""
+		CREATE TABLE task_context (
+			task_id TEXT PRIMARY KEY,
+			current_goal TEXT,
+			previous_step TEXT,
+			next_step TEXT,
+			standing_context TEXT,
+			verify_with TEXT,
+			stop_marker TEXT,
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE
+		)
+		"""
+	)
+	connection.execute(
+		"""
+		INSERT INTO task_context (
+			task_id, current_goal, previous_step, next_step, standing_context,
+			verify_with, stop_marker, updated_at
+		)
+		SELECT tasks.id, context.current_goal, context.previous_step,
+			context.next_step, context.standing_context, context.verify_with,
+			context.stop_marker, context.updated_at
+		FROM context
+		JOIN projects ON projects.id = context.project_id
+		JOIN tasks ON tasks.id = projects.default_task_id
+			AND tasks.project_id = projects.id AND tasks.status = 'in-progress'
+		"""
+	)
+	connection.execute(
+		"""
+		DELETE FROM context WHERE project_id IN (
+			SELECT projects.id FROM projects
+			JOIN tasks ON tasks.id = projects.default_task_id
+				AND tasks.project_id = projects.id AND tasks.status = 'in-progress'
+		)
+		"""
+	)
+
+
 # maps each supported schema version to the migration that produces it
 MIGRATIONS: dict[int, Migration] = {
 	1: _create_schema,
@@ -519,6 +565,7 @@ MIGRATIONS: dict[int, Migration] = {
 	9: _migrate_to_version_9,
 	10: _migrate_to_version_10,
 	11: _migrate_to_version_11,
+	12: _migrate_to_version_12,
 }
 
 

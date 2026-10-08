@@ -1521,6 +1521,112 @@ def test_notes_and_context_replace_the_project_context_row(tmp_path: Path) -> No
 	assert updated_context["next_step"] is None
 
 
+def test_context_set_keeps_default_task_handoffs_independent(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first", "First")
+	second = _add_task(store, "second", "Second")
+	store.task_start(first["id"])
+	store.task_start(second["id"], secondary=True)
+
+	first_handoff = store.context_set(
+		current_goal="First goal",
+		previous_step="First step",
+		next_step="First next",
+		standing_context="First context",
+		verify_with="First check",
+		stop_marker="First stop",
+	)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE projects SET default_task_id = ? WHERE id = ?",
+			(second["id"], PROJECT_ID),
+		)
+
+	second_handoff = store.context_set(
+		current_goal="Second goal",
+		previous_step="Second step",
+		next_step="Second next",
+		standing_context="Second context",
+		verify_with="Second check",
+		stop_marker="Second stop",
+	)
+	updated_second = store.context_set(current_goal="Second updated")
+
+	assert first_handoff["current_goal"] == "First goal"
+	assert second_handoff["current_goal"] == "Second goal"
+	assert updated_second["previous_step"] is None
+	assert updated_second["next_step"] is None
+	assert updated_second["standing_context"] is None
+	assert updated_second["verify_with"] is None
+	assert updated_second["stop_marker"] is None
+	with store.database.connection() as connection:
+		rows = connection.execute(
+			"SELECT task_id, current_goal, previous_step, next_step, "
+			"standing_context, verify_with, stop_marker FROM task_context ORDER BY task_id"
+		).fetchall()
+
+	assert {row["task_id"]: tuple(row)[1:] for row in rows} == {
+		first["id"]: (
+			"First goal",
+			"First step",
+			"First next",
+			"First context",
+			"First check",
+			"First stop",
+		),
+		second["id"]: ("Second updated", None, None, None, None, None),
+	}
+
+
+def test_task_remove_deletes_its_handoff(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "task", "Task")
+	store.task_start(task["id"])
+	store.context_set(current_goal="Task work")
+
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_context WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is not None
+		)
+
+	store.task_remove(task["id"])
+
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_context WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+
+
+def test_context_set_uses_project_handoff_when_default_is_not_in_progress(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "task", "Task")
+	project_handoff = store.context_set(current_goal="Project planning")
+	store.task_start(task["id"])
+	task_handoff = store.context_set(current_goal="Task work")
+
+	assert project_handoff["current_goal"] == "Project planning"
+	assert task_handoff["current_goal"] == "Task work"
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE tasks SET status = 'blocked' WHERE id = ?", (task["id"],)
+		)
+
+	assert (
+		ReadStore(store.database, _ProjectStore(store.database)).context_get()[
+			"current_goal"
+		]
+		== "Project planning"
+	)
+
+
 def test_note_add_requires_exactly_one_owner(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("release", "Release", overview="Release overview")

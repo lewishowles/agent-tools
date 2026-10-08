@@ -1447,17 +1447,17 @@ def test_context_get_returns_a_not_set_result_without_a_context_row(
 	assert store.context_get() == {"status": "not-set", "project_id": PROJECT_ID}
 
 
-def test_context_get_returns_the_current_project_context(tmp_path: Path) -> None:
+def test_context_get_returns_the_default_task_context(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 
 	with store.database.transaction() as connection:
 		connection.execute(
-			"INSERT INTO context ("
-			"project_id, current_goal, previous_step, next_step, standing_context, "
+			"INSERT INTO task_context ("
+			"task_id, current_goal, previous_step, next_step, standing_context, "
 			"verify_with, stop_marker, updated_at"
 			") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 			(
-				PROJECT_ID,
+				TASK_A,
 				"Finish reads",
 				"Inspect queries",
 				"Run tests",
@@ -1480,3 +1480,19 @@ def test_context_get_returns_the_current_project_context(tmp_path: Path) -> None
 		"stop_marker": "Stop after verification",
 		"updated_at": "2026-01-01T00:00:04+00:00",
 	}
+
+
+def test_context_get_uses_project_context_without_an_in_progress_default(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO context (project_id, current_goal, updated_at) VALUES (?, ?, ?)",
+			(PROJECT_ID, "Project planning", "2026-01-01T00:00:04+00:00"),
+		)
+		connection.execute(
+			"UPDATE tasks SET status = 'blocked' WHERE id = ?", (TASK_A,)
+		)
+
+	assert store.context_get()["current_goal"] == "Project planning"

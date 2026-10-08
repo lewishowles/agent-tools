@@ -86,6 +86,12 @@ _CONTEXT_COLUMNS = (
 	"verify_with, stop_marker, updated_at"
 )
 
+# Handoff columns for a task's handoff. The tasks join supplies project_id, which
+# task_context lacks, and updated_at is qualified because both tables have it.
+_TASK_CONTEXT_COLUMNS = _CONTEXT_COLUMNS.replace(
+	"updated_at", "task_context.updated_at"
+)
+
 # Note types accepted by the note commands.
 NOTE_TYPES = frozenset({"discovery", "decision"})
 
@@ -1493,14 +1499,26 @@ class ReadStore(_StoreBase):
 			)
 
 	def context_get(self, path: str | Path | None = None) -> dict[str, object]:
-		"""Return the current project's handoff context or a clear not-set result."""
+		"""Return the default task's handoff, or the project's when no default is in progress.
+
+		Returns a clear not-set result when that handoff has not been written.
+		"""
 		project = self.current_project(path)
 
 		with self.database.connection() as connection:
-			row = connection.execute(
-				f"SELECT {_CONTEXT_COLUMNS} FROM context WHERE project_id = ?",
-				(project.id,),
-			).fetchone()
+			default, _ = _default_task_and_chunk(connection, project.id)
+			if default is None:
+				row = connection.execute(
+					f"SELECT {_CONTEXT_COLUMNS} FROM context WHERE project_id = ?",
+					(project.id,),
+				).fetchone()
+			else:
+				row = connection.execute(
+					f"SELECT {_TASK_CONTEXT_COLUMNS} FROM task_context "
+					"JOIN tasks ON tasks.id = task_context.task_id "
+					"WHERE task_context.task_id = ?",
+					(default["id"],),
+				).fetchone()
 
 		if row is None:
 			return {"status": "not-set", "project_id": project.id}

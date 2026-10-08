@@ -510,6 +510,67 @@ def test_version_eleven_migration_selects_the_latest_active_task(
 	assert default == (task_ids[-1] if task_ids else None)
 
 
+@pytest.mark.parametrize("default_status", [None, "ready", "in-progress"])
+def test_version_twelve_migration_moves_only_an_in_progress_default_handoff(
+	tmp_path, default_status: str | None
+) -> None:
+	database_path = tmp_path / "progress.db"
+	project_id = generate_object_id(PROJECT_PREFIX)
+	task_id = generate_object_id(TASK_PREFIX)
+	handoff = (
+		"Current goal",
+		"Previous step",
+		"Next step",
+		"Standing context",
+		"Verify with",
+		"Stop marker",
+		"2026-01-01T00:00:04+00:00",
+	)
+	with sqlite3.connect(database_path) as connection:
+		for version in range(1, 12):
+			schema.MIGRATIONS[version](connection)
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.execute(
+			"INSERT INTO schema_migrations VALUES (11, '2026-01-01T00:00:00+00:00')"
+		)
+		_insert_project(connection, project_id)
+		if default_status is not None:
+			_insert_current_task(
+				connection, project_id, task_id, "default", default_status
+			)
+			connection.execute(
+				"UPDATE projects SET default_task_id = ? WHERE id = ?",
+				(task_id, project_id),
+			)
+		connection.execute(
+			"INSERT INTO context (project_id, current_goal, previous_step, next_step, "
+			"standing_context, verify_with, stop_marker, updated_at) "
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			(project_id, *handoff),
+		)
+
+	with Database(database_path).connection() as connection:
+		project_handoff = connection.execute(
+			"SELECT current_goal, previous_step, next_step, standing_context, "
+			"verify_with, stop_marker, updated_at FROM context WHERE project_id = ?",
+			(project_id,),
+		).fetchone()
+		task_handoff = connection.execute(
+			"SELECT current_goal, previous_step, next_step, standing_context, "
+			"verify_with, stop_marker, updated_at FROM task_context WHERE task_id = ?",
+			(task_id,),
+		).fetchone()
+
+	if default_status == "in-progress":
+		assert project_handoff is None
+		assert tuple(task_handoff) == handoff
+	else:
+		assert tuple(project_handoff) == handoff
+		assert task_handoff is None
+
+
 def test_failed_version_six_migration_leaves_version_five_intact(
 	tmp_path, monkeypatch
 ) -> None:
