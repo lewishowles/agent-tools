@@ -1261,8 +1261,9 @@ class WriteStore(_StoreBase):
 		"""Complete one or more ready or in-progress tasks in input order.
 
 		Each task is named by ID or by project slug and must have no pending or
-		active chunks. Dependants blocked only by the completed tasks become
-		ready. All completions run in one transaction, so a failure on any ID
+		active chunks. Each completed task's handoff is cleared, and other
+		handoffs are left alone. Dependants blocked only by the completed tasks
+		become ready. All completions run in one transaction, so a failure on any ID
 		rolls back the earlier ones.
 		"""
 		task_ids, multiple = _normalise_write_ids(task_id, "task")
@@ -1901,7 +1902,7 @@ def _remove_task(
 def _complete_task(
 	connection: sqlite3.Connection, task_reference: str, project_id: str
 ) -> dict[str, object]:
-	"""Complete one task by ID or project slug and unblock eligible dependents."""
+	"""Complete one task by ID or project slug, clear its handoff, and unblock eligible dependents."""
 	task_reference = validate_identifier(task_reference, TASK_PREFIX)
 	task_id = resolve_identifier(connection, task_reference, TASK_PREFIX, project_id)
 	task = _task_row(connection, task_id, project_id)
@@ -1929,6 +1930,7 @@ def _complete_task(
 		"UPDATE tasks SET status = 'done', completed_at = ?, updated_at = ? WHERE id = ?",
 		(now, now, task_id),
 	)
+	connection.execute("DELETE FROM task_context WHERE task_id = ?", (task_id,))
 
 	unblocked_tasks = []
 	dependent_rows = connection.execute(

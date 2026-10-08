@@ -1355,6 +1355,63 @@ def test_completing_either_task_leaves_the_other_active(
 	)
 
 
+@pytest.mark.parametrize("complete_secondary_first", [False, True])
+def test_completing_tasks_clears_only_their_handoffs(
+	tmp_path: Path, complete_secondary_first: bool
+) -> None:
+	store = _seed_store(tmp_path)
+	default = _add_task(store, "default", "Default")
+	secondary = _add_task(store, "secondary", "Secondary")
+	store.context_set(current_goal="Project planning")
+	store.task_start(default["id"])
+	store.task_start(secondary["id"], secondary=True)
+	store.context_set(task_id=default["id"], current_goal="Default work")
+	store.context_set(task_id=secondary["id"], current_goal="Secondary work")
+	reader = ReadStore(store.database, _ProjectStore(store.database))
+	completed, remaining = (
+		(secondary, default) if complete_secondary_first else (default, secondary)
+	)
+	remaining_goal = "Default work" if complete_secondary_first else "Secondary work"
+
+	store.task_complete(completed["id"])
+
+	assert reader.context_get(task_id=completed["id"])["status"] == "not-set"
+	assert reader.context_get(task_id=remaining["id"])["current_goal"] == (
+		remaining_goal
+	)
+	assert reader.context_get()["current_goal"] == (
+		"Default work" if complete_secondary_first else "Project planning"
+	)
+	with store.database.connection() as connection:
+		project_handoff = connection.execute(
+			"SELECT current_goal FROM context WHERE project_id = ?", (PROJECT_ID,)
+		).fetchone()
+	assert project_handoff["current_goal"] == "Project planning"
+
+	store.task_complete(remaining["id"])
+
+	assert reader.context_get(task_id=remaining["id"])["status"] == "not-set"
+	assert reader.context_get()["current_goal"] == "Project planning"
+
+
+def test_completing_several_tasks_clears_each_handoff(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	default = _add_task(store, "default", "Default")
+	secondary = _add_task(store, "secondary", "Secondary")
+	store.context_set(current_goal="Project planning")
+	store.task_start(default["id"])
+	store.task_start(secondary["id"], secondary=True)
+	store.context_set(task_id=default["id"], current_goal="Default work")
+	store.context_set(task_id=secondary["id"], current_goal="Secondary work")
+	reader = ReadStore(store.database, _ProjectStore(store.database))
+
+	store.task_complete([default["id"], secondary["id"]])
+
+	assert reader.context_get(task_id=default["id"])["status"] == "not-set"
+	assert reader.context_get(task_id=secondary["id"])["status"] == "not-set"
+	assert reader.context_get()["current_goal"] == "Project planning"
+
+
 def test_a_waiting_task_cannot_start_while_another_task_is_active(
 	tmp_path: Path,
 ) -> None:

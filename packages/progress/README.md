@@ -469,7 +469,8 @@ Pass one or more task IDs or project slugs. They are completed in the order
 given in one transaction. Each task moves to `done` only when it is `ready` or
 `in-progress` and has no `pending` or `active` chunks. If a task cannot
 complete, `PendingChunksError` names the failing task and its blocking chunk
-IDs, and all earlier completions are rolled back.
+IDs, and all earlier completions are rolled back. Completing a task clears
+that task's handoff and leaves every other handoff as it was.
 
 ### `progress task unblock`
 
@@ -836,7 +837,9 @@ handoff for planning or general handoff. `--task` selects any task in the
 current project, including one that is not in progress. Each task has a
 separate handoff. `context set` replaces only the selected handoff, clearing
 any fields left out of the command. Results include `task_id` for a task
-handoff and `null` for a project handoff.
+handoff and `null` for a project handoff. Completing a task clears that task's
+handoff and leaves every other task handoff and the project handoff as they
+were.
 
 Read the selected handoff with:
 
