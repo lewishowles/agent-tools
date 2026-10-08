@@ -816,12 +816,13 @@ note, and the error names those blocking note IDs. The operation is atomic.
 
 ### `progress context set`
 
-Set the current project's singleton handoff context:
+Replace the handoff for a task or the current project:
 
 ```text
-progress context set [--current-goal <current_goal>] [--previous-step <previous_step>] [--next-step <next_step>] [--standing-context <standing_context>] [--verify-with <verify_with>] [--stop-marker <stop_marker>] [--json] [--database <path>]
+progress context set [--task <task_id>] [--current-goal <current_goal>] [--previous-step <previous_step>] [--next-step <next_step>] [--standing-context <standing_context>] [--verify-with <verify_with>] [--stop-marker <stop_marker>] [--json] [--database <path>]
 ```
 
+- `--task <task_id>`: use the named task's handoff instead of the default task's
 - `--current-goal <current_goal>`: current goal
 - `--previous-step <previous_step>`: completed or last attempted step
 - `--next-step <next_step>`: next step to take
@@ -829,8 +830,19 @@ progress context set [--current-goal <current_goal>] [--previous-step <previous_
 - `--verify-with <verify_with>`: command or evidence that verifies the work
 - `--stop-marker <stop_marker>`: condition that tells the next agent when to stop
 
-Calling `context set` replaces the stored singleton context for the current
-project.
+Without `--task`, `context get` and `context set` use the in-progress default
+task's handoff. With no in-progress default task, they use the project's
+handoff for planning or general handoff. `--task` selects any task in the
+current project, including one that is not in progress. Each task has a
+separate handoff. `context set` replaces only the selected handoff, clearing
+any fields left out of the command. Results include `task_id` for a task
+handoff and `null` for a project handoff.
+
+Read the selected handoff with:
+
+```text
+progress context get [--task <task_id>] [--json] [--database <path>]
+```
 
 ## Listing
 

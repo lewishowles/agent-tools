@@ -802,6 +802,7 @@ def test_doctor_dispatches_with_the_json_envelope(
 	("arguments", "method_name"),
 	[
 		(["context", "get"], "context_get"),
+		(["context", "get", "--task", "tsk_" + "t" * 22], "context_get"),
 		(["discovery", "list"], "discovery_list"),
 		(
 			["discovery", "list", "--release", "rel_" + "r" * 22],
@@ -1040,6 +1041,11 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 		),
 		(["inbox", "dismiss", "inb_" + "n" * 22], "inbox_dismiss", "write"),
 		(["context", "set", "--current-goal", "Goal"], "context_set", "write"),
+		(
+			["context", "set", "--task", "tsk_" + "t" * 22, "--current-goal", "Goal"],
+			"context_set",
+			"write",
+		),
 	],
 )
 def test_write_commands_dispatch_to_the_matching_store_method(
@@ -1089,6 +1095,40 @@ def test_write_commands_dispatch_to_the_matching_store_method(
 
 	assert calls == [(store_name, method_name)]
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+@pytest.mark.parametrize("command", ["get", "set"])
+def test_context_commands_pass_the_selected_task_to_the_store(
+	tmp_path: Path, monkeypatch, capsys, command: str
+) -> None:
+	task_id = "tsk_" + "t" * 22
+	calls: list[tuple[str, str | None]] = []
+
+	class _ContextStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def context_get(self, *, task_id: str | None = None):
+			calls.append(("get", task_id))
+			return {"task_id": task_id}
+
+		def context_set(self, **arguments):
+			calls.append(("set", arguments["task_id"]))
+			return {"task_id": arguments["task_id"]}
+
+	monkeypatch.setattr(cli, "ReadStore", _ContextStore)
+	monkeypatch.setattr(cli, "WriteStore", _ContextStore)
+	arguments = ["context", command, "--task", task_id]
+	if command == "set":
+		arguments.extend(["--current-goal", "Named work"])
+
+	assert cli.main([*arguments, "--database", str(tmp_path / "db"), "--json"]) == 0
+
+	assert calls == [(command, task_id)]
+	assert json.loads(capsys.readouterr().out) == {
+		"ok": True,
+		"data": {"task_id": task_id},
+	}
 
 
 @pytest.mark.parametrize(

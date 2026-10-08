@@ -107,9 +107,10 @@ class Note:
 
 @dataclass(frozen=True)
 class Context:
-	"""The current handoff context for one project."""
+	"""The current handoff context for a task or project."""
 
 	project_id: str
+	task_id: str | None
 	current_goal: str | None
 	previous_step: str | None
 	next_step: str | None

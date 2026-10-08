@@ -1444,7 +1444,11 @@ def test_context_get_returns_a_not_set_result_without_a_context_row(
 ) -> None:
 	store = _seed_store(tmp_path)
 
-	assert store.context_get() == {"status": "not-set", "project_id": PROJECT_ID}
+	assert store.context_get() == {
+		"status": "not-set",
+		"project_id": PROJECT_ID,
+		"task_id": TASK_A,
+	}
 
 
 def test_context_get_returns_the_default_task_context(tmp_path: Path) -> None:
@@ -1472,6 +1476,7 @@ def test_context_get_returns_the_default_task_context(tmp_path: Path) -> None:
 
 	assert result == {
 		"project_id": PROJECT_ID,
+		"task_id": TASK_A,
 		"current_goal": "Finish reads",
 		"previous_step": "Inspect queries",
 		"next_step": "Run tests",
@@ -1496,3 +1501,52 @@ def test_context_get_uses_project_context_without_an_in_progress_default(
 		)
 
 	assert store.context_get()["current_goal"] == "Project planning"
+	assert store.context_get()["task_id"] is None
+
+
+def test_context_get_selects_a_named_task_beside_the_default(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO task_context (task_id, current_goal, updated_at) "
+			"VALUES (?, ?, ?), (?, ?, ?)",
+			(
+				TASK_A,
+				"Default work",
+				"2026-01-01T00:00:04+00:00",
+				TASK_B,
+				"Named work",
+				"2026-01-01T00:00:05+00:00",
+			),
+		)
+
+	assert store.context_get()["current_goal"] == "Default work"
+	assert store.context_get(task_id=TASK_B)["current_goal"] == "Named work"
+	assert store.context_get(task_id="second")["task_id"] == TASK_B
+
+
+def test_context_get_reports_a_named_task_without_a_handoff(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+
+	assert store.context_get(task_id=TASK_B) == {
+		"status": "not-set",
+		"project_id": PROJECT_ID,
+		"task_id": TASK_B,
+	}
+
+
+def test_context_get_refuses_a_task_from_another_project(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	other_project_id = "prj_" + "o" * 22
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(other_project_id, "other", "Other", "2026-01-01T00:00:00+00:00"),
+		)
+		connection.execute(
+			"UPDATE tasks SET project_id = ? WHERE id = ?",
+			(other_project_id, TASK_B),
+		)
+
+	with pytest.raises(NotFoundError, match="task"):
+		store.context_get(task_id=TASK_B)

@@ -836,11 +836,16 @@ _COMMAND_SPECS = (
 		"context",
 		"replace handoff context",
 		children=(
-			_CommandSpec("get", "show current handoff context"),
+			_CommandSpec(
+				"get",
+				"show current handoff context",
+				arguments=(_argument("--task", dest="task_id"),),
+			),
 			_CommandSpec(
 				"set",
 				"set current handoff context",
 				arguments=(
+					_argument("--task", dest="task_id"),
 					_argument("--current-goal"),
 					_argument("--previous-step"),
 					_argument("--next-step"),
@@ -1642,11 +1647,12 @@ def _run_command(
 				standing_context=args.standing_context,
 				verify_with=args.verify_with,
 				stop_marker=args.stop_marker,
+				task_id=args.task_id,
 			),
 			"context set",
 		),
 		("context", "get"): lambda: (
-			ReadStore(database).context_get(),
+			ReadStore(database).context_get(task_id=args.task_id),
 			"context get",
 		),
 	}

@@ -1517,6 +1517,7 @@ def test_notes_and_context_replace_the_project_context_row(tmp_path: Path) -> No
 	assert discovery["id"].startswith("nte_")
 	assert decision["supersedes_id"] == discovery["id"]
 	assert context["next_step"] == "Run tests"
+	assert context["task_id"] is None
 	assert updated_context["current_goal"] == "Finish Commit 4"
 	assert updated_context["next_step"] is None
 
@@ -1553,7 +1554,9 @@ def test_context_set_keeps_default_task_handoffs_independent(tmp_path: Path) -> 
 	updated_second = store.context_set(current_goal="Second updated")
 
 	assert first_handoff["current_goal"] == "First goal"
+	assert first_handoff["task_id"] == first["id"]
 	assert second_handoff["current_goal"] == "Second goal"
+	assert second_handoff["task_id"] == second["id"]
 	assert updated_second["previous_step"] is None
 	assert updated_second["next_step"] is None
 	assert updated_second["standing_context"] is None
@@ -1576,6 +1579,58 @@ def test_context_set_keeps_default_task_handoffs_independent(tmp_path: Path) -> 
 		),
 		second["id"]: ("Second updated", None, None, None, None, None),
 	}
+
+
+def test_context_set_replaces_only_a_named_task_handoff(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	default = _add_task(store, "default", "Default")
+	named = _add_task(store, "named", "Named")
+	store.task_start(default["id"])
+	store.context_set(current_goal="Default work", next_step="Keep going")
+	first_named = store.context_set(
+		task_id=named["id"],
+		current_goal="Named work",
+		previous_step="Started",
+		next_step="Continue",
+		standing_context="Keep separate",
+		verify_with="Run tests",
+		stop_marker="Stop here",
+	)
+	updated_named = store.context_set(task_id="named", current_goal="New named work")
+	read_store = ReadStore(store.database, _ProjectStore(store.database))
+
+	assert first_named["task_id"] == named["id"]
+	assert updated_named["task_id"] == named["id"]
+	assert updated_named["current_goal"] == "New named work"
+	assert updated_named["previous_step"] is None
+	assert updated_named["next_step"] is None
+	assert updated_named["standing_context"] is None
+	assert updated_named["verify_with"] is None
+	assert updated_named["stop_marker"] is None
+	assert read_store.context_get()["current_goal"] == "Default work"
+	assert read_store.context_get()["next_step"] == "Keep going"
+
+	assert read_store.context_get(task_id=named["id"])["current_goal"] == (
+		"New named work"
+	)
+
+
+def test_context_set_refuses_a_task_from_another_project(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "other", "Other")
+	other_project_id = "prj_" + "o" * 22
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(other_project_id, "other", "Other", "2026-01-01T00:00:00+00:00"),
+		)
+		connection.execute(
+			"UPDATE tasks SET project_id = ? WHERE id = ?",
+			(other_project_id, task["id"]),
+		)
+
+	with pytest.raises(NotFoundError, match="task"):
+		store.context_set(task_id=task["id"], current_goal="Wrong project")
 
 
 def test_task_remove_deletes_its_handoff(tmp_path: Path) -> None:

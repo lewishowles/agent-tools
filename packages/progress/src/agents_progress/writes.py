@@ -52,16 +52,19 @@ _QUALIFIED_CHUNK_COLUMNS = (
 _NOTE_COLUMNS = (
 	"id, project_id, task_id, release_id, type, body, supersedes_id, created_at"
 )
-# Context columns returned by context replacement writes.
+# Columns returned after replacing the project handoff. A project handoff
+# belongs to no task, so task_id is always null.
 _CONTEXT_COLUMNS = (
-	"project_id, current_goal, previous_step, next_step, standing_context, "
+	"project_id, NULL AS task_id, current_goal, previous_step, next_step, standing_context, "
 	"verify_with, stop_marker, updated_at"
 )
 
 # Handoff columns for a task's handoff. The tasks join supplies project_id, which
-# task_context lacks, and updated_at is qualified because both tables have it.
-_TASK_CONTEXT_COLUMNS = _CONTEXT_COLUMNS.replace(
-	"updated_at", "task_context.updated_at"
+# task_context lacks, and task_id and updated_at come from task_context.
+_TASK_CONTEXT_COLUMNS = (
+	_CONTEXT_COLUMNS.replace("project_id", "tasks.project_id")
+	.replace("NULL AS task_id", "task_context.task_id")
+	.replace("updated_at", "task_context.updated_at")
 )
 
 
@@ -1558,16 +1561,38 @@ class WriteStore(_StoreBase):
 		verify_with: str | None = None,
 		stop_marker: str | None = None,
 		path: str | Path | None = None,
+		*,
+		task_id: str | None = None,
 	) -> dict[str, object]:
-		"""Replace the default task's handoff, or the project's when no default is in progress."""
+		"""Replace the named task's handoff, or the default task's when no task is named.
+
+		Falls back to the project handoff when no task is named and no default task is
+		in progress. Fields left out are cleared, and a task outside the current
+		project raises not-found.
+		"""
+		if task_id is not None:
+			task_id = validate_identifier(task_id, TASK_PREFIX)
+
 		project = self.current_project(path)
 		updated_at = utc_timestamp()
 		with self.database.transaction() as connection:
-			default, _ = _default_task_and_chunk(connection, project.id)
-			if default is not None:
+			if task_id is not None:
+				task_id = resolve_identifier(
+					connection, task_id, TASK_PREFIX, project.id
+				)
+				task = _task_row(connection, task_id, project.id)
+				if task is None:
+					raise NotFoundError(
+						f"task {task_id} was not found", {"id": task_id}
+					)
+			else:
+				default, _ = _default_task_and_chunk(connection, project.id)
+				task_id = None if default is None else default["id"]
+
+			if task_id is not None:
 				table = "task_context"
 				owner_column = "task_id"
-				owner_id = default["id"]
+				owner_id = task_id
 			else:
 				table = "context"
 				owner_column = "project_id"
@@ -1600,7 +1625,7 @@ class WriteStore(_StoreBase):
 				),
 			)
 
-			if default is None:
+			if task_id is None:
 				row = connection.execute(
 					f"SELECT {_CONTEXT_COLUMNS} FROM context WHERE project_id = ?",
 					(project.id,),
@@ -1610,7 +1635,7 @@ class WriteStore(_StoreBase):
 					f"SELECT {_TASK_CONTEXT_COLUMNS} FROM task_context "
 					"JOIN tasks ON tasks.id = task_context.task_id "
 					"WHERE task_context.task_id = ?",
-					(default["id"],),
+					(task_id,),
 				).fetchone()
 
 		return Context.from_row(row).to_dict()
