@@ -3,7 +3,6 @@
 import sqlite3
 from pathlib import Path
 
-from .database import Database
 from .errors import (
 	AlreadyExistsError,
 	GitBindingError,
@@ -22,9 +21,81 @@ from .writes import _unresolved_dependencies
 class WorktreeStore(_StoreBase):
 	"""Keep a task's recorded checkout tied to its project and Git repository."""
 
-	def __init__(self, database: Database | None = None) -> None:
-		"""Use the configured database for both task records and worktree paths."""
-		super().__init__(database)
+	def cleanup(self, task_id: str, path: str | Path | None = None) -> dict[str, str]:
+		"""Remove a done task's managed checkout when Git finds it clean.
+
+		Return status "removed", "pending" with a reason, or "none" when the task
+		has no recorded checkout. A checkout with edits, a locked checkout, or one
+		that contains the current folder or the given path stays on disk with its
+		record kept, so cleanup can be retried later. A recorded folder that no longer
+		exists has its record cleared. The task's branch is never deleted. Raise
+		when the task is missing or not done.
+		"""
+		task_id = validate_object_id(task_id, TASK_PREFIX)
+		project = self.current_project(path)
+
+		with self.database.connection() as connection:
+			task = connection.execute(
+				"SELECT status FROM tasks WHERE id = ? AND project_id = ?",
+				(task_id, project.id),
+			).fetchone()
+			if task is None:
+				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
+			if task["status"] != "done":
+				raise InvalidTransitionError(
+					f"task {task_id} must be done before its worktree can be cleaned up",
+					{"id": task_id, "status": task["status"]},
+				)
+
+			row = connection.execute(
+				"SELECT task_id, project_id, path, branch, common_dir "
+				"FROM task_worktrees WHERE task_id = ?",
+				(task_id,),
+			).fetchone()
+
+		if row is None:
+			return {"status": "none"}
+
+		try:
+			repository = GitRepository(path)
+			common_dir = repository.common_dir()
+			target, _ = self._record_location(row, project.id, common_dir)
+
+			if not target.exists() and not target.is_symlink():
+				with self.database.transaction() as connection:
+					connection.execute(
+						"DELETE FROM task_worktrees WHERE task_id = ?", (task_id,)
+					)
+				return {"status": "removed", "reason": "folder already gone"}
+
+			self._validated_record(row, project.id, common_dir)
+
+			resolved_target = target.resolve()
+			if Path.cwd().resolve().is_relative_to(
+				resolved_target
+			) or repository.path.is_relative_to(resolved_target):
+				return {
+					"status": "pending",
+					"reason": "command uses the task worktree",
+				}
+
+			result = repository.run(["worktree", "remove", str(target)])
+
+			if result.returncode != 0:
+				return {
+					"status": "pending",
+					"reason": result.stderr.strip()
+					or "Git could not remove the worktree",
+				}
+
+			with self.database.transaction() as connection:
+				connection.execute(
+					"DELETE FROM task_worktrees WHERE task_id = ?", (task_id,)
+				)
+			return {"status": "removed"}
+		except (ProgressError, sqlite3.Error, OSError) as error:
+			reason = error.message if isinstance(error, ProgressError) else str(error)
+			return {"status": "pending", "reason": reason or type(error).__name__}
 
 	def get(self, task_id: str, path: str | Path | None = None) -> dict[str, str]:
 		"""Return the task's recorded checkout without creating one.
@@ -238,19 +309,7 @@ class WorktreeStore(_StoreBase):
 		Refuse a record whose project, path, branch, or repository no longer match.
 		"""
 		task_id = row["task_id"]
-		expected_path, branch = self._managed_location(project_id, task_id)
-		path = Path(row["path"])
-
-		if (
-			row["project_id"] != project_id
-			or row["common_dir"] != str(common_dir)
-			or path != expected_path
-			or row["branch"] != branch
-		):
-			raise AlreadyExistsError(
-				f"recorded worktree for task {task_id} belongs to another checkout or project",
-				{"task_id": task_id, "path": str(path)},
-			)
+		path, branch = self._record_location(row, project_id, common_dir)
 
 		checkout = GitRepository(path)
 
@@ -280,3 +339,28 @@ class WorktreeStore(_StoreBase):
 			"path": str(path),
 			"branch": branch,
 		}
+
+	def _record_location(
+		self, row: sqlite3.Row, project_id: str, common_dir: Path
+	) -> tuple[Path, str]:
+		"""Return the saved checkout path and branch for this project and repository.
+
+		Raise when the saved record names another project, repository, path, or
+		branch. The checkout folder itself is not inspected.
+		"""
+		task_id = row["task_id"]
+		expected_path, branch = self._managed_location(project_id, task_id)
+		path = Path(row["path"])
+
+		if (
+			row["project_id"] != project_id
+			or row["common_dir"] != str(common_dir)
+			or path != expected_path
+			or row["branch"] != branch
+		):
+			raise AlreadyExistsError(
+				f"recorded worktree for task {task_id} belongs to another checkout or project",
+				{"task_id": task_id, "path": str(path)},
+			)
+
+		return path, branch

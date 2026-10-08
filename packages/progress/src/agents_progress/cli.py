@@ -321,7 +321,7 @@ _COMMAND_SPECS = (
 	),
 	_CommandSpec(
 		"worktree",
-		"create or inspect a task checkout",
+		"create, inspect, or clean up a task checkout",
 		children=(
 			_CommandSpec(
 				"ensure",
@@ -331,6 +331,11 @@ _COMMAND_SPECS = (
 			_CommandSpec(
 				"get",
 				"show a task's recorded worktree",
+				arguments=(_argument("task_id", metavar="TASK_ID"),),
+			),
+			_CommandSpec(
+				"cleanup",
+				"remove a done task's clean worktree",
 				arguments=(_argument("task_id", metavar="TASK_ID"),),
 			),
 		),
@@ -1327,9 +1332,12 @@ def _render_human_output(command: str, data: object) -> str:
 	list response, only the first rendered line of each record is kept unless
 	forced removal details need to be shown below it. The worktree commands
 	print only the checkout path, so a launcher can change into it directly.
+	Task completion adds the worktree cleanup result to each task's line.
 	"""
 	if command in {"worktree ensure", "worktree get"} and isinstance(data, dict):
 		return f"{data['path']}\n"
+	if command == "worktree cleanup" and isinstance(data, dict):
+		return _worktree_cleanup_line(data) + "\n"
 	if command not in _MULTI_ID_WRITE_COMMANDS:
 		return render(command, data)
 	if isinstance(data, list):
@@ -1337,13 +1345,26 @@ def _render_human_output(command: str, data: object) -> str:
 	elif isinstance(data, dict) and isinstance(data.get("deleted"), dict):
 		items = [data]
 	else:
-		return render(command, data)
+		rendered = render(command, data)
+		if command == "task complete" and "worktree_cleanup" in data:
+			first, separator, remainder = rendered.partition("\n")
+			return (
+				first
+				+ " | "
+				+ _worktree_cleanup_line(data["worktree_cleanup"])
+				+ separator
+				+ remainder
+			)
+		return rendered
 
 	lines = []
 	for item in items:
 		rendered = render(command, item).strip("\n")
 		if rendered:
-			lines.append(rendered.splitlines()[0])
+			line = rendered.splitlines()[0]
+			if command == "task complete" and "worktree_cleanup" in item:
+				line += " | " + _worktree_cleanup_line(item["worktree_cleanup"])
+			lines.append(line)
 
 		if isinstance(item, dict) and isinstance(item.get("deleted"), dict):
 			for record_type, records in item["deleted"].items():
@@ -1368,6 +1389,13 @@ def _render_human_output(command: str, data: object) -> str:
 			)
 
 	return "\n".join(lines) + ("\n" if lines else "")
+
+
+def _worktree_cleanup_line(data: dict[str, str]) -> str:
+	"""Show whether a completed task's checkout was removed or needs attention."""
+	status = data["status"]
+	reason = data.get("reason")
+	return f"Worktree: {status}" + (f" ({reason})" if reason else "")
 
 
 def _run_complete(args: argparse.Namespace, database: Database) -> tuple[object, str]:
@@ -1444,6 +1472,10 @@ def _run_command(
 		("worktree", "get"): lambda: (
 			WorktreeStore(database).get(args.task_id),
 			"worktree get",
+		),
+		("worktree", "cleanup"): lambda: (
+			WorktreeStore(database).cleanup(args.task_id),
+			"worktree cleanup",
 		),
 		("doctor", None): lambda: (ReadStore(database).doctor(), "doctor"),
 		("project", "init"): lambda: (_run_project(args, database), "project init"),

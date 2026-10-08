@@ -1265,6 +1265,10 @@ class WriteStore(_StoreBase):
 		handoffs are left alone. Dependants blocked only by the completed tasks
 		become ready. All completions run in one transaction, so a failure on any ID
 		rolls back the earlier ones.
+
+		After the tasks are saved, each task's managed worktree is removed if Git
+		finds it clean. Each result gains a worktree_cleanup entry saying whether
+		the checkout was removed, is pending with a reason, or never existed.
 		"""
 		task_ids, multiple = _normalise_write_ids(task_id, "task")
 		project = self.current_project(path)
@@ -1274,6 +1278,14 @@ class WriteStore(_StoreBase):
 				_complete_task(connection, identifier, project.id)
 				for identifier in task_ids
 			]
+
+		# The tasks stay done even when Git refuses to remove a checkout. The
+		# import is local because worktrees.py imports from this module.
+		from .worktrees import WorktreeStore
+
+		worktrees = WorktreeStore(self.database, self.projects)
+		for result in results:
+			result["worktree_cleanup"] = worktrees.cleanup(result["id"], path)
 
 		return results if multiple else results[0]
 

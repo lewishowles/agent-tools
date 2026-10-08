@@ -125,7 +125,7 @@ progress checkout detach [PATH...] [--stale] [--json] [--database <path>]
 
 Provide at least one path or `--stale`. They can be used together.
 
-### `progress worktree ensure` and `progress worktree get`
+### `progress worktree ensure`, `get`, and `cleanup`
 
 Create a linked Git checkout for a ready or in-progress task, or return the
 checkout already recorded for it:
@@ -133,6 +133,7 @@ checkout already recorded for it:
 ```text
 progress worktree ensure TASK_ID [--json] [--database <path>]
 progress worktree get TASK_ID [--json] [--database <path>]
+progress worktree cleanup TASK_ID [--json] [--database <path>]
 ```
 
 `ensure` creates a task branch from the current checkout's HEAD commit at
@@ -145,6 +146,15 @@ checkout still belongs to the same Git repository and project. Human output
 prints the checkout path; JSON also includes the task ID, project ID, and branch.
 `ensure` includes committed files only. It does not copy ignored files,
 installed packages, or uncommitted edits from the source checkout.
+
+`cleanup` retries removal after the task is done. It removes only a checkout
+without modified or untracked files, and leaves its branch in place. Ignored
+files in that checkout, such as `.env` or `node_modules`, are deleted with it.
+If Git refuses removal or the command runs from inside that checkout, the
+checkout stays recorded and the result is `pending` with a reason. If the folder
+is already gone, its record is cleared without pruning Git worktrees. Git keeps
+the entry for a hand-deleted folder until `git worktree prune`; until then, Git
+refuses to delete its branch. Repeating cleanup after removal reports `none`.
 
 ## Projects
 
@@ -492,6 +502,10 @@ given in one transaction. Each task moves to `done` only when it is `ready` or
 complete, `PendingChunksError` names the failing task and its blocking chunk
 IDs, and all earlier completions are rolled back. Completing a task clears
 that task's handoff and leaves every other handoff as it was.
+After the transaction commits, each completed task's managed worktree is
+removed when Git allows it. The result includes `worktree_cleanup` with a
+`removed`, `pending`, or `none` status. A pending cleanup does not undo task
+completion; run `progress worktree cleanup TASK_ID` after resolving its reason.
 
 ### `progress task unblock`
 

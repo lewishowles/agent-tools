@@ -320,27 +320,9 @@ def test_init_compensates_a_database_failure_and_reports_recovery_failure(
 
 
 @pytest.fixture
-def managed_repository(tmp_path):
+def managed_repository(tmp_path, committed_repository):
 	"""Provide a bound repository with a committed HEAD and one ready task."""
-	repository = _git_repository(tmp_path / "repository")
-	(repository / "tracked.txt").write_text("committed content\n")
-	subprocess.run(["git", "-C", str(repository), "add", "tracked.txt"], check=True)
-	subprocess.run(
-		[
-			"git",
-			"-C",
-			str(repository),
-			"-c",
-			"user.name=Test",
-			"-c",
-			"user.email=test@example.com",
-			"commit",
-			"--quiet",
-			"-m",
-			"Initial commit",
-		],
-		check=True,
-	)
+	repository = committed_repository
 	database = Database(tmp_path / "progress.db")
 	project, _ = ProjectStore(database).init(
 		"agents", "Agent configuration", repository

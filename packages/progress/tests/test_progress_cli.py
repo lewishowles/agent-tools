@@ -5422,6 +5422,7 @@ def test_human_task_complete_output_is_concise(
 		"release_id": "rel_parent",
 		"title": "Dependency",
 		"status": "done",
+		"worktree_cleanup": {"status": "pending", "reason": "checkout is locked"},
 		"unblocked_tasks": [{"id": "tsk_dependent", "title": "Dependent"}],
 	}
 
@@ -5469,9 +5470,13 @@ def test_human_task_complete_output_is_concise(
 	assert output.startswith("\n")
 	assert output.endswith("\n\nNext: progress next\n")
 	assert len(plain_lines) == 5
-	assert plain_lines[1].endswith("Completed task Dependency")
+	assert plain_lines[1].endswith(
+		"Completed task Dependency | Worktree: pending (checkout is locked)"
+	)
 	# Inequality after stripping ANSI proves the line carried styling.
-	assert plain_lines[1] != "Completed task Dependency"
+	assert plain_lines[1] != (
+		"Completed task Dependency | Worktree: pending (checkout is locked)"
+	)
 	assert plain_lines[2] == "Release ID: rel_parent"
 	assert plain_lines[4] == "Next: progress next"
 	assert ("Release ID: rel_parent", "muted", "normal") in render_spans
@@ -5858,28 +5863,9 @@ def test_project_init_reports_the_existing_project(
 
 
 def test_worktree_commands_return_the_task_checkout_without_creating_on_get(
-	tmp_path: Path, monkeypatch, capsys
+	tmp_path: Path, committed_repository: Path, monkeypatch, capsys
 ) -> None:
-	repository = tmp_path / "repository"
-	repository.mkdir()
-	subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
-	subprocess.run(
-		[
-			"git",
-			"-C",
-			str(repository),
-			"-c",
-			"user.name=Test",
-			"-c",
-			"user.email=test@example.com",
-			"commit",
-			"--quiet",
-			"--allow-empty",
-			"-m",
-			"Initial commit",
-		],
-		check=True,
-	)
+	repository = committed_repository
 	monkeypatch.chdir(repository)
 	database = Database(tmp_path / "progress.db")
 	project, _ = ProjectStore(database).init("agents", "Agent configuration")
@@ -5916,6 +5902,46 @@ def test_worktree_commands_return_the_task_checkout_without_creating_on_get(
 		== 0
 	)
 	assert created["path"] in capsys.readouterr().out
+
+
+def test_worktree_cleanup_command_reports_pending_and_removed(
+	tmp_path: Path, committed_repository: Path, monkeypatch, capsys
+) -> None:
+	repository = committed_repository
+	monkeypatch.chdir(repository)
+	database = Database(tmp_path / "progress.db")
+	ProjectStore(database).init("agents", "Agent configuration")
+	task = WriteStore(database).task_add(
+		"cleanup-task", "Cleanup task", "Finish the work", ["Complete the task"]
+	)
+	arguments = ["--database", str(database.path), "--json"]
+
+	assert cli.main(["worktree", "cleanup", task["id"], *arguments]) == 1
+	assert json.loads(capsys.readouterr().out)["error"]["code"] == "invalid-transition"
+
+	assert cli.main(["worktree", "ensure", task["id"], *arguments]) == 0
+	checkout = Path(json.loads(capsys.readouterr().out)["data"]["path"])
+	(checkout / "tracked.txt").write_text("unfinished work\n")
+
+	assert cli.main(["task", "complete", task["id"], *arguments]) == 0
+	completed = json.loads(capsys.readouterr().out)["data"]
+	assert completed["status"] == "done"
+	assert completed["worktree_cleanup"]["status"] == "pending"
+
+	assert cli.main(["worktree", "cleanup", task["id"], *arguments]) == 0
+	assert json.loads(capsys.readouterr().out)["data"]["status"] == "pending"
+
+	(checkout / "tracked.txt").write_text("committed content\n")
+
+	assert (
+		cli.main(["worktree", "cleanup", task["id"], "--database", str(database.path)])
+		== 0
+	)
+	assert "Worktree: removed" in capsys.readouterr().out
+	assert not checkout.exists()
+
+	assert cli.main(["worktree", "cleanup", task["id"], *arguments]) == 0
+	assert json.loads(capsys.readouterr().out)["data"] == {"status": "none"}
 
 
 def test_dispatch_records_project_commands_once_and_skips_help_version_and_command_list(
