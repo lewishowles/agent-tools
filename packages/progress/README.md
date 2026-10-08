@@ -665,15 +665,16 @@ cleared; pass replacement text when one needs changing.
 
 ### `progress chunk list`
 
-List chunks for a task, or omit `--task` to use the task selected by `progress next`:
+List chunks for a task by full ID or slug. Omit the task to use the one selected by `progress next`:
 
 ```text
-progress chunk list [--task <task_id>] [--all] [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
+progress chunk list [<task_id_or_slug> | --task <task_id_or_slug>] [--all] [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
 ```
 
-If no task is selected, the command returns an error with a recovery hint.
+Give the task once, either as an argument or with `--task`. If no task is selected,
+the command returns an error with a recovery hint.
 
-- `--task <task_id>`: task whose chunks should be listed
+- `--task <task_id_or_slug>`: task whose chunks should be listed
 - `--limit <limit>`: maximum number of chunks to return
 - `--offset <offset>`: number of chunks to skip before returning results
 - `--all`: show done chunks in full and remove the page limit; cannot be combined with `--limit` or `--offset`
@@ -688,13 +689,18 @@ and title of the listed task. See [Listing](#listing) for pagination details.
 
 ### `progress chunk get`
 
-Show one chunk by ID, or omit the ID to use the chunk selected by `progress next`:
+Show one chunk by ID or by its 1-based position in a task. The position is the
+number shown by `progress chunk list`. Omit both arguments to use the chunk
+selected by `progress next`:
 
 ```text
-progress chunk get [<chunk_id>] [--json] [--database <path>]
+progress chunk get [<chunk_id> | <task_id_or_slug> position-N] [--json] [--database <path>]
 ```
 
-If no chunk is selected, the command returns an error with a recovery hint.
+For example, `progress chunk get my-task position-2` shows the second chunk in
+`my-task`. If the position does not exist, the command names the task and position
+in a not-found error. If no chunk is selected, the command returns an error with a
+recovery hint.
 
 ### `progress search`
 

@@ -3078,6 +3078,159 @@ def test_json_chunk_list_includes_task_and_pagination(
 	}
 
 
+@pytest.mark.parametrize("task_reference", ["tsk_test", "progress-task"])
+@pytest.mark.parametrize("json_mode", [False, True], ids=["human", "json"])
+def test_chunk_list_accepts_a_positional_task(
+	tmp_path: Path, monkeypatch, capsys, task_reference: str, json_mode: bool
+) -> None:
+	calls = []
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def chunk_list(self, task_id, limit, offset, **kwargs):
+			calls.append(("chunk_list", task_id))
+			return {"items": [], "limit": 50, "offset": 0, "has_more": False}
+
+		def task_get(self, task_id):
+			calls.append(("task_get", task_id))
+			return {"id": "tsk_test", "title": "Progress task"}
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+	arguments = ["chunk", "list", task_reference, "--database", str(tmp_path / "db")]
+	if json_mode:
+		arguments.append("--json")
+
+	assert cli.main(arguments) == 0
+	output = capsys.readouterr()
+	assert calls == [
+		("chunk_list", task_reference),
+		("task_get", task_reference),
+	]
+	if json_mode:
+		assert json.loads(output.out)["data"]["task"]["id"] == "tsk_test"
+	else:
+		assert "Progress task · tsk_test" in output.out
+
+
+@pytest.mark.parametrize("json_mode", [False, True], ids=["human", "json"])
+def test_chunk_list_rejects_both_task_forms(
+	tmp_path: Path, capsys, json_mode: bool
+) -> None:
+	arguments = [
+		"chunk",
+		"list",
+		"first",
+		"--task",
+		"second",
+		"--database",
+		str(tmp_path / "db"),
+	]
+	if json_mode:
+		arguments.append("--json")
+
+	assert cli.main(arguments) == 2
+	output = capsys.readouterr()
+	if json_mode:
+		assert json.loads(output.out)["error"]["code"] == "usage"
+	else:
+		assert "give the task either as an argument or with --task" in output.err
+
+
+@pytest.mark.parametrize("task_reference", ["tsk_test", "progress-task"])
+@pytest.mark.parametrize("json_mode", [False, True], ids=["human", "json"])
+def test_chunk_get_accepts_a_task_and_position(
+	tmp_path: Path, monkeypatch, capsys, task_reference: str, json_mode: bool
+) -> None:
+	calls = []
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def chunk_get_by_position(self, task_id, position):
+			calls.append((task_id, position))
+			return {"id": "chk_test", "task_id": "tsk_test", "position": 2}
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+	arguments = [
+		"chunk",
+		"get",
+		task_reference,
+		"position-2",
+		"--database",
+		str(tmp_path / "db"),
+	]
+	if json_mode:
+		arguments.append("--json")
+
+	assert cli.main(arguments) == 0
+	output = capsys.readouterr()
+	assert calls == [(task_reference, 2)]
+	if json_mode:
+		assert json.loads(output.out)["data"]["id"] == "chk_test"
+	else:
+		assert "chk_test" in output.out
+
+
+@pytest.mark.parametrize("position_reference", ["position-0", "position-x", "2"])
+def test_chunk_get_rejects_an_invalid_position(
+	tmp_path: Path, capsys, position_reference: str
+) -> None:
+	assert (
+		cli.main(
+			[
+				"chunk",
+				"get",
+				"first",
+				position_reference,
+				"--json",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 2
+	)
+	assert json.loads(capsys.readouterr().out)["error"]["code"] == "usage"
+
+
+def test_chunk_get_reports_a_missing_task_position(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def chunk_get_by_position(self, task_id, position):
+			raise NotFoundError(
+				f"chunk at position {position} was not found in task {task_id}",
+				{"task_id": task_id, "position": position},
+			)
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+
+	assert (
+		cli.main(
+			[
+				"chunk",
+				"get",
+				"first",
+				"position-2",
+				"--json",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 1
+	)
+	assert json.loads(capsys.readouterr().out)["error"] == {
+		"code": "not-found",
+		"message": "chunk at position 2 was not found in task first",
+		"details": {"task_id": "first", "position": 2},
+	}
+
+
 @pytest.mark.parametrize("page_flag", ["--limit", "--offset"])
 def test_chunk_list_all_rejects_explicit_paging(
 	tmp_path: Path, capsys, page_flag: str

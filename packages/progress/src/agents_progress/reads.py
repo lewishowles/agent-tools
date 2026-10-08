@@ -1282,6 +1282,29 @@ class ReadStore(_StoreBase):
 
 		return Chunk.from_row(row).to_dict()
 
+	def chunk_get_by_position(
+		self,
+		task_reference: str,
+		position: int,
+		path: str | Path | None = None,
+	) -> dict[str, object]:
+		"""Return the chunk at a 1-based position in a task given by ID or slug.
+
+		Raises not-found, naming the task and position, when the task has no chunk
+		at that position.
+		"""
+		task = self.task_get(task_reference, path)
+		task_id = str(task["id"])
+
+		for chunk in task["chunks"]:
+			if chunk["position"] == position:
+				return chunk
+
+		raise NotFoundError(
+			f"chunk at position {position} was not found in task {task_id}",
+			{"task_id": task_id, "position": position},
+		)
+
 	def chunk_list(
 		self,
 		task_id: str,
@@ -1294,17 +1317,20 @@ class ReadStore(_StoreBase):
 	) -> dict[str, object]:
 		"""List one current-project task's chunks in position order.
 
+		The task can be given by ID or slug.
+
 		collapse_done_chunks is for human output. It leaves done chunks out of the
 		page, so the page limit counts unfinished chunks, and adds the counts and next
 		chunk title the list summary needs. show_all keeps done chunks and returns
 		every chunk without a page limit.
 		"""
-		validate_object_id(task_id, TASK_PREFIX)
+		task_id = validate_identifier(task_id, TASK_PREFIX)
 		if not show_all:
 			limit, offset = validate_page(limit, offset)
 		project = self.current_project(path)
 
 		with self.database.connection() as connection:
+			task_id = resolve_identifier(connection, task_id, TASK_PREFIX, project.id)
 			task_exists = connection.execute(
 				"SELECT 1 FROM tasks WHERE id = ? AND project_id = ?",
 				(task_id, project.id),

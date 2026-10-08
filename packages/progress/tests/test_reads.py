@@ -1343,6 +1343,52 @@ def test_release_and_chunk_get_return_the_full_current_project_records(
 	assert chunk["task_id"] == TASK_A
 
 
+@pytest.mark.parametrize("task_reference", [TASK_A, "first"])
+def test_chunk_list_and_position_get_use_the_same_task_positions(
+	tmp_path: Path, task_reference: str
+) -> None:
+	store = _seed_store(tmp_path)
+	second_chunk_id = "chk_" + "b" * 22
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO chunks (id, task_id, position, title, description, status) "
+			"VALUES (?, ?, ?, ?, ?, ?)",
+			(
+				second_chunk_id,
+				TASK_A,
+				2,
+				"Second chunk",
+				"Continue reading.",
+				"pending",
+			),
+		)
+
+	listed = store.chunk_list(task_reference)["items"]
+	first = store.chunk_get_by_position(task_reference, 1)
+	second = store.chunk_get_by_position(task_reference, 2)
+
+	assert [(chunk["id"], chunk["position"]) for chunk in listed] == [
+		(CHUNK_A, 1),
+		(second_chunk_id, 2),
+	]
+	assert first["id"] == CHUNK_A
+	assert second["id"] == second_chunk_id
+
+
+@pytest.mark.parametrize("task_reference", [TASK_A, "first"])
+def test_chunk_get_by_position_names_the_missing_task_position(
+	tmp_path: Path, task_reference: str
+) -> None:
+	store = _seed_store(tmp_path)
+
+	with pytest.raises(NotFoundError) as error:
+		store.chunk_get_by_position(task_reference, 2)
+
+	assert TASK_A in error.value.message
+	assert "position 2" in error.value.message
+	assert error.value.details == {"task_id": TASK_A, "position": 2}
+
+
 @pytest.mark.parametrize(
 	("method_name", "object_id"),
 	[("release_get", "rel_" + "r" * 22), ("chunk_get", "chk_" + "c" * 22)],

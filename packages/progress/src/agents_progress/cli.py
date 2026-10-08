@@ -754,12 +754,18 @@ _COMMAND_SPECS = (
 			_CommandSpec(
 				"get",
 				"show one chunk",
-				arguments=(_argument("chunk_id", nargs="?"),),
+				arguments=(
+					_argument("chunk_id", nargs="?", metavar="CHUNK_ID_OR_TASK"),
+					_argument("position_reference", nargs="?", metavar="position-N"),
+				),
 			),
 			_CommandSpec(
 				"list",
 				"list chunks for a task",
-				arguments=(_argument("--task", dest="task_id"),),
+				arguments=(
+					_argument("task_reference", nargs="?", metavar="TASK"),
+					_argument("--task", dest="task_id"),
+				),
 				page_options=True,
 				all_option=True,
 			),
@@ -1612,9 +1618,7 @@ def _run_command(
 			"chunk list",
 		),
 		("chunk", "get"): lambda: (
-			(store := ReadStore(database)).chunk_get(
-				_selected_id(store, args.chunk_id, "chunk")
-			),
+			_run_chunk_get(args, database),
 			"chunk get",
 		),
 		("chunk", "add"): lambda: (
@@ -1740,12 +1744,18 @@ def _run_command(
 def _run_chunk_list(args: argparse.Namespace, database: Database) -> object:
 	"""Load a task's chunks with the task's title and ID.
 
-	Uses the task selected by progress next when --task is omitted. Human output
+	Uses the task selected by progress next when no task is given. Human output
 	folds done chunks into a count; JSON lists every chunk. --all lists done chunks
 	in both and removes the page limit.
 	"""
+	if args.task_reference is not None and args.task_id is not None:
+		raise CliUsageError("give the task either as an argument or with --task")
+
 	store = ReadStore(database)
-	task_id = _selected_id(store, args.task_id, "task")
+	explicit_task = (
+		args.task_reference if args.task_reference is not None else args.task_id
+	)
+	task_id = _selected_id(store, explicit_task, "task")
 	data = store.chunk_list(
 		task_id,
 		args.limit,
@@ -1761,6 +1771,26 @@ def _run_chunk_list(args: argparse.Namespace, database: Database) -> object:
 		**data,
 		"task": {"id": task.get("id", ""), "title": task.get("title", "")},
 	}
+
+
+def _run_chunk_get(args: argparse.Namespace, database: Database) -> object:
+	"""Load a chunk by ID, or by a task and its position-N in that task.
+
+	Uses the chunk selected by progress next when neither is given. A second
+	argument that is not position-N with a positive N is a usage error.
+	"""
+	store = ReadStore(database)
+	if args.position_reference is None:
+		return store.chunk_get(_selected_id(store, args.chunk_id, "chunk"))
+
+	match = re.fullmatch(r"position-([1-9][0-9]*)", args.position_reference)
+	if match is None:
+		raise CliUsageError("chunk get needs a position such as position-1")
+
+	# In the position form the first argument names a task. The parser still
+	# calls it chunk_id because progress commands lists arguments by that name.
+	task_reference = args.chunk_id
+	return store.chunk_get_by_position(task_reference, int(match.group(1)))
 
 
 def _selected_id(store: ReadStore, explicit_id: str | None, kind: str) -> str:
