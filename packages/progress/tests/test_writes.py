@@ -3597,6 +3597,13 @@ def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
 		position=3,
 	)
 
+	old_updated_at = "2020-01-01T00:00:00+00:00"
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE tasks SET updated_at = ? WHERE id = ?",
+			(old_updated_at, task["id"]),
+		)
+
 	updated = store.task_edit(
 		task["id"],
 		overview="Updated overview",
@@ -3618,7 +3625,7 @@ def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
 	assert updated["created_at"] == task["created_at"]
 	assert updated["started_at"] == task["started_at"]
 	assert updated["completed_at"] == task["completed_at"]
-	assert updated["updated_at"] == task["updated_at"]
+	assert updated["updated_at"] > old_updated_at
 
 
 def test_task_edit_clears_task_files(tmp_path: Path) -> None:

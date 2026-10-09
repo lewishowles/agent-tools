@@ -2022,6 +2022,197 @@ def complete_records(tmp_path: Path, monkeypatch) -> tuple[Path, dict, dict]:
 	return database_path, task, chunk
 
 
+def _seed_old_task_updated_at(database_path: Path, task_id: str) -> str:
+	"""Set a task's update time to an old value so a later write visibly changes it."""
+	old_updated_at = "2020-01-01T00:00:00+00:00"
+	with Database(database_path).transaction() as connection:
+		connection.execute(
+			"UPDATE tasks SET updated_at = ? WHERE id = ?",
+			(old_updated_at, task_id),
+		)
+
+	return old_updated_at
+
+
+@pytest.mark.parametrize(
+	"command_arguments",
+	[
+		pytest.param(
+			[
+				"task",
+				"edit",
+				"{task_id}",
+				"--overview",
+				"Complete a task or chunk by ID.",
+			],
+			id="task-edit-same-value",
+		),
+		pytest.param(
+			["task", "rename", "{task_id}", "--title", "Renamed task"],
+			id="task-rename",
+		),
+		pytest.param(
+			["task", "move", "{task_id}", "--after", "{other_task_id}"],
+			id="task-move",
+		),
+		pytest.param(
+			[
+				"chunk",
+				"add",
+				"--task",
+				"{task_id}",
+				"--title",
+				"Another chunk",
+				"--description",
+				"Complete another chunk.",
+				"--review-question",
+				"Is it done?",
+			],
+			id="chunk-add",
+		),
+		pytest.param(
+			["chunk", "edit", "{chunk_id}", "--description", "Complete the chunk."],
+			id="chunk-edit-same-value",
+		),
+		pytest.param(
+			["chunk", "rename", "{chunk_id}", "--title", "Renamed chunk"],
+			id="chunk-rename",
+		),
+		pytest.param(
+			["chunk", "move", "{chunk_id}", "--after", "{other_chunk_id}"],
+			id="chunk-move",
+		),
+		pytest.param(["chunk", "remove", "{chunk_id}"], id="chunk-remove"),
+		pytest.param(["chunk", "complete", "{chunk_id}"], id="chunk-complete"),
+	],
+)
+def test_task_update_time_changes_after_task_and_chunk_commands(
+	complete_records, capsys, command_arguments: list[str]
+) -> None:
+	"""Each accepted task or chunk command moves only its own task's update time."""
+	database_path, task, chunk = complete_records
+	database = Database(database_path)
+	writer = WriteStore(database)
+	other_task = writer.task_add(
+		"other-task", "Other task", overview="Other work.", contract=["Finish it."]
+	)
+	other_chunk = writer.chunk_add(
+		task["id"], "Other chunk", "Complete other work.", "Is it done?"
+	)
+	old_updated_at = _seed_old_task_updated_at(database_path, task["id"])
+	other_old_updated_at = _seed_old_task_updated_at(database_path, other_task["id"])
+	identifiers = {
+		"task_id": task["id"],
+		"chunk_id": chunk["id"],
+		"other_task_id": other_task["id"],
+		"other_chunk_id": other_chunk["id"],
+	}
+	arguments = [value.format_map(identifiers) for value in command_arguments]
+
+	assert cli.main([*arguments, "--database", str(database_path), "--json"]) == 0
+	assert json.loads(capsys.readouterr().out)["ok"] is True
+	assert ReadStore(database).task_get(task["id"])["updated_at"] > old_updated_at
+	assert (
+		ReadStore(database).task_get(other_task["id"])["updated_at"]
+		== other_old_updated_at
+	)
+
+
+def test_task_move_to_another_release_updates_only_the_moved_task(
+	complete_records, capsys
+) -> None:
+	"""Moving between release queues changes only the moved task's update time."""
+	database_path, task, _chunk = complete_records
+	database = Database(database_path)
+	writer = WriteStore(database)
+	other_task = writer.task_add(
+		"other-task", "Other task", overview="Other work.", contract=["Finish it."]
+	)
+	release = writer.release_add(
+		"new-release", "New release", overview="Work in a new release."
+	)
+	old_updated_at = _seed_old_task_updated_at(database_path, task["id"])
+	other_old_updated_at = _seed_old_task_updated_at(database_path, other_task["id"])
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"move",
+				task["id"],
+				"--release",
+				release["id"],
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 0
+	)
+	assert json.loads(capsys.readouterr().out)["ok"] is True
+	assert ReadStore(database).task_get(task["id"])["updated_at"] > old_updated_at
+	assert (
+		ReadStore(database).task_get(other_task["id"])["updated_at"]
+		== other_old_updated_at
+	)
+
+
+def test_chunk_start_updates_its_parent_task(complete_records, capsys) -> None:
+	"""Starting a pending chunk changes its parent task's update time."""
+	database_path, task, _chunk = complete_records
+	database = Database(database_path)
+	writer = WriteStore(database)
+	pending_chunk = writer.chunk_add(
+		task["id"], "Pending chunk", "Complete more work.", "Is it done?"
+	)
+	writer.task_start(task["id"])
+	old_updated_at = _seed_old_task_updated_at(database_path, task["id"])
+
+	assert (
+		cli.main(
+			[
+				"chunk",
+				"start",
+				pending_chunk["id"],
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 0
+	)
+	assert json.loads(capsys.readouterr().out)["ok"] is True
+	assert ReadStore(database).task_get(task["id"])["updated_at"] > old_updated_at
+
+
+def test_rejected_task_move_keeps_its_update_time(complete_records, capsys) -> None:
+	"""Leave the update time alone when the target task does not exist."""
+	database_path, task, _chunk = complete_records
+	old_updated_at = _seed_old_task_updated_at(database_path, task["id"])
+	missing_task_id = "tsk_" + "x" * 22
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"move",
+				task["id"],
+				"--after",
+				missing_task_id,
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 1
+	)
+	assert json.loads(capsys.readouterr().out)["error"]["code"] == "not-found"
+	assert (
+		ReadStore(Database(database_path)).task_get(task["id"])["updated_at"]
+		== old_updated_at
+	)
+
+
 def test_complete_finishes_a_real_chunk_by_id(complete_records, capsys) -> None:
 	"""Complete an active chunk through the public command."""
 	database_path, task, chunk = complete_records

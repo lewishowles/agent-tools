@@ -729,7 +729,7 @@ class WriteStore(_StoreBase):
 		title: str,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Update only the title of a current-project task."""
+		"""Update the title of a current-project task."""
 		validate_object_id(task_id, TASK_PREFIX)
 		_require_text(title, "task title")
 		project = self.current_project(path)
@@ -739,7 +739,8 @@ class WriteStore(_StoreBase):
 				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
 
 			connection.execute(
-				"UPDATE tasks SET title = ? WHERE id = ?", (title, task_id)
+				"UPDATE tasks SET title = ?, updated_at = ? WHERE id = ?",
+				(title, utc_timestamp(), task_id),
 			)
 			return _task_dict(connection, task_id, project.id)
 
@@ -843,11 +844,12 @@ class WriteStore(_StoreBase):
 			if _task_row(connection, task_id, project.id) is None:
 				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
 
-			if updates:
-				connection.execute(
-					f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?",
-					(*parameters, task_id),
-				)
+			updates.append("updated_at = ?")
+			parameters.append(utc_timestamp())
+			connection.execute(
+				f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?",
+				(*parameters, task_id),
+			)
 			for field, task_values in list_values.items():
 				_write_task_values(connection, field, task_id, task_values)
 
@@ -920,8 +922,8 @@ class WriteStore(_StoreBase):
 
 				task_position = _next_task_position(connection, project.id, release_id)
 				connection.execute(
-					"UPDATE tasks SET release_id = ?, position = ? WHERE id = ?",
-					(release_id, task_position, task_id),
+					"UPDATE tasks SET release_id = ?, position = ?, updated_at = ? WHERE id = ?",
+					(release_id, task_position, utc_timestamp(), task_id),
 				)
 
 				if target_task_id is not None:
@@ -957,6 +959,10 @@ class WriteStore(_StoreBase):
 				target_task_id,
 				before_task_id,
 				after_task_id,
+			)
+			connection.execute(
+				"UPDATE tasks SET updated_at = ? WHERE id = ?",
+				(utc_timestamp(), task_id),
 			)
 
 			return _task_dict(connection, task_id, project.id)
@@ -1144,6 +1150,10 @@ class WriteStore(_StoreBase):
 					"UPDATE chunks SET position = ? WHERE id = ?",
 					(index, ordered_id),
 				)
+			connection.execute(
+				"UPDATE tasks SET updated_at = ? WHERE id = ?",
+				(utc_timestamp(), task_id),
+			)
 
 			return _chunk_dict(connection, chunk_id, project.id)
 
@@ -1209,6 +1219,10 @@ class WriteStore(_StoreBase):
 					"UPDATE chunks SET position = ? WHERE id = ?",
 					(index, ordered_id),
 				)
+			connection.execute(
+				"UPDATE tasks SET updated_at = ? WHERE id = ?",
+				(utc_timestamp(), chunk["task_id"]),
+			)
 
 			return _chunk_dict(connection, chunk_id, project.id)
 
@@ -1255,6 +1269,10 @@ class WriteStore(_StoreBase):
 				"UPDATE chunks SET status = 'active', started_at = ? WHERE id = ?",
 				(now, chunk_id),
 			)
+			connection.execute(
+				"UPDATE tasks SET updated_at = ? WHERE id = ?",
+				(now, chunk["task_id"]),
+			)
 
 			result = _chunk_dict(connection, chunk_id, project.id)
 
@@ -1290,11 +1308,16 @@ class WriteStore(_StoreBase):
 		project = self.current_project(path)
 
 		with self.database.transaction() as connection:
-			if _chunk_row(connection, chunk_id, project.id) is None:
+			chunk = _chunk_row(connection, chunk_id, project.id)
+			if chunk is None:
 				raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
 
 			connection.execute(
 				"UPDATE chunks SET title = ? WHERE id = ?", (title, chunk_id)
+			)
+			connection.execute(
+				"UPDATE tasks SET updated_at = ? WHERE id = ?",
+				(utc_timestamp(), chunk["task_id"]),
 			)
 			return _chunk_dict(connection, chunk_id, project.id)
 
@@ -1338,6 +1361,10 @@ class WriteStore(_StoreBase):
 			connection.execute(
 				f"UPDATE chunks SET {assignments} WHERE id = ?",
 				(*updates.values(), chunk_id),
+			)
+			connection.execute(
+				"UPDATE tasks SET updated_at = ? WHERE id = ?",
+				(utc_timestamp(), chunk["task_id"]),
 			)
 			return _chunk_dict(connection, chunk_id, project.id)
 
@@ -2164,10 +2191,15 @@ def _remove_chunk(
 ) -> dict[str, object]:
 	"""Remove one chunk belonging to a current-project task."""
 	validate_object_id(chunk_id, CHUNK_PREFIX)
-	if _chunk_row(connection, chunk_id, project_id) is None:
+	chunk = _chunk_row(connection, chunk_id, project_id)
+	if chunk is None:
 		raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
 
 	connection.execute("DELETE FROM chunks WHERE id = ?", (chunk_id,))
+	connection.execute(
+		"UPDATE tasks SET updated_at = ? WHERE id = ?",
+		(utc_timestamp(), chunk["task_id"]),
+	)
 	return {"id": chunk_id}
 
 
@@ -2194,6 +2226,10 @@ def _complete_chunk(
 	connection.execute(
 		"UPDATE chunks SET status = 'done', completed_at = ? WHERE id = ?",
 		(now, chunk_id),
+	)
+	connection.execute(
+		"UPDATE tasks SET updated_at = ? WHERE id = ?",
+		(now, chunk["task_id"]),
 	)
 	if previous_status == "active":
 		next_chunk = connection.execute(
