@@ -102,7 +102,7 @@ def render(command: str, data: object) -> str:
 	if command == "release get" and isinstance(data, dict):
 		return _render_release(data)
 	if command == "task get" and isinstance(data, dict):
-		return _render_task(data)
+		return _render_task_get(data)
 	if command == "chunk get" and isinstance(data, dict):
 		return _render_chunk(data)
 	if command == "show note" and isinstance(data, dict):
@@ -440,9 +440,8 @@ def _render_release(release: dict[str, object]) -> str:
 def _render_task(task: dict[str, object]) -> str:
 	"""Render one task record in full, shared by task get and next.
 
-	Both commands show the same task, so next carries the whole record and a
-	follow-up task get returns nothing new. Slug, position and timestamps are
-	left to --json.
+	Both commands show the same task record. Task get follows it with the project,
+	release, notes and handoff. Slug, position and timestamps are left to --json.
 	"""
 	blocks = [render_span(str(task.get("title", "")), "text", weight="bold")]
 	status = task.get("status", "")
@@ -542,6 +541,61 @@ def _render_task(task: dict[str, object]) -> str:
 		blocks.extend(
 			[render_divider(divider_colour="muted"), render_row_group(footer_rows)]
 		)
+
+	return "\n\n".join(blocks)
+
+
+def _render_task_get(task: dict[str, object]) -> str:
+	"""Render a task for task get, followed by its project, release, notes and handoff.
+
+	next keeps the plain task view, so these extra sections appear only here.
+	"""
+	blocks = [_render_task(task)]
+	project = task.get("project")
+	if isinstance(project, dict):
+		blocks.append(render_row("Project", str(project.get("name", ""))))
+
+	release = task.get("release")
+	if isinstance(release, dict):
+		blocks.append(render_row("Release", str(release.get("title", ""))))
+
+	blocks.append(render_span("Notes"))
+	notes = task.get("notes")
+	if isinstance(notes, list) and notes:
+		blocks.extend(
+			render_span(
+				f"{str(note.get('type', '')).capitalize()}: {note.get('body', '')}",
+				"muted",
+				weight="normal",
+			)
+			for note in notes
+			if isinstance(note, dict)
+		)
+	else:
+		blocks.append(render_span("No notes recorded.", "muted", weight="normal"))
+
+	blocks.append(render_span("Handoff"))
+	handoff = task.get("handoff")
+	if isinstance(handoff, dict) and handoff.get("status") != "not-set":
+		rows = [
+			{"label": label, "value": str(handoff[key])}
+			for label, key in (
+				("Current goal", "current_goal"),
+				("Previous step", "previous_step"),
+				("Next step", "next_step"),
+				("Standing context", "standing_context"),
+				("Verify with", "verify_with"),
+				("Stop marker", "stop_marker"),
+			)
+			if handoff.get(key)
+		]
+		blocks.append(
+			render_row_group(rows)
+			if rows
+			else render_span("No handoff details recorded.", "muted", weight="normal")
+		)
+	else:
+		blocks.append(render_span("No handoff recorded.", "muted", weight="normal"))
 
 	return "\n\n".join(blocks)
 

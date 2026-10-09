@@ -532,6 +532,12 @@ progress task get [<task_id>] [--json] [--database <path>]
 ```
 
 If no task is selected, the command returns an error with a recovery hint.
+With `--json`, the result adds `project` for the current project, `release` for
+the task's release with its notes (or `null` when there is no release), `notes`
+for all task discoveries and decisions in oldest-first order, and `handoff`
+for the task's own handoff. If no handoff is recorded, its status is `not-set`.
+The text view shows the project and release names, task notes, and handoff
+details.
 
 ### `progress task block`
 

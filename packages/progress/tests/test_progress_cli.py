@@ -762,6 +762,39 @@ def test_json_success_uses_the_stable_envelope(
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 
+def test_next_json_keeps_task_context_out_of_the_task(
+	task_list_pages: Path, capsys
+) -> None:
+	database = Database(task_list_pages)
+	task_id = ReadStore(database).next()["task"]["id"]
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO task_context (task_id, current_goal, updated_at) VALUES (?, ?, ?)",
+			(task_id, "Finish reads", "2026-01-01T00:00:04+00:00"),
+		)
+		connection.execute(
+			"INSERT INTO notes (id, project_id, task_id, type, body, created_at) "
+			"VALUES (?, ?, ?, ?, ?, ?)",
+			(
+				"nte_" + "n" * 22,
+				"prj_" + "p" * 22,
+				task_id,
+				"discovery",
+				"Task note.",
+				"2026-01-01T00:00:04+00:00",
+			),
+		)
+
+	assert cli.main(["next", "--json", "--database", str(task_list_pages)]) == 0
+	result = json.loads(capsys.readouterr().out)["data"]
+
+	assert result["task"]["id"] == task_id
+	assert all(
+		key not in result["task"] for key in ("project", "release", "notes", "handoff")
+	)
+	assert result["release"] is not None
+
+
 def test_next_task_flag_selects_the_named_task(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -4130,6 +4163,17 @@ def test_task_get_uses_one_readable_task_view() -> None:
 		"contract": ["First contract step.", "Second contract step."],
 		"files": ["src/task.py", "tests/test_task.py"],
 		"verification": "Run the task tests.",
+		"project": {"id": "prj_task_view", "name": "Task project"},
+		"release": {"id": "rel_task_view", "title": "Task release"},
+		"notes": [
+			{"type": "discovery", "body": "First finding."},
+			{"type": "decision", "body": "Continue the task."},
+		],
+		"handoff": {
+			"current_goal": "Finish the task.",
+			"next_step": "Run the checks.",
+			"verify_with": "The task tests.",
+		},
 		"position": 99,
 		"created_at": "hidden-created-at",
 		"started_at": "hidden-started-at",
@@ -4158,6 +4202,13 @@ def test_task_get_uses_one_readable_task_view() -> None:
 	assert "Verification" in plain_output
 	assert "Project ID" in plain_output and "prj_task_view" in plain_output
 	assert "Release ID" in plain_output and "rel_task_view" in plain_output
+	assert "Project" in plain_output and "Task project" in plain_output
+	assert "Release" in plain_output and "Task release" in plain_output
+	assert "Discovery: First finding." in plain_output
+	assert "Decision: Continue the task." in plain_output
+	assert "Handoff" in plain_output and "Finish the task." in plain_output
+	assert "Run the checks." in plain_output
+	assert "The task tests." in plain_output
 	assert "hidden-task-slug" not in plain_output
 	assert "hidden-created-at" not in plain_output
 	assert "hidden-started-at" not in plain_output
@@ -4172,6 +4223,67 @@ def test_task_get_uses_one_readable_task_view() -> None:
 	assert plain_output.index("Contract") < plain_output.index("Files")
 	assert plain_output.index("Files") < plain_output.index("Verification")
 	assert plain_output.index("Verification") < plain_output.index("Project ID")
+	assert plain_output.index("Task release") < plain_output.index("Notes")
+	assert plain_output.index("Notes") < plain_output.index("Handoff")
+
+
+def test_task_get_shows_empty_notes_and_handoff_without_a_release() -> None:
+	output = render_module.render(
+		"task get",
+		{
+			"id": "tsk_empty",
+			"title": "Empty context",
+			"status": "ready",
+			"project": {"name": "Task project"},
+			"release": None,
+			"notes": [],
+			"handoff": {"status": "not-set"},
+		},
+	)
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", output)
+
+	assert "Task project" in plain_output
+	assert "No notes recorded." in plain_output
+	assert "No handoff recorded." in plain_output
+	assert "Release" not in plain_output
+
+
+def test_task_get_shows_when_a_handoff_has_no_details() -> None:
+	output = render_module.render(
+		"task get",
+		{
+			"id": "tsk_empty_handoff",
+			"title": "Empty handoff",
+			"status": "ready",
+			"handoff": {
+				"project_id": "prj_test",
+				"task_id": "tsk_empty_handoff",
+				"updated_at": "2026-01-01T00:00:00+00:00",
+			},
+		},
+	)
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", output)
+
+	assert "Handoff" in plain_output
+	assert "No handoff details recorded." in plain_output
+	assert "No handoff recorded." not in plain_output
+
+
+def test_next_task_text_does_not_show_task_get_context() -> None:
+	task = {
+		"id": "tsk_next",
+		"title": "Selected task",
+		"status": "in-progress",
+		"project": {"name": "Task project"},
+		"notes": [{"type": "decision", "body": "Task-only note."}],
+		"handoff": {"next_step": "Task-only handoff."},
+	}
+	output = render_module.render("next", {"task": task, "chunk": None})
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", output)
+
+	assert "Selected task" in plain_output
+	assert "Task-only note." not in plain_output
+	assert "Task-only handoff." not in plain_output
 
 
 def test_release_get_uses_one_readable_release_view() -> None:
@@ -4294,7 +4406,7 @@ def test_task_get_routes_around_the_generic_object_renderer(monkeypatch) -> None
 		"_render_object",
 		lambda data: pytest.fail("task get used the generic renderer"),
 	)
-	monkeypatch.setattr(render_module, "_render_task", lambda task: "task view")
+	monkeypatch.setattr(render_module, "_render_task_get", lambda task: "task view")
 
 	assert render_module.render("task get", {"id": "tsk_test"}) == "task view"
 

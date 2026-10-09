@@ -3569,7 +3569,8 @@ def test_task_edit_validates_all_values_before_writing(tmp_path: Path) -> None:
 		task["id"]
 	)
 
-	assert current == {**task, "chunks": []}
+	assert {key: current[key] for key in task} == task
+	assert current["chunks"] == []
 
 
 def test_task_edit_requires_at_least_one_field(tmp_path: Path) -> None:

@@ -1311,6 +1311,68 @@ def test_task_get_accepts_an_id_or_slug(
 	)
 
 
+def test_task_get_includes_its_release_notes_and_handoff(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO notes (id, project_id, release_id, type, body, created_at) "
+			"VALUES (?, ?, ?, ?, ?, ?)",
+			(
+				"nte_" + "r" * 22,
+				PROJECT_ID,
+				RELEASE_A,
+				"decision",
+				"Release decision.",
+				"2026-01-01T00:00:00+00:00",
+			),
+		)
+		connection.execute(
+			"UPDATE notes SET supersedes_id = ? WHERE id = ?",
+			(DISCOVERY_A, DECISION_A),
+		)
+		connection.execute(
+			"INSERT INTO task_context (task_id, current_goal, next_step, updated_at) "
+			"VALUES (?, ?, ?, ?)",
+			(TASK_A, "Finish reads", "Run tests", "2026-01-01T00:00:04+00:00"),
+		)
+
+	task = store.task_get(TASK_A)
+
+	assert task["project"] == {
+		"id": PROJECT_ID,
+		"slug": "agents",
+		"name": "Agent configuration",
+	}
+	assert task["release"]["id"] == RELEASE_A
+	assert [note["body"] for note in task["release"]["notes"]] == ["Release decision."]
+	assert [note["id"] for note in task["notes"]] == [DISCOVERY_A, DECISION_A]
+	assert task["notes"][1]["supersedes_id"] == DISCOVERY_A
+	assert task["handoff"] == store.context_get(task_id=TASK_A)
+
+
+def test_task_get_without_a_release_or_handoff_uses_empty_context(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE tasks SET release_id = NULL WHERE id = ?", (TASK_B,))
+		connection.execute("DELETE FROM notes WHERE task_id = ?", (TASK_B,))
+		connection.execute(
+			"INSERT INTO context (project_id, current_goal, updated_at) VALUES (?, ?, ?)",
+			(PROJECT_ID, "Project handoff", "2026-01-01T00:00:04+00:00"),
+		)
+
+	task = store.task_get(TASK_B)
+
+	assert task["release"] is None
+	assert task["notes"] == []
+	assert task["handoff"] == {
+		"status": "not-set",
+		"project_id": PROJECT_ID,
+		"task_id": TASK_B,
+	}
+
+
 @pytest.mark.parametrize("reference", ["missing-release", "rel_" + "r" * 22])
 def test_release_get_rejects_an_unknown_identifier(
 	tmp_path: Path, reference: str

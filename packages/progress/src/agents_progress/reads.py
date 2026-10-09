@@ -320,6 +320,92 @@ def _release_public_data(
 	return release
 
 
+def _task_release(
+	connection: sqlite3.Connection, project_id: str, release_id: str | None
+) -> dict[str, object] | None:
+	"""Return a task's release and its notes when the task has a release."""
+	if release_id is None:
+		return None
+
+	release_row = connection.execute(
+		f"SELECT {_RELEASE_COLUMNS} FROM releases WHERE id = ? AND project_id = ?",
+		(release_id, project_id),
+	).fetchone()
+
+	return (
+		_release_public_data(connection, release_row)
+		if release_row is not None
+		else None
+	)
+
+
+def _task_handoff(
+	connection: sqlite3.Connection, project_id: str, task_id: str
+) -> dict[str, object]:
+	"""Return a task's handoff in the same shape as context get --task."""
+	handoff_row = connection.execute(
+		f"SELECT {_TASK_CONTEXT_COLUMNS} FROM task_context "
+		"JOIN tasks ON tasks.id = task_context.task_id "
+		"WHERE task_context.task_id = ? AND tasks.project_id = ?",
+		(task_id, project_id),
+	).fetchone()
+
+	if handoff_row is None:
+		return {"status": "not-set", "project_id": project_id, "task_id": task_id}
+
+	return Context.from_row(handoff_row).to_dict()
+
+
+def _task_read_context(
+	connection: sqlite3.Connection, project: Project, task: dict[str, object]
+) -> dict[str, object]:
+	"""Return what task get adds so one read is enough to resume the task.
+
+	The handoff is the task's own, never the project's or the active task's,
+	and takes the not-set shape from context get --task when none is recorded.
+	"""
+	task_id = str(task["id"])
+	release_id = task["release_id"]
+	release = _task_release(
+		connection, project.id, str(release_id) if release_id is not None else None
+	)
+
+	notes = [
+		Note.from_row(row).to_dict()
+		for row in connection.execute(
+			f"SELECT {_NOTE_COLUMNS} FROM notes "
+			"WHERE project_id = ? AND task_id = ? ORDER BY created_at, id",
+			(project.id, task_id),
+		).fetchall()
+	]
+	handoff = _task_handoff(connection, project.id, task_id)
+
+	return {
+		"project": project.to_dict(),
+		"release": release,
+		"notes": notes,
+		"handoff": handoff,
+	}
+
+
+def _task_plain_data(
+	connection: sqlite3.Connection, project_id: str, task_id: str
+) -> dict[str, object]:
+	"""Return a task and its chunks, before task get adds the resume context."""
+	task_id = resolve_identifier(connection, task_id, TASK_PREFIX, project_id)
+	task_row = connection.execute(
+		f"SELECT {_TASK_COLUMNS} FROM tasks WHERE id = ? AND project_id = ?",
+		(task_id, project_id),
+	).fetchone()
+	if task_row is None:
+		raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
+
+	task = Task.from_row(_task_public_row(connection, task_row)).to_dict()
+	task["chunks"] = _task_chunks(connection, task_id)
+
+	return task
+
+
 def _task_response(
 	connection: sqlite3.Connection,
 	project: Project,
@@ -338,14 +424,11 @@ def _task_response(
 	task_data = task.to_dict() if task is not None else None
 	if task_data is not None:
 		task_data["chunks"] = _task_chunks(connection, task.id)
-	release_data = None
-	if task is not None and task.release_id is not None:
-		release_row = connection.execute(
-			f"SELECT {_RELEASE_COLUMNS} FROM releases WHERE id = ? AND project_id = ?",
-			(task.release_id, task.project_id),
-		).fetchone()
-		if release_row is not None:
-			release_data = _release_public_data(connection, release_row)
+	release_data = (
+		_task_release(connection, task.project_id, task.release_id)
+		if task is not None
+		else None
+	)
 	# The first unfinished dependency of a waiting task, so the hint can show
 	# what the task is waiting for. IDs are sorted to keep the hint stable.
 	unfinished_dependency_id = None
@@ -948,21 +1031,17 @@ class ReadStore(_StoreBase):
 		task_id: str,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Return one current-project task by ID or project slug, or raise not-found."""
+		"""Return one current-project task by ID or slug, or raise not-found.
+
+		The task also carries its project, release, notes and handoff, so one read
+		is enough to resume it.
+		"""
 		task_id = validate_identifier(task_id, TASK_PREFIX)
 		project = self.current_project(path)
 
 		with self.database.connection() as connection:
-			task_id = resolve_identifier(connection, task_id, TASK_PREFIX, project.id)
-			row = connection.execute(
-				f"SELECT {_TASK_COLUMNS} FROM tasks WHERE id = ? AND project_id = ?",
-				(task_id, project.id),
-			).fetchone()
-			if row is None:
-				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
-
-			task = Task.from_row(_task_public_row(connection, row)).to_dict()
-			task["chunks"] = _task_chunks(connection, task_id)
+			task = _task_plain_data(connection, project.id, task_id)
+			task.update(_task_read_context(connection, project, task))
 
 			return task
 
@@ -1564,15 +1643,10 @@ class ReadStore(_StoreBase):
 					(project.id,),
 				).fetchone()
 			else:
-				row = connection.execute(
-					f"SELECT {_TASK_CONTEXT_COLUMNS} FROM task_context "
-					"JOIN tasks ON tasks.id = task_context.task_id "
-					"WHERE task_context.task_id = ?",
-					(task_id,),
-				).fetchone()
+				return _task_handoff(connection, project.id, task_id)
 
 		if row is None:
-			return {"status": "not-set", "project_id": project.id, "task_id": task_id}
+			return {"status": "not-set", "project_id": project.id, "task_id": None}
 
 		return Context.from_row(row).to_dict()
 
