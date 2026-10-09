@@ -1365,12 +1365,25 @@ def _render_human_output(command: str, data: object) -> str:
 	list response, only the first rendered line of each record is kept unless
 	forced removal details need to be shown below it. The worktree commands
 	print only the checkout path, so a launcher can change into it directly.
-	Task completion adds the worktree cleanup result to each task's line.
+	Task completion adds the worktree cleanup result to each task's line. Task
+	and chunk starts add one line when the worktree has uncommitted changes or
+	Git could not check it.
 	"""
 	if command in {"worktree ensure", "worktree get"} and isinstance(data, dict):
 		return f"{data['path']}\n"
 	if command == "worktree cleanup" and isinstance(data, dict):
 		return _worktree_cleanup_line(data) + "\n"
+	if (
+		command in {"task start", "chunk start"}
+		and isinstance(data, dict)
+		and "uncommitted_changes" in data
+	):
+		changes = data["uncommitted_changes"]
+		record = {
+			key: value for key, value in data.items() if key != "uncommitted_changes"
+		}
+		line = _uncommitted_changes_line(changes)
+		return render(command, record) + (f"{line}\n" if line else "")
 	if command not in _MULTI_ID_WRITE_COMMANDS:
 		return render(command, data)
 	if isinstance(data, list):
@@ -1447,6 +1460,16 @@ def _worktree_cleanup_line(data: dict[str, str]) -> str:
 	status = data["status"]
 	reason = data.get("reason")
 	return f"Worktree: {status}" + (f" ({reason})" if reason else "")
+
+
+def _uncommitted_changes_line(data: dict[str, object]) -> str:
+	"""Return the start warning about uncommitted changes, or an empty string when the worktree is clean."""
+	if data["status"] == "dirty":
+		count = data["count"]
+		return f"Uncommitted changes: {count} {'file' if count == 1 else 'files'}"
+	if data["status"] == "unavailable":
+		return f"Uncommitted changes: not checked ({data['reason']})"
+	return ""
 
 
 def _run_complete(args: argparse.Namespace, database: Database) -> tuple[object, str]:

@@ -483,6 +483,13 @@ default task is in progress. If another task holds the default, use
 the default even when it is empty. Other tasks and their active chunks stay
 as they are.
 
+Every start reports `uncommitted_changes` in JSON: `status` is `clean`,
+`dirty`, or `unavailable`; `count` is the number of changed Git entries; and
+`paths` lists up to 20 of them. A failed status check includes `reason`.
+Staged, unstaged, and untracked files count, while ignored files do not.
+The task still starts when changes exist or the status check fails. Human
+output adds one line when changes exist or Git could not check them.
+
 ### `progress complete`
 
 Complete one task or chunk by ID:
@@ -624,6 +631,9 @@ progress chunk start <chunk_id> [--json] [--database <path>]
 The chunk's task must already be `in-progress`. If another chunk on the same
 task is active, it returns that chunk to `pending` before activating the
 requested chunk.
+
+Chunk starts report the same `uncommitted_changes` result as task starts.
+Changes and a failed Git status check do not prevent activation.
 
 ### `progress chunk complete`
 

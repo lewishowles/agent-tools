@@ -1215,7 +1215,11 @@ class WriteStore(_StoreBase):
 	def chunk_start(
 		self, chunk_id: str, path: str | Path | None = None
 	) -> dict[str, object]:
-		"""Activate a pending chunk on an in-progress task atomically."""
+		"""Activate a pending chunk on an in-progress task atomically.
+
+		The result reports the worktree's uncommitted changes, which never prevent
+		the activation.
+		"""
 		validate_object_id(chunk_id, CHUNK_PREFIX)
 		project = self.current_project(path)
 
@@ -1252,7 +1256,10 @@ class WriteStore(_StoreBase):
 				(now, chunk_id),
 			)
 
-			return _chunk_dict(connection, chunk_id, project.id)
+			result = _chunk_dict(connection, chunk_id, project.id)
+
+		result["uncommitted_changes"] = self.projects.uncommitted_changes(path)
+		return result
 
 	def chunk_remove(
 		self,
@@ -1342,6 +1349,8 @@ class WriteStore(_StoreBase):
 		A plain start makes the task the project's default and is refused while
 		another default task is in progress. A secondary start never changes the
 		default. Other in-progress tasks and their active chunks stay as they are.
+		The result reports the worktree's uncommitted changes, which never prevent
+		the start.
 		"""
 		task_id = validate_identifier(task_id, TASK_PREFIX)
 		project = self.current_project(path)
@@ -1401,7 +1410,10 @@ class WriteStore(_StoreBase):
 					(now, pending_chunk["id"]),
 				)
 
-			return _task_dict(connection, task_id, project.id)
+			result = _task_dict(connection, task_id, project.id)
+
+		result["uncommitted_changes"] = self.projects.uncommitted_changes(path)
+		return result
 
 	def task_complete(
 		self,

@@ -7,6 +7,8 @@ from .errors import GitBindingError, NotAProjectError
 
 # Git config key that binds a repository to its progress project.
 _BINDING_KEY = "progress.project-id"
+# The most changed paths a start lists; the count still covers every change.
+_MAX_UNCOMMITTED_PATHS = 20
 
 
 class GitRepository:
@@ -57,6 +59,49 @@ class GitRepository:
 			)
 
 		return (self.path / result.stdout.strip()).resolve()
+
+	def uncommitted_changes(self) -> dict[str, object]:
+		"""Report the worktree's staged, unstaged, and untracked entries as Git lists them.
+
+		The result has a status of clean, dirty, or unavailable, the full entry
+		count, and a capped list of paths. A failed or undecodable status query
+		returns unavailable with a short reason, so a start can still go ahead.
+		"""
+		try:
+			result = self.run(["status", "--porcelain=v1", "-z"])
+		except UnicodeDecodeError:
+			return {
+				"status": "unavailable",
+				"count": 0,
+				"paths": [],
+				"reason": "Git status output is not valid UTF-8",
+			}
+
+		if result.returncode != 0:
+			return {
+				"status": "unavailable",
+				"count": 0,
+				"paths": [],
+				"reason": result.stderr.strip()
+				or f"Git exited with status {result.returncode}",
+			}
+
+		count = 0
+		paths = []
+		entries = iter(result.stdout.split("\0"))
+		for entry in entries:
+			if not entry:
+				continue
+
+			count += 1
+			# Each entry starts with a two-letter status and a space before the path.
+			if len(paths) < _MAX_UNCOMMITTED_PATHS:
+				paths.append(entry[3:])
+			# A rename or copy is followed by its original path, which is not a separate change.
+			if "R" in entry[:2] or "C" in entry[:2]:
+				next(entries, None)
+
+		return {"status": "dirty" if count else "clean", "count": count, "paths": paths}
 
 	def get_binding(self) -> str | None:
 		"""Read the local progress project ID, if one is configured, raising NotAProjectError or GitBindingError on failure."""

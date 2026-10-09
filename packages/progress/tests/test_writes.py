@@ -41,6 +41,9 @@ class _ProjectStore:
 			PROJECT_ID, "agents", "Agent configuration", "2026-01-01T00:00:00+00:00"
 		)
 
+	def uncommitted_changes(self, path: str | Path | None = None) -> dict[str, object]:
+		return {"status": "clean", "count": 0, "paths": []}
+
 
 def _seed_store(tmp_path: Path) -> WriteStore:
 	database = Database(tmp_path / "progress.db")
@@ -914,6 +917,184 @@ def test_task_start_accepts_an_id_or_slug(tmp_path: Path, use_slug: bool) -> Non
 
 	assert started["id"] == task["id"]
 	assert started["status"] == "in-progress"
+	assert started["uncommitted_changes"] == {
+		"status": "clean",
+		"count": 0,
+		"paths": [],
+	}
+
+
+@pytest.mark.parametrize("secondary", [False, True])
+@pytest.mark.parametrize("start_kind", ["task", "chunk"])
+@pytest.mark.parametrize("change_kind", ["staged", "unstaged", "untracked"])
+def test_start_reports_uncommitted_changes_without_blocking(
+	committed_repository: Path,
+	secondary: bool,
+	start_kind: str,
+	change_kind: str,
+) -> None:
+	store, _ = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "start-task", "Start task", path=committed_repository)
+	_add_chunk(store, task["id"], "First chunk", path=committed_repository)
+	second_chunk = _add_chunk(
+		store, task["id"], "Second chunk", path=committed_repository
+	)
+
+	if change_kind == "untracked":
+		path = committed_repository / "new file.txt"
+		path.write_text("new\n")
+	else:
+		path = committed_repository / "tracked.txt"
+		path.write_text("changed\n")
+		if change_kind == "staged":
+			subprocess.run(
+				["git", "-C", str(committed_repository), "add", "tracked.txt"],
+				check=True,
+			)
+
+	started_task = store.task_start(
+		task["id"], committed_repository, secondary=secondary
+	)
+	started = (
+		started_task
+		if start_kind == "task"
+		else store.chunk_start(second_chunk["id"], committed_repository)
+	)
+
+	assert started["uncommitted_changes"] == {
+		"status": "dirty",
+		"count": 1,
+		"paths": [path.name],
+	}
+	assert started["status"] == ("in-progress" if start_kind == "task" else "active")
+
+
+@pytest.mark.parametrize("start_kind", ["task", "chunk"])
+def test_start_ignores_ignored_files_and_reports_clean(
+	committed_repository: Path, start_kind: str
+) -> None:
+	store, _ = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "start-task", "Start task", path=committed_repository)
+	_add_chunk(store, task["id"], "First chunk", path=committed_repository)
+	second_chunk = _add_chunk(
+		store, task["id"], "Second chunk", path=committed_repository
+	)
+
+	(committed_repository / ".git" / "info" / "exclude").write_text("ignored.txt\n")
+	(committed_repository / "ignored.txt").write_text("ignored\n")
+
+	started_task = store.task_start(task["id"], committed_repository)
+	started = (
+		store.chunk_start(second_chunk["id"], committed_repository)
+		if start_kind == "chunk"
+		else started_task
+	)
+
+	assert started["uncommitted_changes"] == {
+		"status": "clean",
+		"count": 0,
+		"paths": [],
+	}
+
+
+@pytest.mark.parametrize("start_kind", ["task", "chunk"])
+def test_start_reports_failed_git_status_without_blocking(
+	committed_repository: Path, monkeypatch: pytest.MonkeyPatch, start_kind: str
+) -> None:
+	store, _ = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "start-task", "Start task", path=committed_repository)
+	_add_chunk(store, task["id"], "First chunk", path=committed_repository)
+	second_chunk = _add_chunk(
+		store, task["id"], "Second chunk", path=committed_repository
+	)
+
+	original_run = GitRepository.run
+
+	def failing_status(
+		repository: GitRepository, arguments: list[str]
+	) -> subprocess.CompletedProcess[str]:
+		if arguments[:1] == ["status"]:
+			return subprocess.CompletedProcess(arguments, 128, "", "status failed\n")
+		return original_run(repository, arguments)
+
+	monkeypatch.setattr(GitRepository, "run", failing_status)
+	started_task = store.task_start(task["id"], committed_repository)
+	started = (
+		store.chunk_start(second_chunk["id"], committed_repository)
+		if start_kind == "chunk"
+		else started_task
+	)
+
+	assert started["uncommitted_changes"] == {
+		"status": "unavailable",
+		"count": 0,
+		"paths": [],
+		"reason": "status failed",
+	}
+	assert started["status"] == ("in-progress" if start_kind == "task" else "active")
+
+
+@pytest.mark.parametrize("start_kind", ["task", "chunk"])
+def test_start_reports_undecodable_git_status_without_blocking(
+	committed_repository: Path, monkeypatch: pytest.MonkeyPatch, start_kind: str
+) -> None:
+	store, _ = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "start-task", "Start task", path=committed_repository)
+	_add_chunk(store, task["id"], "First chunk", path=committed_repository)
+	second_chunk = _add_chunk(
+		store, task["id"], "Second chunk", path=committed_repository
+	)
+
+	original_run = GitRepository.run
+
+	def undecodable_status(
+		repository: GitRepository, arguments: list[str]
+	) -> subprocess.CompletedProcess[str]:
+		if arguments[:1] == ["status"]:
+			raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+		return original_run(repository, arguments)
+
+	monkeypatch.setattr(GitRepository, "run", undecodable_status)
+	started_task = store.task_start(task["id"], committed_repository)
+	started = (
+		store.chunk_start(second_chunk["id"], committed_repository)
+		if start_kind == "chunk"
+		else started_task
+	)
+
+	assert started["uncommitted_changes"] == {
+		"status": "unavailable",
+		"count": 0,
+		"paths": [],
+		"reason": "Git status output is not valid UTF-8",
+	}
+	assert started["status"] == ("in-progress" if start_kind == "task" else "active")
+
+
+def test_git_status_caps_paths_without_losing_the_count(
+	committed_repository: Path,
+) -> None:
+	for index in range(22):
+		(committed_repository / f"new {index:02}.txt").write_text("new\n")
+
+	changes = GitRepository(committed_repository).uncommitted_changes()
+
+	assert changes["status"] == "dirty"
+	assert changes["count"] == 22
+	assert len(changes["paths"]) == 20
+
+
+def test_git_status_counts_a_rename_once_and_keeps_an_unusual_path(
+	committed_repository: Path,
+) -> None:
+	(committed_repository / "tracked.txt").rename(
+		committed_repository / "renamed\nfile.txt"
+	)
+	subprocess.run(["git", "-C", str(committed_repository), "add", "-A"], check=True)
+
+	changes = GitRepository(committed_repository).uncommitted_changes()
+
+	assert changes == {"status": "dirty", "count": 1, "paths": ["renamed\nfile.txt"]}
 
 
 @pytest.mark.parametrize("reference", ["missing-task", "tsk_" + "t" * 22])

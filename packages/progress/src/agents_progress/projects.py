@@ -57,6 +57,10 @@ class BindingRepository(Protocol):
 		"""Remove the repository's progress project binding."""
 		...
 
+	def uncommitted_changes(self) -> dict[str, object]:
+		"""Report the staged, unstaged, and untracked entries in the repository's worktree."""
+		...
+
 
 class ProjectStore:
 	"""Coordinate project rows with repository-local Git bindings."""
@@ -194,6 +198,11 @@ class ProjectStore:
 				)
 
 			return self._resolve_bound_project(binding)
+
+	def uncommitted_changes(self, path: str | Path | None = None) -> dict[str, object]:
+		"""Report the uncommitted changes in the repository at path, or the current directory's repository."""
+		with self._repository(path) as repository:
+			return repository.uncommitted_changes()
 
 	def record_checkout(self, path: str | Path | None = None) -> None:
 		"""Record the working tree root and the current time against the repository's bound project.

@@ -36,6 +36,9 @@ class _ProjectStore:
 			PROJECT_ID, "agents", "Agent configuration", "2026-01-01T00:00:00+00:00"
 		)
 
+	def uncommitted_changes(self, path: str | Path | None = None) -> dict[str, object]:
+		return {"status": "clean", "count": 0, "paths": []}
+
 
 def _seed_store(tmp_path: Path) -> ReadStore:
 	database = Database(tmp_path / "progress.db")

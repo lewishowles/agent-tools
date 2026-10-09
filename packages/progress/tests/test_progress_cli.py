@@ -862,6 +862,44 @@ def test_task_start_secondary_flag_reaches_the_write_store(
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 
+@pytest.mark.parametrize("command", ["task start", "chunk start"])
+@pytest.mark.parametrize(
+	"changes, expected",
+	[
+		({"status": "clean", "count": 0, "paths": []}, None),
+		(
+			{"status": "dirty", "count": 1, "paths": ["one.txt"]},
+			"Uncommitted changes: 1 file",
+		),
+		(
+			{"status": "dirty", "count": 2, "paths": ["one.txt", "two.txt"]},
+			"Uncommitted changes: 2 files",
+		),
+		(
+			{
+				"status": "unavailable",
+				"count": 0,
+				"paths": [],
+				"reason": "status failed",
+			},
+			"Uncommitted changes: not checked (status failed)",
+		),
+	],
+)
+def test_start_human_output_only_warns_for_dirty_or_unavailable(
+	command: str, changes: dict[str, object], expected: str | None
+) -> None:
+	output = cli._render_human_output(
+		command, {"id": "test", "status": "active", "uncommitted_changes": changes}
+	)
+
+	if expected:
+		assert expected in output
+	else:
+		assert "Uncommitted changes:" not in output
+	assert "{'status':" not in output
+
+
 @pytest.mark.parametrize(
 	("data", "expected_output"),
 	[
