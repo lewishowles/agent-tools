@@ -241,12 +241,17 @@ def _render_task_clean(data: object) -> str:
 		"",
 	]
 	if kept_tasks:
-		blocks.extend(
-			[
-				f"{_render_task_clean_label('Hint')}  {_TASK_CLEAN_KEPT_HINT}",
-				"",
-			]
+		show_history_hint = any(
+			(task.get("notes") or task.get("dependencies")) and not task.get("worktree")
+			for task in kept_tasks
 		)
+		if show_history_hint:
+			blocks.extend(
+				[
+					f"{_render_task_clean_label('Hint')}  {_TASK_CLEAN_KEPT_HINT}",
+					"",
+				]
+			)
 		for index, task in enumerate(kept_tasks):
 			if index:
 				blocks.append("")
@@ -268,8 +273,25 @@ def _render_task_clean(data: object) -> str:
 					f"{_render_task_clean_label('Removed release')}  "
 					f"{release.get('title', '')} ({release.get('id', '')})"
 				)
+	for checkout_path in data.get("removed_worktrees", []):
+		blocks.append(render_removed_checkout(checkout_path))
+	for checkout in data.get("left_worktrees", []):
+		blocks.append(render_left_checkout(checkout))
 
 	return "\n".join(blocks) + "\n"
+
+
+def render_removed_checkout(path: str) -> str:
+	"""Name a checkout folder removed with its task."""
+	return f"Removed checkout: {path}"
+
+
+def render_left_checkout(checkout: dict[str, str]) -> str:
+	"""Explain why a deleted task's checkout folder remains on disk."""
+	return (
+		f"Left checkout on disk: {checkout['path']} ({checkout['reason']}). "
+		"Remove it by hand or with git worktree remove."
+	)
 
 
 def _count_label(count: int, singular: str, plural: str) -> str:
@@ -315,14 +337,20 @@ def _render_task_clean_task(task: dict[str, object]) -> list[str]:
 			_count_label(len(dependency_records), "dependency", "dependencies")
 		)
 
-	label_width = len("Kept task")
+	label_width = len("Kept checkout")
 	kept_task_label = _render_task_clean_label("Kept task".ljust(label_width))
 	reason_label = _render_task_clean_label("Reason".ljust(label_width))
-	blocks = [
-		f"{kept_task_label}  {task.get('title', '')} ({task.get('id', '')})",
-		f"{reason_label}  {', '.join(reasons)}",
-		"",
-	]
+	checkout_label = _render_task_clean_label("Kept checkout".ljust(label_width))
+	blocks = [f"{kept_task_label}  {task.get('title', '')} ({task.get('id', '')})"]
+	if reasons:
+		blocks.append(f"{reason_label}  {', '.join(reasons)}")
+	if isinstance(worktree := task.get("worktree"), dict):
+		blocks.append(
+			f"{checkout_label}  "
+			f"{worktree.get('path', '')} ({worktree.get('reason', '')})"
+		)
+	if note_records or dependency_records:
+		blocks.append("")
 
 	for index, note in enumerate(note_records):
 		if index:

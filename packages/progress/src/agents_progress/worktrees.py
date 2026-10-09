@@ -97,6 +97,161 @@ class WorktreeStore(_StoreBase):
 			reason = error.message if isinstance(error, ProgressError) else str(error)
 			return {"status": "pending", "reason": reason or type(error).__name__}
 
+	def inspect_cleanup(
+		self, task_id: str, path: str | Path | None = None, *, force: bool = False
+	) -> dict[str, str]:
+		"""Decide whether a task's checkout can be removed, without changing anything.
+
+		Return status "none" when no checkout is recorded, "gone" when the folder no
+		longer exists, "removable", or "kept" with a plain reason. With force, a
+		record outside the managed location, or one that fails validation while its
+		folder exists, is "unsafe": the caller deletes the record but never the
+		folder. Without force, such a record, uncommitted changes, or an unfinished
+		task are "kept". Every status except "none" includes the recorded path.
+		"""
+		task_id = validate_object_id(task_id, TASK_PREFIX)
+		project = self.current_project(path)
+		with self.database.connection() as connection:
+			row = connection.execute(
+				"SELECT tasks.status, task_worktrees.task_id, task_worktrees.project_id, "
+				"task_worktrees.path, task_worktrees.branch, task_worktrees.common_dir "
+				"FROM tasks LEFT JOIN task_worktrees ON task_worktrees.task_id = tasks.id "
+				"WHERE tasks.id = ? AND tasks.project_id = ?",
+				(task_id, project.id),
+			).fetchone()
+		if row is None:
+			raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
+		if row["path"] is None:
+			return {"status": "none"}
+
+		checkout_path = row["path"]
+		if (
+			force
+			and not Path(checkout_path).exists()
+			and not Path(checkout_path).is_symlink()
+		):
+			return {"status": "gone", "path": checkout_path}
+
+		if Path(checkout_path) != self._managed_location(project.id, task_id)[0]:
+			if force:
+				return {
+					"status": "unsafe",
+					"path": checkout_path,
+					"reason": "outside the managed location",
+				}
+			return {
+				"status": "kept",
+				"path": checkout_path,
+				"reason": "recorded path is outside the managed location",
+			}
+		if row["status"] != "done" and not force:
+			return {
+				"status": "kept",
+				"path": checkout_path,
+				"reason": "complete the task before removing its checkout, or pass --force to discard its uncommitted changes",
+			}
+
+		try:
+			target = Path(checkout_path)
+			if not target.exists() and not target.is_symlink():
+				return {"status": "gone", "path": checkout_path}
+
+			repository = GitRepository(path)
+			common_dir = repository.common_dir()
+			target, _ = self._record_location(row, project.id, common_dir)
+			self._validated_record(row, project.id, common_dir)
+		except (ProgressError, OSError) as error:
+			reason = error.message if isinstance(error, ProgressError) else str(error)
+			return {
+				"status": "unsafe" if force else "kept",
+				"path": checkout_path,
+				"reason": reason,
+			}
+
+		try:
+			resolved_target = target.resolve()
+			if Path.cwd().resolve().is_relative_to(
+				resolved_target
+			) or repository.path.is_relative_to(resolved_target):
+				return {
+					"status": "kept",
+					"path": checkout_path,
+					"reason": "command uses the task worktree",
+				}
+
+			worktrees = repository.run(["worktree", "list", "--porcelain"])
+			if worktrees.returncode != 0:
+				return {
+					"status": "kept",
+					"path": checkout_path,
+					"reason": worktrees.stderr.strip()
+					or "Git could not inspect the worktree",
+				}
+			for entry in worktrees.stdout.strip().split("\n\n"):
+				lines = entry.splitlines()
+				if not lines or lines[0] != f"worktree {target}":
+					continue
+				if any(
+					line == "locked" or line.startswith("locked ") for line in lines
+				):
+					return {
+						"status": "kept",
+						"path": checkout_path,
+						"reason": "worktree is locked",
+					}
+				break
+			else:
+				return {
+					"status": "kept",
+					"path": checkout_path,
+					"reason": "Git does not list the recorded worktree",
+				}
+
+			if not force:
+				changes = GitRepository(target).run(
+					["status", "--porcelain", "--ignore-submodules=none"]
+				)
+				if changes.returncode != 0:
+					return {
+						"status": "kept",
+						"path": checkout_path,
+						"reason": changes.stderr.strip()
+						or "Git could not inspect the worktree",
+					}
+				if changes.stdout:
+					return {
+						"status": "kept",
+						"path": checkout_path,
+						"reason": "uncommitted changes; pass --force to discard them",
+					}
+			return {"status": "removable", "path": checkout_path}
+		except (ProgressError, OSError) as error:
+			reason = error.message if isinstance(error, ProgressError) else str(error)
+			return {"status": "kept", "path": checkout_path, "reason": reason}
+
+	def remove_checked(
+		self, checkout_path: str, path: str | Path | None = None, *, force: bool = False
+	) -> dict[str, str]:
+		"""Ask Git to remove a checkout that inspect_cleanup marked removable.
+
+		Return status "removed", or "left" with Git's reason when the folder stays on
+		disk. The checkout record and the task's branch are not touched.
+		"""
+		arguments = ["worktree", "remove"]
+		if force:
+			arguments.append("--force")
+		try:
+			result = GitRepository(path).run([*arguments, checkout_path])
+		except (ProgressError, OSError) as error:
+			reason = error.message if isinstance(error, ProgressError) else str(error)
+			return {"status": "left", "reason": reason}
+		if result.returncode != 0:
+			return {
+				"status": "left",
+				"reason": result.stderr.strip() or "Git could not remove the worktree",
+			}
+		return {"status": "removed"}
+
 	def get(self, task_id: str, path: str | Path | None = None) -> dict[str, str]:
 		"""Return the task's recorded checkout without creating one.
 

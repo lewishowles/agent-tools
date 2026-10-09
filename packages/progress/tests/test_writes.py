@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from agents_progress import database as database_module
+from agents_progress.cli import _render_human_output
 from agents_progress.database import Database
 from agents_progress.errors import (
 	DatabaseBusyError,
@@ -22,6 +23,7 @@ from agents_progress.errors import (
 from agents_progress.projects import Project, ProjectStore
 from agents_progress.reads import ReadStore
 from agents_progress.repository import GitRepository
+from agents_progress.style import span as render_span
 from agents_progress.worktrees import WorktreeStore
 from agents_progress.writes import WriteStore
 
@@ -2110,6 +2112,429 @@ def test_task_remove_force_deletes_owned_rows_and_unblocks_dependants(
 		)
 
 
+def test_task_remove_keeps_a_dirty_checkout_until_it_is_clean(
+	committed_repository: Path,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "task", "Task", path=committed_repository)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	(checkout / "tracked.txt").write_text("unfinished work\n")
+	store.task_complete(task["id"], path=committed_repository)
+
+	with pytest.raises(StillReferencedError) as error:
+		store.task_remove(task["id"], path=committed_repository)
+
+	assert str(checkout) in str(error.value)
+	assert "--force" in str(error.value)
+	assert checkout.is_dir()
+	(checkout / "tracked.txt").write_text("committed content\n")
+
+	result = store.task_remove(task["id"], path=committed_repository)
+
+	assert result["removed_worktrees"] == [str(checkout)]
+	assert not checkout.exists()
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_worktrees WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+
+
+def test_task_remove_force_removes_an_active_dirty_checkout_but_keeps_its_branch(
+	committed_repository: Path,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "task", "Task", path=committed_repository)
+	record = worktrees.ensure(task["id"], committed_repository)
+	checkout = Path(record["path"])
+	(checkout / "tracked.txt").write_text("unfinished work\n")
+	with pytest.raises(StillReferencedError) as error:
+		store.task_remove(task["id"], path=committed_repository)
+	assert str(checkout) in str(error.value)
+	assert "complete the task" in str(error.value)
+	assert "--force" in str(error.value)
+	assert checkout.is_dir()
+
+	result = store.task_remove(task["id"], path=committed_repository, force=True)
+
+	assert result["removed_worktrees"] == [str(checkout)]
+	assert f"Removed checkout: {checkout}" in _render_human_output(
+		"task remove", result
+	)
+	assert not checkout.exists()
+	assert (
+		GitRepository(committed_repository)
+		.run(["show-ref", "--verify", "--quiet", f"refs/heads/{record['branch']}"])
+		.returncode
+		== 0
+	)
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_worktrees WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+
+
+def test_task_remove_validates_every_id_before_removing_a_checkout(
+	committed_repository: Path,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "task", "Task", path=committed_repository)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+
+	with pytest.raises(ProgressError):
+		store.task_remove(
+			[task["id"], "invalid"], path=committed_repository, force=True
+		)
+
+	assert checkout.is_dir()
+	assert worktrees.get(task["id"], committed_repository)["path"] == str(checkout)
+
+
+def test_task_remove_checks_a_later_reference_before_removing_a_checkout(
+	committed_repository: Path,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	first = _add_task(store, "first", "First", path=committed_repository)
+	second = _add_task(store, "second", "Second", path=committed_repository)
+	checkout = Path(worktrees.ensure(first["id"], committed_repository)["path"])
+	(checkout / "tracked.txt").write_text("unfinished work\n")
+	store.task_complete(first["id"], path=committed_repository)
+	(checkout / "tracked.txt").write_text("committed content\n")
+	_add_chunk(store, second["id"], "Chunk", path=committed_repository)
+
+	with pytest.raises(StillReferencedError):
+		store.task_remove([first["id"], second["id"]], path=committed_repository)
+
+	assert checkout.is_dir()
+	assert worktrees.get(first["id"], committed_repository)["path"] == str(checkout)
+
+
+def test_task_remove_reports_every_checkout_in_multi_id_human_output(
+	committed_repository: Path,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	tasks = [
+		_add_task(store, slug, title, path=committed_repository)
+		for slug, title in (("first", "First"), ("second", "Second"))
+	]
+	paths = [
+		worktrees.ensure(task["id"], committed_repository)["path"] for task in tasks
+	]
+
+	result = store.task_remove(
+		[task["id"] for task in tasks], path=committed_repository, force=True
+	)
+	output = _render_human_output("task remove", result)
+
+	for checkout_path in paths:
+		assert f"Removed checkout: {checkout_path}" in output
+
+
+def test_task_remove_checks_a_later_in_use_checkout_before_removing_the_first(
+	committed_repository: Path,
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	first = _add_task(store, "first", "First", path=committed_repository)
+	second = _add_task(store, "second", "Second", path=committed_repository)
+	first_checkout = Path(worktrees.ensure(first["id"], committed_repository)["path"])
+	second_checkout = Path(worktrees.ensure(second["id"], committed_repository)["path"])
+	monkeypatch.chdir(second_checkout)
+
+	with pytest.raises(StillReferencedError, match="command uses the task worktree"):
+		store.task_remove(
+			[first["id"], second["id"]], path=committed_repository, force=True
+		)
+
+	assert first_checkout.is_dir()
+	assert worktrees.get(first["id"], committed_repository)["path"] == str(
+		first_checkout
+	)
+
+
+def test_task_remove_keeps_a_locked_checkout_even_with_force(
+	committed_repository: Path,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "task", "Task", path=committed_repository)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	assert (
+		GitRepository(committed_repository)
+		.run(["worktree", "lock", str(checkout)])
+		.returncode
+		== 0
+	)
+
+	with pytest.raises(StillReferencedError, match="worktree is locked"):
+		store.task_remove(task["id"], path=committed_repository, force=True)
+
+	assert checkout.is_dir()
+	assert worktrees.get(task["id"], committed_repository)["path"] == str(checkout)
+
+
+def test_task_remove_reports_a_folder_left_after_a_later_git_failure(
+	committed_repository: Path,
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	first = _add_task(store, "first", "First", path=committed_repository)
+	second = _add_task(store, "second", "Second", path=committed_repository)
+	first_checkout = Path(worktrees.ensure(first["id"], committed_repository)["path"])
+	second_checkout = Path(worktrees.ensure(second["id"], committed_repository)["path"])
+	original_run = GitRepository.run
+
+	def fail_second_removal(self, arguments):
+		"""Leave the second checkout on disk after the first is removed."""
+		if arguments == ["worktree", "remove", "--force", str(second_checkout)]:
+			return subprocess.CompletedProcess(arguments, 1, "", "Git refused removal")
+		return original_run(self, arguments)
+
+	with monkeypatch.context() as patch:
+		patch.setattr(GitRepository, "run", fail_second_removal)
+		result = store.task_remove(
+			[first["id"], second["id"]], path=committed_repository, force=True
+		)
+
+	assert result[0]["removed_worktrees"] == [str(first_checkout)]
+	assert result[1]["left_worktrees"] == [
+		{"path": str(second_checkout), "reason": "Git refused removal"}
+	]
+	assert (
+		f"Left checkout on disk: {second_checkout} (Git refused removal). "
+		"Remove it by hand or with git worktree remove."
+	) in _render_human_output("task remove", result)
+	assert not first_checkout.exists()
+	assert second_checkout.is_dir()
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM tasks WHERE id IN (?, ?)", (first["id"], second["id"])
+			).fetchone()
+			is None
+		)
+
+
+def test_task_remove_checks_a_later_note_refusal_before_removing_a_checkout(
+	committed_repository: Path,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	first = _add_task(store, "first", "First", path=committed_repository)
+	second = _add_task(store, "second", "Second", path=committed_repository)
+	other = _add_task(store, "other", "Other", path=committed_repository)
+	checkout = Path(worktrees.ensure(first["id"], committed_repository)["path"])
+	note = store.discovery_add(second["id"], "Second note", path=committed_repository)
+	store.decision_add(
+		other["id"],
+		"Outside note",
+		supersedes_id=note["id"],
+		path=committed_repository,
+	)
+
+	with pytest.raises(StillReferencedError, match="remove the superseding note first"):
+		store.task_remove(
+			[first["id"], second["id"]], path=committed_repository, force=True
+		)
+
+	assert checkout.is_dir()
+	assert worktrees.get(first["id"], committed_repository)["path"] == str(checkout)
+
+
+@pytest.mark.parametrize("remove_release", [False, True])
+def test_force_remove_leaves_a_folder_with_an_unsafe_recorded_path(
+	committed_repository: Path,
+	remove_release: bool,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	release = (
+		store.release_add(
+			"release", "Release", overview="Release overview", path=committed_repository
+		)
+		if remove_release
+		else None
+	)
+	task = _add_task(
+		store,
+		"task",
+		"Task",
+		path=committed_repository,
+		release_id=release["id"] if release else None,
+	)
+	managed = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	foreign = committed_repository.parent / "foreign-checkout"
+	foreign.mkdir()
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE task_worktrees SET path = ? WHERE task_id = ?",
+			(str(foreign), task["id"]),
+		)
+
+	if remove_release:
+		result = store.release_remove(
+			release["id"], path=committed_repository, force=True
+		)
+		output = _render_human_output("release remove", result)
+	else:
+		result = store.task_remove(task["id"], path=committed_repository, force=True)
+		output = _render_human_output("task remove", result)
+
+	assert result["left_worktrees"] == [
+		{"path": str(foreign), "reason": "outside the managed location"}
+	]
+	assert (
+		f"Left checkout on disk: {foreign} (outside the managed location). "
+		"Remove it by hand or with git worktree remove."
+	) in output
+	assert foreign.is_dir()
+	assert managed.is_dir()
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_worktrees WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+
+
+@pytest.mark.parametrize("validation_failure", ["record", "checkout"])
+def test_force_remove_leaves_a_folder_when_checkout_validation_fails(
+	committed_repository: Path,
+	validation_failure: str,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "task", "Task", path=committed_repository)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	(checkout / "tracked.txt").write_text("unfinished work\n")
+	store.task_complete(task["id"], path=committed_repository)
+	if validation_failure == "record":
+		with store.database.transaction() as connection:
+			connection.execute(
+				"UPDATE task_worktrees SET common_dir = ? WHERE task_id = ?",
+				(str(committed_repository / "other-git-dir"), task["id"]),
+			)
+	else:
+		assert (
+			GitRepository(checkout).run(["switch", "-c", "different-branch"]).returncode
+			== 0
+		)
+
+	with pytest.raises(StillReferencedError, match=str(checkout)):
+		store.task_remove(task["id"], path=committed_repository)
+
+	result = store.task_remove(task["id"], path=committed_repository, force=True)
+
+	assert result["left_worktrees"][0]["path"] == str(checkout)
+	assert result["left_worktrees"][0]["reason"]
+	assert f"Left checkout on disk: {checkout}" in _render_human_output(
+		"task remove", result
+	)
+	assert checkout.is_dir()
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_worktrees WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+
+
+def test_release_remove_force_removes_a_dirty_checkout_but_keeps_its_branch(
+	committed_repository: Path,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	release = store.release_add(
+		"release", "Release", overview="Release overview", path=committed_repository
+	)
+	task = _add_task(
+		store, "task", "Task", release_id=release["id"], path=committed_repository
+	)
+	record = worktrees.ensure(task["id"], committed_repository)
+	checkout = Path(record["path"])
+	(checkout / "tracked.txt").write_text("unfinished work\n")
+
+	result = store.release_remove(release["id"], path=committed_repository, force=True)
+
+	assert result["removed_worktrees"] == [str(checkout)]
+	assert f"Removed checkout: {checkout}" in _render_human_output(
+		"release remove", result
+	)
+	assert not checkout.exists()
+	assert (
+		GitRepository(committed_repository)
+		.run(["show-ref", "--verify", "--quiet", f"refs/heads/{record['branch']}"])
+		.returncode
+		== 0
+	)
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_worktrees WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+
+
+def test_release_remove_validates_every_id_before_removing_a_checkout(
+	committed_repository: Path,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	release = store.release_add(
+		"release", "Release", overview="Release overview", path=committed_repository
+	)
+	task = _add_task(
+		store, "task", "Task", release_id=release["id"], path=committed_repository
+	)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+
+	with pytest.raises(ProgressError):
+		store.release_remove(
+			[release["id"], "invalid"], path=committed_repository, force=True
+		)
+
+	assert checkout.is_dir()
+	assert worktrees.get(task["id"], committed_repository)["path"] == str(checkout)
+
+
+def test_release_remove_checks_a_later_reference_before_removing_a_checkout(
+	committed_repository: Path,
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	first = store.release_add(
+		"first", "First", overview="First overview", path=committed_repository
+	)
+	second = store.release_add(
+		"second", "Second", overview="Second overview", path=committed_repository
+	)
+	task = _add_task(
+		store, "task", "Task", release_id=first["id"], path=committed_repository
+	)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	second_task = _add_task(
+		store,
+		"second-task",
+		"Second task",
+		release_id=second["id"],
+		path=committed_repository,
+	)
+	second_checkout = Path(
+		worktrees.ensure(second_task["id"], committed_repository)["path"]
+	)
+	monkeypatch.chdir(second_checkout)
+
+	with pytest.raises(StillReferencedError):
+		store.release_remove(
+			[first["id"], second["id"]], path=committed_repository, force=True
+		)
+
+	assert checkout.is_dir()
+	assert worktrees.get(task["id"], committed_repository)["path"] == str(checkout)
+
+
 def test_release_remove_force_deletes_tasks_and_release_rows(
 	tmp_path: Path,
 ) -> None:
@@ -2524,6 +2949,322 @@ def test_task_clean_deletes_contract_and_file_rows(tmp_path: Path) -> None:
 		assert (
 			connection.execute(
 				"SELECT 1 FROM task_files WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+
+
+def test_task_clean_keeps_a_done_task_with_a_dirty_checkout(
+	committed_repository: Path,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "task", "Task", path=committed_repository)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	(checkout / "tracked.txt").write_text("unfinished work\n")
+	store.task_complete(task["id"], path=committed_repository)
+
+	result = store.task_clean(path=committed_repository)
+
+	assert result["removed"] == []
+	assert result["blocked"][0]["id"] == task["id"]
+	assert result["blocked"][0]["worktree"]["path"] == str(checkout)
+	assert "--force" in result["blocked"][0]["worktree"]["reason"]
+	assert f"Kept checkout  {checkout}" in _render_human_output("task clean", result)
+	assert checkout.is_dir()
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_worktrees WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is not None
+		)
+
+
+def test_task_clean_renders_the_whole_output_for_a_checkout_only_blocker() -> None:
+	data = {
+		"removed_count": 0,
+		"removed": [],
+		"blocked": [
+			{
+				"id": "tsk_example",
+				"title": "Task",
+				"notes": [],
+				"dependencies": [],
+				"worktree": {
+					"path": "/tmp/task-checkout",
+					"reason": "command uses the task worktree",
+				},
+			}
+		],
+		"releases_removed": [],
+	}
+
+	output = _render_human_output("task clean", data)
+
+	assert (
+		output
+		== "\n".join(
+			[
+				render_span("0 tasks removed", "success", weight="normal"),
+				render_span("1 task kept", "warning", weight="normal"),
+				"",
+				f"{render_span('Kept task'.ljust(len('Kept checkout')), 'muted', weight='normal')}  Task (tsk_example)",
+				f"{render_span('Kept checkout', 'muted', weight='normal')}  /tmp/task-checkout (command uses the task worktree)",
+				"",
+				render_span("0 releases removed", "muted", weight="normal"),
+			]
+		)
+		+ "\n"
+	)
+
+
+def test_task_clean_skips_a_task_that_becomes_done_after_checkout_inspection(
+	tmp_path: Path,
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first", "First")
+	second = _add_task(store, "second", "Second")
+	store.task_complete(first["id"])
+	original_inspect = WorktreeStore.inspect_cleanup
+
+	def mark_second_done(self, task_id, path=None, *, force=False):
+		"""Finish the second task after clean has selected its inspection IDs."""
+		inspection = original_inspect(self, task_id, path, force=force)
+		with store.database.transaction() as connection:
+			connection.execute(
+				"UPDATE tasks SET status = 'done' WHERE id = ?", (second["id"],)
+			)
+		return inspection
+
+	with monkeypatch.context() as patch:
+		patch.setattr(WorktreeStore, "inspect_cleanup", mark_second_done)
+		first_pass = store.task_clean()
+
+	assert first_pass["removed"] == [{"id": first["id"], "title": "First"}]
+	assert (
+		ReadStore(store.database, _ProjectStore(store.database)).task_get(second["id"])[
+			"status"
+		]
+		== "done"
+	)
+
+	second_pass = store.task_clean()
+
+	assert second_pass["removed"] == [{"id": second["id"], "title": "Second"}]
+
+
+def test_task_clean_removes_a_checkout_after_its_changes_are_discarded(
+	committed_repository: Path,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "task", "Task", path=committed_repository)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	(checkout / "tracked.txt").write_text("unfinished work\n")
+	store.task_complete(task["id"], path=committed_repository)
+	(checkout / "tracked.txt").write_text("committed content\n")
+
+	result = store.task_clean(path=committed_repository)
+
+	assert result["removed"] == [{"id": task["id"], "title": "Task"}]
+	assert result["removed_worktrees"] == [str(checkout)]
+	assert f"Removed checkout: {checkout}" in _render_human_output("task clean", result)
+	assert not checkout.exists()
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_worktrees WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+
+
+def test_task_clean_force_removes_a_dirty_checkout_but_keeps_its_branch(
+	committed_repository: Path,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "task", "Task", path=committed_repository)
+	record = worktrees.ensure(task["id"], committed_repository)
+	checkout = Path(record["path"])
+	(checkout / "tracked.txt").write_text("unfinished work\n")
+	store.task_complete(task["id"], path=committed_repository)
+
+	result = store.task_clean(force=True, path=committed_repository)
+
+	assert result["removed_worktrees"] == [str(checkout)]
+	assert not checkout.exists()
+	assert (
+		GitRepository(committed_repository)
+		.run(["show-ref", "--verify", "--quiet", f"refs/heads/{record['branch']}"])
+		.returncode
+		== 0
+	)
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_worktrees WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+
+
+def test_task_clean_force_keeps_an_in_use_checkout_and_removes_other_done_tasks(
+	committed_repository: Path,
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	kept = _add_task(store, "kept", "Kept", path=committed_repository)
+	removed = _add_task(store, "removed", "Removed", path=committed_repository)
+	kept_path = Path(worktrees.ensure(kept["id"], committed_repository)["path"])
+	removed_path = Path(worktrees.ensure(removed["id"], committed_repository)["path"])
+	(kept_path / "tracked.txt").write_text("unfinished work\n")
+	(removed_path / "tracked.txt").write_text("unfinished work\n")
+	store.task_complete([kept["id"], removed["id"]], path=committed_repository)
+	monkeypatch.chdir(kept_path)
+
+	result = store.task_clean(force=True, path=committed_repository)
+	output = _render_human_output("task clean", result)
+
+	assert result["removed"] == [{"id": removed["id"], "title": "Removed"}]
+	assert result["blocked"][0]["worktree"] == {
+		"path": str(kept_path),
+		"reason": "command uses the task worktree",
+	}
+	assert f"Kept checkout  {kept_path} (command uses the task worktree)" in output
+	assert f"Removed checkout: {removed_path}" in output
+	assert kept_path.is_dir()
+	assert not removed_path.exists()
+
+
+def test_task_clean_never_removes_a_recorded_folder_outside_the_managed_location(
+	committed_repository: Path,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "task", "Task", path=committed_repository)
+	managed = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	(managed / "tracked.txt").write_text("unfinished work\n")
+	store.task_complete(task["id"], path=committed_repository)
+	foreign = committed_repository.parent / "foreign-checkout"
+	foreign.mkdir()
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE task_worktrees SET path = ? WHERE task_id = ?",
+			(str(foreign), task["id"]),
+		)
+
+	kept = store.task_clean(path=committed_repository)
+	removed = store.task_clean(force=True, path=committed_repository)
+
+	assert kept["blocked"][0]["worktree"]["path"] == str(foreign)
+	assert removed["left_worktrees"] == [
+		{"path": str(foreign), "reason": "outside the managed location"}
+	]
+	assert f"Left checkout on disk: {foreign}" in _render_human_output(
+		"task clean", removed
+	)
+	assert foreign.is_dir()
+	assert managed.is_dir()
+
+
+@pytest.mark.parametrize("validation_failure", ["record", "checkout"])
+def test_task_clean_force_clears_an_invalid_checkout_record_without_removing_its_folder(
+	committed_repository: Path,
+	validation_failure: str,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "task", "Task", path=committed_repository)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	(checkout / "tracked.txt").write_text("unfinished work\n")
+	store.task_complete(task["id"], path=committed_repository)
+	if validation_failure == "record":
+		with store.database.transaction() as connection:
+			connection.execute(
+				"UPDATE task_worktrees SET common_dir = ? WHERE task_id = ?",
+				(str(committed_repository / "other-git-dir"), task["id"]),
+			)
+	else:
+		assert (
+			GitRepository(checkout).run(["switch", "-c", "different-branch"]).returncode
+			== 0
+		)
+
+	kept = store.task_clean(path=committed_repository)
+	removed = store.task_clean(force=True, path=committed_repository)
+
+	assert kept["blocked"][0]["worktree"]["path"] == str(checkout)
+	assert removed["removed"] == [{"id": task["id"], "title": "Task"}]
+	assert removed["left_worktrees"][0]["path"] == str(checkout)
+	assert removed["left_worktrees"][0]["reason"]
+	assert f"Left checkout on disk: {checkout}" in _render_human_output(
+		"task clean", removed
+	)
+	assert checkout.is_dir()
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_worktrees WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+
+
+def test_task_clean_force_clears_an_invalid_record_for_a_missing_checkout(
+	committed_repository: Path,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "task", "Task", path=committed_repository)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	(checkout / "tracked.txt").write_text("unfinished work\n")
+	store.task_complete(task["id"], path=committed_repository)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE task_worktrees SET common_dir = ? WHERE task_id = ?",
+			(str(committed_repository / "other-git-dir"), task["id"]),
+		)
+	assert (
+		GitRepository(committed_repository)
+		.run(["worktree", "remove", "--force", str(checkout)])
+		.returncode
+		== 0
+	)
+
+	result = store.task_clean(force=True, path=committed_repository)
+
+	assert result["removed"] == [{"id": task["id"], "title": "Task"}]
+	assert result.get("left_worktrees", []) == []
+	assert "Left checkout on disk:" not in _render_human_output("task clean", result)
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_worktrees WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+
+
+def test_task_clean_clears_a_record_for_an_already_absent_checkout(
+	committed_repository: Path,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "task", "Task", path=committed_repository)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	(checkout / "tracked.txt").write_text("unfinished work\n")
+	store.task_complete(task["id"], path=committed_repository)
+	assert (
+		GitRepository(committed_repository)
+		.run(["worktree", "remove", "--force", str(checkout)])
+		.returncode
+		== 0
+	)
+
+	result = store.task_clean(path=committed_repository)
+
+	assert result["removed"] == [{"id": task["id"], "title": "Task"}]
+	assert result.get("removed_worktrees", []) == []
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_worktrees WHERE task_id = ?", (task["id"],)
 			).fetchone()
 			is None
 		)

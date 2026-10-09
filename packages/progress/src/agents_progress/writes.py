@@ -3,6 +3,7 @@
 import sqlite3
 from collections.abc import Iterable, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .errors import (
 	AlreadyExistsError,
@@ -37,6 +38,9 @@ from .reads import (
 	validate_identifier,
 )
 from .schema import utc_timestamp
+
+if TYPE_CHECKING:
+	from .worktrees import WorktreeStore
 
 # Status values accepted when creating or updating a release.
 _RELEASE_STATUSES = frozenset({"planned", "active", "done"})
@@ -135,15 +139,60 @@ class WriteStore(_StoreBase):
 		path: str | Path | None = None,
 		force: bool = False,
 	) -> dict[str, object] | list[dict[str, object]]:
-		"""Remove one or more current-project releases in input order."""
+		"""Remove one or more current-project releases in input order.
+
+		With force, every task's checkout is checked first, and the whole removal is
+		refused if one must stay. Checkout records are deleted with their tasks, then
+		Git removes the folders, which are reported under "removed_worktrees" or,
+		when they stay on disk, "left_worktrees".
+		"""
 		release_ids, multiple = _normalise_write_ids(release_id, "release")
 		project = self.current_project(path)
+		from .worktrees import WorktreeStore
+
+		worktrees = WorktreeStore(self.database, self.projects)
+		with self.database.connection() as connection:
+			for identifier in release_ids:
+				_require_release(connection, identifier, project.id)
+				if not force:
+					_raise_if_referenced(
+						"release",
+						identifier,
+						_release_references(connection, identifier),
+						hint="pass --force to remove it with everything it owns",
+					)
+		task_rows = []
+		inspections = {}
+		if force:
+			with self.database.connection() as connection:
+				task_rows = connection.execute(
+					"SELECT tasks.id, tasks.release_id FROM tasks "
+					"JOIN releases ON releases.id = tasks.release_id "
+					"WHERE releases.project_id = ? AND releases.id IN ("
+					+ ", ".join("?" for _ in release_ids)
+					+ ") ORDER BY tasks.id",
+					(project.id, *release_ids),
+				).fetchall()
+			for task in task_rows:
+				inspection = worktrees.inspect_cleanup(task["id"], path, force=True)
+				_assert_checkout_removable(task["id"], inspection)
+				inspections[task["id"]] = inspection
 
 		with self.database.transaction() as connection:
 			results = [
 				_remove_release(connection, identifier, project.id, force=force)
 				for identifier in release_ids
 			]
+		for result in results:
+			for task in task_rows:
+				if task["release_id"] == result["id"]:
+					_remove_checkout_folder(
+						result,
+						inspections[task["id"]],
+						path,
+						force=True,
+						worktrees=worktrees,
+					)
 
 		return results if multiple else results[0]
 
@@ -459,15 +508,51 @@ class WriteStore(_StoreBase):
 		path: str | Path | None = None,
 		force: bool = False,
 	) -> dict[str, object] | list[dict[str, object]]:
-		"""Remove one or more current-project tasks in input order."""
+		"""Remove one or more current-project tasks in input order.
+
+		Every task's checkout is checked first, and the whole removal is refused if
+		one must stay. Checkout records are deleted with their tasks, then Git removes
+		the folders, which are reported under "removed_worktrees" or, when they stay
+		on disk, "left_worktrees".
+		"""
 		task_ids, multiple = _normalise_write_ids(task_id, "task")
 		project = self.current_project(path)
+		from .worktrees import WorktreeStore
+
+		worktrees = WorktreeStore(self.database, self.projects)
+		with self.database.connection() as connection:
+			for identifier in task_ids:
+				validate_object_id(identifier, TASK_PREFIX)
+				if _task_row(connection, identifier, project.id) is None:
+					raise NotFoundError(
+						f"task {identifier} was not found", {"id": identifier}
+					)
+				if not force:
+					_raise_if_referenced(
+						"task",
+						identifier,
+						_task_references(connection, identifier),
+						hint="pass --force to remove it with everything it owns",
+					)
+		inspections = {}
+		for identifier in task_ids:
+			inspection = worktrees.inspect_cleanup(identifier, path, force=force)
+			_assert_checkout_removable(identifier, inspection)
+			inspections[identifier] = inspection
 
 		with self.database.transaction() as connection:
 			results = [
 				_remove_task(connection, identifier, project.id, force=force)
 				for identifier in task_ids
 			]
+		for result in results:
+			_remove_checkout_folder(
+				result,
+				inspections[result["id"]],
+				path,
+				force=force,
+				worktrees=worktrees,
+			)
 
 		return results if multiple else results[0]
 
@@ -476,8 +561,44 @@ class WriteStore(_StoreBase):
 		force: bool = False,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Remove done tasks with no notes or dependencies, or every done task with force."""
+		"""Remove done tasks with no notes or dependencies, or every done task with force.
+
+		Kept checkouts appear under "blocked". Eligible folders are removed after
+		their task records and listed as removed or left on disk.
+		"""
 		project = self.current_project(path)
+		from .worktrees import WorktreeStore
+
+		worktrees = WorktreeStore(self.database, self.projects)
+		worktree_blockers = {}
+		inspections = {}
+		skipped_task_ids = set()
+		with self.database.connection() as connection:
+			done_task_ids = [
+				row["id"]
+				for row in connection.execute(
+					"SELECT id FROM tasks WHERE project_id = ? AND status = 'done' "
+					"ORDER BY position, id",
+					(project.id,),
+				).fetchall()
+			]
+			inspection_ids = []
+			for task_id in done_task_ids:
+				if not force and (
+					_task_notes(connection, task_id, project.id)
+					or _task_dependency_edges(connection, task_id)
+				):
+					skipped_task_ids.add(task_id)
+					continue
+				inspection_ids.append(task_id)
+		for task_id in inspection_ids:
+			inspection = worktrees.inspect_cleanup(task_id, path, force=force)
+			inspections[task_id] = inspection
+			if inspection["status"] == "kept":
+				worktree_blockers[task_id] = {
+					"path": inspection["path"],
+					"reason": inspection["reason"],
+				}
 
 		with self.database.transaction() as connection:
 			candidates = []
@@ -490,20 +611,31 @@ class WriteStore(_StoreBase):
 				""",
 				(project.id,),
 			).fetchall():
+				if task["id"] not in inspections and task["id"] not in skipped_task_ids:
+					continue
+
 				notes = _task_notes(connection, task["id"], project.id)
 				dependencies = _task_dependency_edges(connection, task["id"])
+				if task["id"] in skipped_task_ids and not (notes or dependencies):
+					continue
+
 				candidates.append(
 					{
 						"task": task,
 						"notes": notes,
 						"dependencies": dependencies,
+						"worktree": worktree_blockers.get(task["id"]),
 					}
 				)
 
 			blocking_candidates = []
 			clean_candidates = []
 			for candidate in candidates:
-				if candidate["notes"] or candidate["dependencies"]:
+				if (
+					candidate["notes"]
+					or candidate["dependencies"]
+					or candidate["worktree"]
+				):
 					blocking_candidates.append(candidate)
 				else:
 					clean_candidates.append(candidate)
@@ -511,7 +643,11 @@ class WriteStore(_StoreBase):
 			blocked = [
 				_clean_blocked_task(candidate) for candidate in blocking_candidates
 			]
-			targets = candidates if force else clean_candidates
+			targets = (
+				[candidate for candidate in candidates if not candidate["worktree"]]
+				if force
+				else clean_candidates
+			)
 			task_ids = [candidate["task"]["id"] for candidate in targets]
 
 			if force:
@@ -542,6 +678,9 @@ class WriteStore(_StoreBase):
 			)
 
 			for task_id in task_ids:
+				connection.execute(
+					"DELETE FROM task_worktrees WHERE task_id = ?", (task_id,)
+				)
 				_delete_task_values(connection, task_id)
 				connection.execute(
 					"DELETE FROM tasks WHERE id = ? AND project_id = ?",
@@ -566,12 +705,23 @@ class WriteStore(_StoreBase):
 					{"id": release["id"], "title": release["title"]}
 				)
 
-		return {
+		result = {
 			"removed_count": len(removed),
 			"removed": removed,
-			"blocked": [] if force else blocked,
+			"blocked": [
+				_clean_blocked_task(candidate)
+				for candidate in blocking_candidates
+				if candidate["worktree"]
+			]
+			if force
+			else blocked,
 			"releases_removed": releases_removed,
 		}
+		for task_id in task_ids:
+			_remove_checkout_folder(
+				result, inspections[task_id], path, force=force, worktrees=worktrees
+			)
+		return result
 
 	def task_rename(
 		self,
@@ -1668,6 +1818,36 @@ def _normalise_write_ids(
 	return identifiers, True
 
 
+def _require_release(
+	connection: sqlite3.Connection, release_id: str, project_id: str
+) -> None:
+	"""Raise NotFoundError unless the release belongs to the current project."""
+	validate_object_id(release_id, RELEASE_PREFIX)
+	if (
+		connection.execute(
+			"SELECT 1 FROM releases WHERE id = ? AND project_id = ?",
+			(release_id, project_id),
+		).fetchone()
+		is None
+	):
+		raise NotFoundError(f"release {release_id} was not found", {"id": release_id})
+
+
+def _release_references(
+	connection: sqlite3.Connection, release_id: str
+) -> dict[str, list[str]]:
+	"""List tasks and notes owned by a release."""
+	references = {}
+	for label, query in (
+		("tasks", "SELECT id FROM tasks WHERE release_id = ? ORDER BY id"),
+		("notes", "SELECT id FROM notes WHERE release_id = ? ORDER BY id"),
+	):
+		ids = [row["id"] for row in connection.execute(query, (release_id,)).fetchall()]
+		if ids:
+			references[label] = ids
+	return references
+
+
 def _remove_release(
 	connection: sqlite3.Connection,
 	release_id: str,
@@ -1681,34 +1861,12 @@ def _remove_release(
 	task in the release is force-removed first, then release-owned notes, and the
 	result lists what was deleted by type.
 	"""
-	validate_object_id(release_id, RELEASE_PREFIX)
-	release = connection.execute(
-		"SELECT 1 FROM releases WHERE id = ? AND project_id = ?",
-		(release_id, project_id),
-	).fetchone()
+	_require_release(connection, release_id, project_id)
 
-	if release is None:
-		raise NotFoundError(f"release {release_id} was not found", {"id": release_id})
-
-	task_ids = [
-		row["id"]
-		for row in connection.execute(
-			"SELECT id FROM tasks WHERE release_id = ? ORDER BY id",
-			(release_id,),
-		).fetchall()
-	]
-	release_note_ids = [
-		row["id"]
-		for row in connection.execute(
-			"SELECT id FROM notes WHERE release_id = ? ORDER BY id",
-			(release_id,),
-		).fetchall()
-	]
+	references = _release_references(connection, release_id)
+	task_ids = references.get("tasks", [])
 
 	if not force:
-		references = {"tasks": task_ids} if task_ids else {}
-		if release_note_ids:
-			references["notes"] = release_note_ids
 		_raise_if_referenced(
 			"release",
 			release_id,
@@ -1811,6 +1969,80 @@ def _remove_task(
 	if task is None:
 		raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
 
+	references = _task_references(connection, task_id)
+	chunk_ids = references.get("chunks", [])
+	dependency_edges = references.get("dependencies", [])
+	note_ids = references.get("notes", [])
+
+	if not force:
+		_raise_if_referenced(
+			"task",
+			task_id,
+			references,
+			hint="pass --force to remove it with everything it owns",
+		)
+		connection.execute("DELETE FROM task_worktrees WHERE task_id = ?", (task_id,))
+		_delete_task_values(connection, task_id)
+		connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+		return {"id": task_id}
+
+	# Deleted records grouped by type so the release cascade can merge task results.
+	deleted = {
+		"chunks": chunk_ids,
+		"notes": note_ids,
+		"dependencies": dependency_edges,
+		"tasks": [task_id],
+	}
+
+	# Read dependants before the edges are deleted; they are unblocked below.
+	dependent_task_ids = [
+		row["task_id"]
+		for row in connection.execute(
+			"""
+			SELECT task_id
+			FROM task_dependencies
+			WHERE depends_on_task_id = ?
+			ORDER BY task_id
+			""",
+			(task_id,),
+		).fetchall()
+	]
+
+	connection.execute("DELETE FROM chunks WHERE task_id = ?", (task_id,))
+
+	task_notes = _task_notes(connection, task_id, project_id)
+	_delete_notes(connection, task_notes)
+	connection.execute(
+		"DELETE FROM task_dependencies WHERE task_id = ? OR depends_on_task_id = ?",
+		(task_id, task_id),
+	)
+	connection.execute("DELETE FROM task_worktrees WHERE task_id = ?", (task_id,))
+	_delete_task_values(connection, task_id)
+	connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+	# Dependants that became ready, reported so the user can see them.
+	unblocked_tasks = []
+
+	for dependent_task_id in dependent_task_ids:
+		dependent_task = _task_row(connection, dependent_task_id, project_id)
+		if dependent_task is None or dependent_task["status"] != "waiting":
+			continue
+		if not _unresolved_dependencies(connection, dependent_task_id):
+			_unblock_task(connection, dependent_task_id, project_id, allow_waiting=True)
+			unblocked_tasks.append(dependent_task_id)
+
+	return {
+		"id": task_id,
+		"deleted": deleted,
+		"unblocked_tasks": unblocked_tasks,
+	}
+
+
+def _task_references(
+	connection: sqlite3.Connection, task_id: str
+) -> dict[str, list[str]]:
+	"""List the chunks, dependency edges and notes that stop a plain task removal."""
 	references: dict[str, list[str]] = {}
 	chunk_ids = [
 		row["id"]
@@ -1847,68 +2079,7 @@ def _remove_task(
 
 	if note_ids:
 		references["notes"] = note_ids
-
-	if not force:
-		_raise_if_referenced(
-			"task",
-			task_id,
-			references,
-			hint="pass --force to remove it with everything it owns",
-		)
-		_delete_task_values(connection, task_id)
-		connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-
-		return {"id": task_id}
-
-	# Deleted records grouped by type so the release cascade can merge task results.
-	deleted = {
-		"chunks": chunk_ids,
-		"notes": note_ids,
-		"dependencies": dependency_edges,
-		"tasks": [task_id],
-	}
-
-	# Read dependants before the edges are deleted; they are unblocked below.
-	dependent_task_ids = [
-		row["task_id"]
-		for row in connection.execute(
-			"""
-			SELECT task_id
-			FROM task_dependencies
-			WHERE depends_on_task_id = ?
-			ORDER BY task_id
-			""",
-			(task_id,),
-		).fetchall()
-	]
-
-	connection.execute("DELETE FROM chunks WHERE task_id = ?", (task_id,))
-
-	task_notes = _task_notes(connection, task_id, project_id)
-	_delete_notes(connection, task_notes)
-	connection.execute(
-		"DELETE FROM task_dependencies WHERE task_id = ? OR depends_on_task_id = ?",
-		(task_id, task_id),
-	)
-	_delete_task_values(connection, task_id)
-	connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-
-	# Dependants that became ready, reported so the user can see them.
-	unblocked_tasks = []
-
-	for dependent_task_id in dependent_task_ids:
-		dependent_task = _task_row(connection, dependent_task_id, project_id)
-		if dependent_task is None or dependent_task["status"] != "waiting":
-			continue
-		if not _unresolved_dependencies(connection, dependent_task_id):
-			_unblock_task(connection, dependent_task_id, project_id, allow_waiting=True)
-			unblocked_tasks.append(dependent_task_id)
-
-	return {
-		"id": task_id,
-		"deleted": deleted,
-		"unblocked_tasks": unblocked_tasks,
-	}
+	return references
 
 
 def _complete_task(
@@ -2089,7 +2260,7 @@ def _task_dependency_edges(
 def _clean_blocked_task(candidate: dict[str, object]) -> dict[str, object]:
 	"""Build the public blocked-task record before any forced deletion."""
 	task = candidate["task"]
-	return {
+	blocked = {
 		"id": task["id"],
 		"title": task["title"],
 		"notes": [
@@ -2097,6 +2268,9 @@ def _clean_blocked_task(candidate: dict[str, object]) -> dict[str, object]:
 		],
 		"dependencies": candidate["dependencies"],
 	}
+	if candidate["worktree"]:
+		blocked["worktree"] = candidate["worktree"]
+	return blocked
 
 
 def _delete_notes(connection: sqlite3.Connection, notes: list[sqlite3.Row]) -> None:
@@ -2232,6 +2406,49 @@ def _delete_task_values(connection: sqlite3.Connection, task_id: str) -> None:
 	"""Remove one task's contract steps and files before the task row itself is deleted."""
 	for table in _TASK_LIST_TABLES.values():
 		connection.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
+
+
+def _assert_checkout_removable(task_id: str, inspection: dict[str, str]) -> None:
+	"""Refuse the removal when a task's checkout must stay, naming its path and reason."""
+	if inspection["status"] == "kept":
+		_raise_if_referenced(
+			"task",
+			task_id,
+			{"worktrees": [inspection["path"]]},
+			hint=inspection["reason"],
+		)
+
+
+def _remove_checkout_folder(
+	result: dict[str, object],
+	inspection: dict[str, str],
+	path: str | Path | None,
+	*,
+	force: bool,
+	worktrees: "WorktreeStore",
+) -> None:
+	"""Remove a deleted task's checkout folder and add its path to the result.
+
+	Folders Git removes go under "removed_worktrees". Folders Git refuses, and
+	unsafe recorded paths, which are never removed, go under "left_worktrees".
+	"""
+	if inspection["status"] in {"none", "gone"}:
+		return
+
+	checkout_path = inspection["path"]
+	if inspection["status"] == "unsafe":
+		result.setdefault("left_worktrees", []).append(
+			{"path": checkout_path, "reason": inspection["reason"]}
+		)
+		return
+
+	removal = worktrees.remove_checked(checkout_path, path, force=force)
+	if removal["status"] == "removed":
+		result.setdefault("removed_worktrees", []).append(checkout_path)
+	else:
+		result.setdefault("left_worktrees", []).append(
+			{"path": checkout_path, "reason": removal["reason"]}
+		)
 
 
 def _require_text(value: str, label: str) -> None:

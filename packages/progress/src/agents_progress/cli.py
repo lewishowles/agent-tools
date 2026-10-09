@@ -25,7 +25,7 @@ from .ids import (
 )
 from .projects import ProjectStore
 from .reads import DEFAULT_LIMIT, MAX_LIMIT, ReadStore
-from .render import render
+from .render import render, render_left_checkout, render_removed_checkout
 from .style import (
 	labelled_line as render_labelled_line,
 	span as render_span,
@@ -1388,7 +1388,10 @@ def _render_human_output(command: str, data: object) -> str:
 				+ separator
 				+ remainder
 			)
-		return rendered
+		return rendered + "".join(
+			f"{line}\n"
+			for line in [*_removed_worktree_lines(data), *_left_worktree_lines(data)]
+		)
 
 	lines = []
 	for item in items:
@@ -1420,8 +1423,23 @@ def _render_human_output(command: str, data: object) -> str:
 			lines.append(
 				f"{render_span('Unblocked tasks', 'muted', weight='normal')}: {values}"
 			)
+		if isinstance(item, dict):
+			lines.extend(_removed_worktree_lines(item))
+			lines.extend(_left_worktree_lines(item))
 
 	return "\n".join(lines) + ("\n" if lines else "")
+
+
+def _removed_worktree_lines(data: dict[str, object]) -> list[str]:
+	"""List checkout folders removed while deleting tasks."""
+	return [render_removed_checkout(path) for path in data.get("removed_worktrees", [])]
+
+
+def _left_worktree_lines(data: dict[str, object]) -> list[str]:
+	"""List checkout folders left on disk after their tasks were deleted."""
+	return [
+		render_left_checkout(checkout) for checkout in data.get("left_worktrees", [])
+	]
 
 
 def _worktree_cleanup_line(data: dict[str, str]) -> str:

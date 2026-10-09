@@ -4541,8 +4541,8 @@ def test_human_task_clean_renders_counts_and_kept_task_details() -> None:
 	assert "2 tasks kept" in output
 	assert "Old completed task (tsk_removed)" not in output
 	assert "Hint  Tasks with notes or dependencies are kept" in output
-	assert "Kept task  Task with history (tsk_kept)" in output
-	assert "Reason     1 discovery note, 1 decision note, 2 dependencies" in output
+	assert "Kept task      Task with history (tsk_kept)" in output
+	assert "Reason         1 discovery note, 1 decision note, 2 dependencies" in output
 	assert "Discovery note\nKeep this discovery." in output
 	assert "Decision note\nKeep this decision." in output
 	assert "Dependency\nDepends on: Dependency task (tsk_dependency)" in output
@@ -4550,7 +4550,7 @@ def test_human_task_clean_renders_counts_and_kept_task_details() -> None:
 	second_task_start = output.index("Second kept task (tsk_kept_two)")
 	first_task_end = output.index("Second kept task", output.index("Task with history"))
 	assert "\n\n" in output[output.index("Task with history") : first_task_end]
-	assert "Reason     1 dependency" in output[second_task_start:]
+	assert "Reason         1 dependency" in output[second_task_start:]
 	assert (
 		"Dependency\nDepends on: Second dependency (tsk_dependency_two)"
 		in output[second_task_start:]
