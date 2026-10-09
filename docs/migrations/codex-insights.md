@@ -8,7 +8,7 @@ The existing implementation is a prototype and source of verified parsing lesson
 
 ## Source implementation
 
-The prototype lives in `~/Dev/Configuration/Agents`:
+The prototype lives in `~/Dev/Repositories/Configuration/Agents`:
 
 - `src/skills/codex-insights/scripts/codex_insights_extract.py`
 - `src/skills/codex-insights/scripts/codex_insights_facets.py`
