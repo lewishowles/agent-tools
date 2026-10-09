@@ -57,6 +57,10 @@ def main() -> int:
     # The failure shown on each quiet member's terminal, keyed by agent name.
     # A member with no known failure maps to None, so its screen is read once.
     quiet_reasons = {}
+    # Each team's current phase and known start time, so rows can show its
+    # duration. Stuck phases use the last event or first unread time. This
+    # history lasts only until the board restarts.
+    phase_since = {}
     sys.stdout.write(HIDE_CURSOR)
     sys.stdout.flush()
 
@@ -105,9 +109,11 @@ def main() -> int:
                         current_time=current_time,
                         colour=colour,
                         unread_since=unread_since,
+                        last_activity=last_activity,
                         quiet_members=quiet_members,
                         quiet_reasons=quiet_reasons,
                         now=now,
+                        phase_since=phase_since,
                     )
             except KeyError as error:
                 error_message = f"Unexpected hcom listing: missing {error}"

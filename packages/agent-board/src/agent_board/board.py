@@ -118,9 +118,11 @@ def render_board(
     current_time: str,
     colour: bool = False,
     unread_since: dict[str, float] | None = None,
+    last_activity: dict[str, float] | None = None,
     quiet_members: dict[tuple[str, str], str] | None = None,
     quiet_reasons: dict[str, str | None] | None = None,
     now: float = 0,
+    phase_since: dict[tuple[str, str], tuple[str, float, bool]] | None = None,
 ) -> list[str]:
     """Build the framed board lines for one `hcom list --json` snapshot.
 
@@ -144,19 +146,29 @@ def render_board(
             working rows and team names after the repository.
         unread_since: The first time each listening agent was seen with unread
             messages, keyed by agent name.
+        last_activity: The latest HCOM event time for each active team's
+            members, keyed by agent name.
         quiet_members: The active member to blame for each quiet team, keyed
             by team. Its terminal gives the stuck reason.
         quiet_reasons: Known terminal failure reasons, keyed by active agent name.
         now: The monotonic time for this refresh, in seconds.
+        phase_since: The phase timers from the previous refresh, keyed by team.
+            Each entry holds the phase, its known start time, and whether the
+            team was already in that phase when the board first saw it. Stuck
+            phases start at the event or unread time that made the team quiet.
+            The board updates this in place and removes teams that have gone.
+            When omitted, rows show no timer except blocked HCOM wait times.
     """
     teams = _group_teams(agents)
     unread_since = unread_since or {}
+    last_activity = last_activity or {}
 
     quiet_members = quiet_members or {}
     quiet_reasons = quiet_reasons or {}
 
     needs_you = []
     working = []
+    stuck_since = {}
 
     for (prefix, kind), members in teams.items():
         repository, label_rest = _team_label(prefix, members)
@@ -188,6 +200,7 @@ def render_board(
                     repository,
                     label_rest,
                     f"blocked · {_format_age(age)}",
+                    (prefix, kind),
                 )
             )
         # hcom can move a worker onto a background Codex session that then
@@ -200,33 +213,76 @@ def render_board(
             and session_id not in transcript_path
             for agent, _ in members
         ):
-            needs_you.append(((1, 0, label), repository, label_rest, "stale"))
+            needs_you.append(
+                ((1, 0, label), repository, label_rest, "stale", (prefix, kind))
+            )
         elif (quiet_member := quiet_members.get((prefix, kind))) is not None:
             reason = quiet_reasons.get(quiet_member)
             status = f"stuck · {reason}" if reason else "stuck"
-            needs_you.append(((2, 0, label), repository, label_rest, status))
-        elif not any(status in {"active", "launching"} for status in statuses) and any(
-            agent["status"] == "listening"
-            and agent["unread_count"] > 0
-            and agent["name"] in unread_since
-            and now - unread_since[agent["name"]] > STUCK_AFTER_SECONDS
-            for agent, _ in members
+            if all(agent["name"] in last_activity for agent, _ in members):
+                stuck_since[(prefix, kind)] = max(
+                    last_activity[agent["name"]] for agent, _ in members
+                )
+            needs_you.append(
+                ((2, 0, label), repository, label_rest, status, (prefix, kind))
+            )
+        elif not any(status in {"active", "launching"} for status in statuses) and (
+            old_unread_times := [
+                unread_since[agent["name"]]
+                for agent, _ in members
+                if agent["status"] == "listening"
+                and agent["unread_count"] > 0
+                and agent["name"] in unread_since
+                and now - unread_since[agent["name"]] > STUCK_AFTER_SECONDS
+            ]
         ):
-            needs_you.append(((2, 0, label), repository, label_rest, "stuck"))
+            stuck_since[(prefix, kind)] = min(old_unread_times)
+            needs_you.append(
+                ((2, 0, label), repository, label_rest, "stuck", (prefix, kind))
+            )
         elif partly_running:
             status = _working_status(members)
 
             if len(members) == 1:
                 label_rest += " (partial team)"
 
-            working.append((label, repository, label_rest, status))
+            working.append((label, repository, label_rest, status, (prefix, kind)))
         elif all(
             agent["status"] == "listening" and agent["unread_count"] == 0
             for agent, _ in members
         ):
-            needs_you.append(((2, 0, label), repository, label_rest, "needs you"))
+            needs_you.append(
+                ((2, 0, label), repository, label_rest, "needs you", (prefix, kind))
+            )
         else:
-            working.append((label, repository, label_rest, _working_status(members)))
+            working.append(
+                (
+                    label,
+                    repository,
+                    label_rest,
+                    _working_status(members),
+                    (prefix, kind),
+                )
+            )
+
+    if phase_since is not None:
+        for key in list(phase_since):
+            if key not in teams:
+                del phase_since[key]
+
+    needs_you = [
+        (
+            order,
+            repository,
+            label_rest,
+            _phase_status(status, key, phase_since, now, stuck_since.get(key)),
+        )
+        for order, repository, label_rest, status, key in needs_you
+    ]
+    working = [
+        (label, repository, label_rest, _phase_status(status, key, phase_since, now))
+        for label, repository, label_rest, status, key in working
+    ]
 
     # Blocked teams come first, longest wait first. Stale teams follow, then
     # stuck and waiting teams, each group by name. Working teams sort by name.
@@ -294,7 +350,7 @@ def render_board(
         lines.append("")
 
     for _, repository, label_rest, status in working:
-        symbol = STATUS_SYMBOLS[status]
+        symbol = STATUS_SYMBOLS[status.partition(" · ")[0]]
         line = f"{symbol} {status:<{status_width}}  {repository}{label_rest}"
         lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
 
@@ -603,3 +659,56 @@ def _format_age(seconds: float) -> str:
         return f"{seconds // 60}m"
 
     return f"{seconds}s"
+
+
+def _phase_status(
+    status: str,
+    key: tuple[str, str],
+    phase_since: dict[tuple[str, str], tuple[str, float, bool]] | None,
+    now: float,
+    stuck_start: float | None = None,
+) -> str:
+    """Add how long the team has been in its current phase to its status.
+
+    The phase is the status text before any ` · ` detail, so `stuck · model at
+    capacity` and `stuck` are the same phase. A team the board sees for the
+    first time gets a `+` after its time, because it may have been in that
+    phase for longer than the board has been watching. A stuck team's time
+    counts from when it went quiet. A blocked status is returned unchanged,
+    because it already shows HCOM's exact wait time.
+
+    Args:
+        status: The status text the row would otherwise show.
+        key: The team's repository and team label.
+        phase_since: The phase timers from the previous refresh. A new or
+            changed phase is recorded here in place. When None, the status is
+            returned unchanged.
+        now: The monotonic time for this refresh, in seconds.
+        stuck_start: When the team went quiet: its last HCOM event, or when
+            the board first saw its oldest unread messages. Used only when
+            the team enters the stuck phase; without it the timer starts now.
+
+    Returns:
+        The status followed by its phase duration, such as `checking · 30s`,
+        or the unchanged blocked status with HCOM's wait time.
+    """
+    if phase_since is None:
+        return status
+
+    phase = status.partition(" · ")[0]
+    previous = phase_since.get(key)
+
+    if previous is None or previous[0] != phase:
+        phase_started = (
+            stuck_start if phase == "stuck" and stuck_start is not None else now
+        )
+        estimated = previous is None
+        phase_since[key] = (phase, phase_started, estimated)
+    else:
+        _, phase_started, estimated = previous
+
+    if phase == "blocked":
+        return status
+
+    suffix = "+" if estimated else ""
+    return f"{status} · {_format_age(now - phase_started)}{suffix}"

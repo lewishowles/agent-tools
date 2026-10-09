@@ -178,6 +178,69 @@ def test_each_refresh_uses_current_width_and_time(monkeypatch) -> None:
     assert len(frames[1].splitlines()[1]) == 70
 
 
+def test_refreshes_keep_the_phase_timer_until_the_displayed_status_changes(
+    monkeypatch,
+) -> None:
+    """The running board keeps one phase history across HCOM listings."""
+    output = io.StringIO()
+    refreshes = 0
+    times = iter([100, 175, 185])
+    members = [
+        {
+            "name": "Agent-Tools-orchestrator",
+            "tag": "Agent-Tools-orchestrator",
+            "directory": "/work/Agent Tools",
+            "status": "listening",
+            "unread_count": 0,
+        },
+        {
+            "name": "Agent-Tools-scout",
+            "tag": "Agent-Tools-scout",
+            "directory": "/work/Agent Tools",
+            "status": "listening",
+            "unread_count": 0,
+        },
+    ]
+
+    def listed_hcom(command, **kwargs):
+        """Return waiting, checking, then waiting team listings."""
+        listing = [dict(member) for member in members]
+
+        if refreshes == 1:
+            listing[1]["status"] = "active"
+
+        return subprocess.CompletedProcess(command, 0, json.dumps(listing), "")
+
+    def stop_after_three_refreshes(seconds):
+        """Close the board after the third bounded refresh."""
+        nonlocal refreshes
+        refreshes += 1
+
+        if refreshes == 3:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
+    monkeypatch.setattr(
+        cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
+    )
+    monkeypatch.setattr(cli.subprocess, "run", listed_hcom)
+    monkeypatch.setattr(cli.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(cli.time, "sleep", stop_after_three_refreshes)
+    monkeypatch.setattr(
+        cli, "_poll_activity", lambda agents, previous, checked, now: ({}, now)
+    )
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.main() == 0
+    frames = output.getvalue().split(cli.CLEAR_SCREEN)[1:]
+    plain_frames = [ANSI_STYLE_PATTERN.sub("", frame) for frame in frames]
+
+    assert "● needs you · 0s+" in plain_frames[0]
+    assert "◌ checking · 0s" in plain_frames[1]
+    assert "● needs you · 0s" in plain_frames[2]
+    assert "● needs you · 0s+" not in plain_frames[2]
+
+
 def test_latest_event_time_becomes_a_monotonic_time(monkeypatch) -> None:
     """An event timestamp becomes a monotonic time for the board's quiet rule."""
     commands = []

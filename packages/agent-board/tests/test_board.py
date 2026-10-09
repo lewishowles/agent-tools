@@ -40,6 +40,7 @@ def board_content(
     last_activity: dict[str, float] | None = None,
     quiet_reasons: dict[str, str | None] | None = None,
     now: float = 0,
+    phase_since: dict[tuple[str, str], tuple[str, float, bool]] | None = None,
 ) -> list[str]:
     """Return the content rows as drawn inside the frame, including headings."""
     quiet_members = (
@@ -53,9 +54,11 @@ def board_content(
         current_time="12:34:56",
         colour=colour,
         unread_since=unread_since,
+        last_activity=last_activity,
         quiet_members=quiet_members,
         quiet_reasons=quiet_reasons,
         now=now,
+        phase_since=phase_since,
     )
     rows = []
 
@@ -65,6 +68,127 @@ def board_content(
         rows.append(content.rstrip())
 
     return rows
+
+
+def test_phase_timer_starts_as_an_estimate_and_resets_when_the_status_changes() -> None:
+    """Only a phase first seen by the board carries an estimated start."""
+    phase_since = {}
+    waiting = [agent("Agent-Tools", "orchestrator"), agent("Agent-Tools", "scout")]
+    checking = [
+        agent("Agent-Tools", "orchestrator"),
+        agent("Agent-Tools", "scout", status="active"),
+    ]
+
+    assert board_content(waiting, now=100, phase_since=phase_since)[1] == (
+        "● needs you · 0s+  Agent-Tools"
+    )
+    assert board_content(waiting, now=172, phase_since=phase_since)[1] == (
+        "● needs you · 1m+  Agent-Tools"
+    )
+    assert board_content(checking, now=180, phase_since=phase_since)[1] == (
+        "◌ checking · 0s  Agent-Tools"
+    )
+    assert board_content(checking, now=245, phase_since=phase_since)[1] == (
+        "◌ checking · 1m  Agent-Tools"
+    )
+    assert board_content(waiting, now=250, phase_since=phase_since)[1] == (
+        "● needs you · 0s  Agent-Tools"
+    )
+
+
+def test_disappearing_team_gets_a_new_estimated_baseline() -> None:
+    """A returning team cannot reuse its earlier observed phase time."""
+    phase_since = {}
+    members = [agent("Agent-Tools", "scout", status="active")]
+
+    assert board_content(members, now=100, phase_since=phase_since)[1] == (
+        "◌ checking · 0s+  Agent-Tools (partial team)"
+    )
+    assert board_content([], now=120, phase_since=phase_since) == ["No active teams"]
+    assert board_content(members, now=200, phase_since=phase_since)[1] == (
+        "◌ checking · 0s+  Agent-Tools (partial team)"
+    )
+
+
+def test_blocked_row_uses_hcom_age_instead_of_a_phase_timer() -> None:
+    """The blocked row keeps HCOM's longest wait without an estimate suffix."""
+    members = [agent("Agent-Tools", "scout", status="blocked", age=240)]
+
+    assert board_content(members, now=100, phase_since={})[1] == (
+        "✕ blocked · 4m  Agent-Tools"
+    )
+
+
+def test_quiet_team_stuck_timer_starts_at_its_last_event() -> None:
+    """The quiet timer includes the silence before the board called it stuck."""
+    phase_since = {}
+    members = [
+        agent("Agent-Tools", "orchestrator"),
+        agent("Agent-Tools", "scout", status="active"),
+    ]
+    last_activity = {member["name"]: 0 for member in members}
+
+    board_content(
+        members, last_activity=last_activity, now=299, phase_since=phase_since
+    )
+
+    assert (
+        board_content(
+            members, last_activity=last_activity, now=300, phase_since=phase_since
+        )[1]
+        == "● stuck · 5m  Agent-Tools"
+    )
+
+
+def test_unread_team_stuck_timer_starts_at_its_first_old_unread_message() -> None:
+    """The unread timer includes the wait before it crossed the stuck limit."""
+    phase_since = {}
+    members = [
+        agent("Agent-Tools", "orchestrator", unread=1),
+        agent("Agent-Tools", "scout", unread=1),
+    ]
+    unread_since = {members[0]["name"]: 0, members[1]["name"]: 30}
+
+    board_content(members, unread_since=unread_since, now=60, phase_since=phase_since)
+
+    assert (
+        board_content(
+            members, unread_since=unread_since, now=61, phase_since=phase_since
+        )[1]
+        == "● stuck · 1m  Agent-Tools"
+    )
+
+
+def test_changing_a_stuck_reason_does_not_reset_the_timer() -> None:
+    """A new terminal reason leaves the team's stuck phase running."""
+    phase_since = {}
+    members = [
+        agent("Agent-Tools", "orchestrator"),
+        agent("Agent-Tools", "scout", status="active"),
+    ]
+    last_activity = {member["name"]: 0 for member in members}
+    worker = members[1]["name"]
+
+    assert (
+        board_content(
+            members,
+            last_activity=last_activity,
+            quiet_reasons={worker: "model at capacity"},
+            now=300,
+            phase_since=phase_since,
+        )[1]
+        == "● stuck · model at capacity · 5m+  Agent-Tools"
+    )
+    assert (
+        board_content(
+            members,
+            last_activity=last_activity,
+            quiet_reasons={worker: "rate limited"},
+            now=362,
+            phase_since=phase_since,
+        )[1]
+        == "● stuck · rate limited · 6m+  Agent-Tools"
+    )
 
 
 def test_frame_shows_mixed_groups_and_counts_at_full_width() -> None:
