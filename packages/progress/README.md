@@ -716,6 +716,16 @@ For example, `progress chunk get my-task position-2` shows the second chunk in
 in a not-found error. If no chunk is selected, the command returns an error with a
 recovery hint.
 
+Both forms show the parent task's title, status, contract, files and verification,
+followed by the project and release names, task notes and the task's handoff. The
+release name is omitted when there is no release; absent notes and handoff are
+shown explicitly.
+JSON keeps every chunk field and adds `task` (the full parent task with its chunks),
+`project`, `release` (including its notes, or `null`), `notes` (the task's full
+discovery and decision records in oldest-first order) and `handoff` (the task's
+own handoff, including the `not-set` shape). The nested `task` does not repeat
+those four context fields.
+
 ### `progress search`
 
 Search tasks and chunks by a case-insensitive term:

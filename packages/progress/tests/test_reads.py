@@ -1395,14 +1395,79 @@ def test_release_and_chunk_get_return_the_full_current_project_records(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO notes (id, project_id, release_id, type, body, created_at) "
+			"VALUES (?, ?, ?, ?, ?, ?)",
+			(
+				"nte_" + "r" * 22,
+				PROJECT_ID,
+				RELEASE_A,
+				"decision",
+				"Release decision.",
+				"2026-01-01T00:00:00+00:00",
+			),
+		)
+		connection.execute(
+			"INSERT INTO task_context (task_id, current_goal, updated_at) "
+			"VALUES (?, ?, ?)",
+			(TASK_A, "Finish reads", "2026-01-01T00:00:04+00:00"),
+		)
 
 	release = store.release_get(RELEASE_A)
 	chunk = store.chunk_get(CHUNK_A)
+	task = store.task_get(TASK_A)
 
 	assert release["id"] == RELEASE_A
 	assert release["title"] == "Progress store"
 	assert chunk["id"] == CHUNK_A
 	assert chunk["task_id"] == TASK_A
+	assert chunk["task"] == {
+		key: value
+		for key, value in task.items()
+		if key not in {"project", "release", "notes", "handoff"}
+	}
+	assert chunk["project"] == task["project"]
+	assert chunk["release"] == task["release"]
+	assert [note["body"] for note in chunk["release"]["notes"]] == ["Release decision."]
+	assert chunk["notes"] == task["notes"]
+	assert chunk["handoff"] == task["handoff"]
+	assert [note["id"] for note in chunk["notes"]] == [DISCOVERY_A, DECISION_A]
+	assert chunk["handoff"]["current_goal"] == "Finish reads"
+
+
+def test_chunk_get_by_position_uses_the_parent_tasks_empty_context(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE tasks SET release_id = NULL WHERE id = ?", (TASK_B,))
+		connection.execute("DELETE FROM notes WHERE task_id = ?", (TASK_B,))
+		connection.execute(
+			"UPDATE chunks SET task_id = ? WHERE id = ?", (TASK_B, CHUNK_A)
+		)
+		connection.execute(
+			"INSERT INTO context (project_id, current_goal, updated_at) VALUES (?, ?, ?)",
+			(PROJECT_ID, "Project handoff", "2026-01-01T00:00:04+00:00"),
+		)
+
+	chunk = store.chunk_get_by_position("second", 1)
+	task = store.task_get(TASK_B)
+
+	assert chunk["id"] == CHUNK_A
+	assert chunk["task"] == {
+		key: value
+		for key, value in task.items()
+		if key not in {"project", "release", "notes", "handoff"}
+	}
+	assert chunk["project"] == task["project"]
+	assert chunk["release"] is None
+	assert chunk["notes"] == []
+	assert chunk["handoff"] == {
+		"status": "not-set",
+		"project_id": PROJECT_ID,
+		"task_id": TASK_B,
+	}
 
 
 @pytest.mark.parametrize("task_reference", [TASK_A, "first"])

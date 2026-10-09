@@ -504,6 +504,30 @@ def _render_task(task: dict[str, object]) -> str:
 			]
 		)
 
+	blocks.extend(_render_task_details(task))
+
+	footer_rows = []
+	for label, key in (("Project ID", "project_id"), ("Release ID", "release_id")):
+		value = task.get(key)
+		if value is None or not str(value).strip():
+			continue
+		footer_rows.append(
+			{
+				"label": label,
+				"value": render_span(str(value), "muted", weight="normal"),
+			}
+		)
+	if footer_rows:
+		blocks.extend(
+			[render_divider(divider_colour="muted"), render_row_group(footer_rows)]
+		)
+
+	return "\n\n".join(blocks)
+
+
+def _render_task_details(task: dict[str, object]) -> list[str]:
+	"""Render the task's contract, files and verification blocks."""
+	blocks = []
 	for label, key in (("Contract", "contract"), ("Files", "files")):
 		values = task.get(key)
 		if not isinstance(values, list) or not values:
@@ -526,41 +550,30 @@ def _render_task(task: dict[str, object]) -> str:
 			]
 		)
 
-	footer_rows = []
-	for label, key in (("Project ID", "project_id"), ("Release ID", "release_id")):
-		value = task.get(key)
-		if value is None or not str(value).strip():
-			continue
-		footer_rows.append(
-			{
-				"label": label,
-				"value": render_span(str(value), "muted", weight="normal"),
-			}
-		)
-	if footer_rows:
-		blocks.extend(
-			[render_divider(divider_colour="muted"), render_row_group(footer_rows)]
-		)
-
-	return "\n\n".join(blocks)
+	return blocks
 
 
 def _render_task_get(task: dict[str, object]) -> str:
 	"""Render a task for task get, followed by its project, release, notes and handoff.
 
-	next keeps the plain task view, so these extra sections appear only here.
+	next keeps the plain task view, so it never shows these extra sections.
 	"""
-	blocks = [_render_task(task)]
-	project = task.get("project")
+	return "\n\n".join([_render_task(task), _render_read_context(task)])
+
+
+def _render_read_context(data: dict[str, object]) -> str:
+	"""Render the project, release, notes and handoff for a task or chunk read."""
+	blocks = []
+	project = data.get("project")
 	if isinstance(project, dict):
 		blocks.append(render_row("Project", str(project.get("name", ""))))
 
-	release = task.get("release")
+	release = data.get("release")
 	if isinstance(release, dict):
 		blocks.append(render_row("Release", str(release.get("title", ""))))
 
 	blocks.append(render_span("Notes"))
-	notes = task.get("notes")
+	notes = data.get("notes")
 	if isinstance(notes, list) and notes:
 		blocks.extend(
 			render_span(
@@ -575,7 +588,7 @@ def _render_task_get(task: dict[str, object]) -> str:
 		blocks.append(render_span("No notes recorded.", "muted", weight="normal"))
 
 	blocks.append(render_span("Handoff"))
-	handoff = task.get("handoff")
+	handoff = data.get("handoff")
 	if isinstance(handoff, dict) and handoff.get("status") != "not-set":
 		rows = [
 			{"label": label, "value": str(handoff[key])}
@@ -604,7 +617,9 @@ def _render_chunk(chunk: dict[str, object]) -> str:
 	"""Render one chunk record in full for chunk get.
 
 	The description is shown whole here; chunk list keeps only its first line.
-	Position and timestamps are left to --json.
+	Position and timestamps are left to --json. The parent task's title, status,
+	contract, files and verification follow the chunk, then the same project,
+	release, notes and handoff sections as task get.
 	"""
 	blocks = [render_span(str(chunk.get("title", "")), "text", weight="bold")]
 	status = chunk.get("status", "")
@@ -655,6 +670,18 @@ def _render_chunk(chunk: dict[str, object]) -> str:
 				),
 			]
 		)
+
+	task = chunk.get("task")
+	if isinstance(task, dict):
+		blocks.append(render_span("Parent task"))
+		blocks.append(render_span(str(task.get("title", "")), "text", weight="bold"))
+		blocks.append(
+			render_row("Status", str(task.get("status", "")).replace("-", " "))
+		)
+
+		blocks.extend(_render_task_details(task))
+
+		blocks.append(_render_read_context(chunk))
 
 	return "\n\n".join(blocks)
 

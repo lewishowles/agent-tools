@@ -4080,6 +4080,18 @@ def test_chunk_get_renders_one_readable_chunk_view() -> None:
 		"title": "Readable chunk",
 		"status": "skipped",
 		"description": "The complete chunk description.\nThe second line remains.",
+		"task": {
+			"id": "tsk_chunk_view",
+			"title": "Parent task title",
+			"status": "in-progress",
+			"contract": ["Keep the task contract."],
+			"files": ["src/task.py"],
+			"verification": "Run the task tests.",
+		},
+		"project": {"name": "Chunk project"},
+		"release": {"title": "Chunk release"},
+		"notes": [{"type": "decision", "body": "Keep this decision."}],
+		"handoff": {"next_step": "Continue this task."},
 		"position": 99,
 		"started_at": "hidden-started-at",
 		"completed_at": "hidden-completed-at",
@@ -4095,10 +4107,26 @@ def test_chunk_get_renders_one_readable_chunk_view() -> None:
 	assert "Description" in plain_output
 	assert "The complete chunk description." in plain_output
 	assert "The second line remains." in plain_output
+	assert "Parent task title" in plain_output
+	assert "in progress" in plain_output
+	assert "Keep the task contract." in plain_output
+	assert "src/task.py" in plain_output
+	assert "Run the task tests." in plain_output
+	assert "Chunk project" in plain_output
+	assert "Chunk release" in plain_output
+	assert "Decision: Keep this decision." in plain_output
+	assert "Continue this task." in plain_output
 	assert "hidden-started-at" not in plain_output
 	assert "hidden-completed-at" not in plain_output
 	assert plain_output.index("Readable chunk") < plain_output.index("Status")
 	assert plain_output.index("Status") < plain_output.index("Description")
+	assert plain_output.index("Description") < plain_output.index("Parent task")
+	assert plain_output.index("Parent task") < plain_output.index("Contract")
+	assert plain_output.index("Contract") < plain_output.index("Files")
+	assert plain_output.index("Files") < plain_output.index("Verification")
+	assert plain_output.index("Verification") < plain_output.index("Chunk project")
+	assert plain_output.index("Chunk release") < plain_output.index("Notes")
+	assert plain_output.index("Notes") < plain_output.index("Handoff")
 
 
 def test_chunk_get_tones_the_status_by_its_result_type(monkeypatch) -> None:

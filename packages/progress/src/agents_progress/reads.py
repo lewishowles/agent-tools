@@ -359,7 +359,7 @@ def _task_handoff(
 def _task_read_context(
 	connection: sqlite3.Connection, project: Project, task: dict[str, object]
 ) -> dict[str, object]:
-	"""Return what task get adds so one read is enough to resume the task.
+	"""Return what task and chunk reads add so one read can resume the task.
 
 	The handoff is the task's own, never the project's or the active task's,
 	and takes the not-set shape from context get --task when none is recorded.
@@ -391,7 +391,7 @@ def _task_read_context(
 def _task_plain_data(
 	connection: sqlite3.Connection, project_id: str, task_id: str
 ) -> dict[str, object]:
-	"""Return a task and its chunks, before task get adds the resume context."""
+	"""Return a task and its chunks, without the context that task and chunk reads add."""
 	task_id = resolve_identifier(connection, task_id, TASK_PREFIX, project_id)
 	task_row = connection.execute(
 		f"SELECT {_TASK_COLUMNS} FROM tasks WHERE id = ? AND project_id = ?",
@@ -404,6 +404,20 @@ def _task_plain_data(
 	task["chunks"] = _task_chunks(connection, task_id)
 
 	return task
+
+
+def _chunk_read_data(
+	connection: sqlite3.Connection, project: Project, chunk: dict[str, object]
+) -> dict[str, object]:
+	"""Return a chunk with its parent task and the task's project, release, notes and handoff.
+
+	Both chunk lookups build their result here so they return the same fields. The
+	nested task leaves out the project, release, notes and handoff, which appear
+	once beside the chunk instead.
+	"""
+	task = _task_plain_data(connection, project.id, str(chunk["task_id"]))
+
+	return {**chunk, "task": task, **_task_read_context(connection, project, task)}
 
 
 def _task_response(
@@ -1343,7 +1357,11 @@ class ReadStore(_StoreBase):
 		chunk_id: str,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Return one current-project chunk, raising not-found if it does not exist here."""
+		"""Return one current-project chunk, raising not-found if it does not exist here.
+
+		The chunk also carries its parent task and that task's project, release,
+		notes and handoff, so one read is enough to resume it.
+		"""
 		validate_object_id(chunk_id, CHUNK_PREFIX)
 		project = self.current_project(path)
 
@@ -1356,10 +1374,10 @@ class ReadStore(_StoreBase):
 				(chunk_id, project.id),
 			).fetchone()
 
-		if row is None:
-			raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
+			if row is None:
+				raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
 
-		return Chunk.from_row(row).to_dict()
+			return _chunk_read_data(connection, project, Chunk.from_row(row).to_dict())
 
 	def chunk_get_by_position(
 		self,
@@ -1369,15 +1387,20 @@ class ReadStore(_StoreBase):
 	) -> dict[str, object]:
 		"""Return the chunk at a 1-based position in a task given by ID or slug.
 
-		Raises not-found, naming the task and position, when the task has no chunk
-		at that position.
+		The result has the same parent task and resume details as chunk_get. Raises
+		not-found, naming the task and position, when the task has no chunk at that
+		position.
 		"""
-		task = self.task_get(task_reference, path)
-		task_id = str(task["id"])
+		task_reference = validate_identifier(task_reference, TASK_PREFIX)
+		project = self.current_project(path)
 
-		for chunk in task["chunks"]:
-			if chunk["position"] == position:
-				return chunk
+		with self.database.connection() as connection:
+			task = _task_plain_data(connection, project.id, task_reference)
+			task_id = str(task["id"])
+
+			for chunk in task["chunks"]:
+				if chunk["position"] == position:
+					return _chunk_read_data(connection, project, chunk)
 
 		raise NotFoundError(
 			f"chunk at position {position} was not found in task {task_id}",
