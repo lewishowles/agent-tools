@@ -67,6 +67,41 @@ _TASK_CLEAN_DEPENDENCY_LABELS = {
 	"required_by": "Required by:",
 }
 
+# Maps each write action to the past-tense verb that opens its confirmation line.
+_WRITE_ACTIONS = {
+	"add": "Added",
+	"block": "Blocked",
+	"edit": "Updated",
+	"move": "Moved",
+	"rename": "Renamed",
+	"start": "Started",
+	"unblock": "Unblocked",
+}
+
+# Write commands that print one confirmation line instead of the whole record,
+# so the result is easy to spot. Use show to see the full record.
+_CONCISE_WRITE_COMMANDS = {
+	"release add",
+	"release edit",
+	"release move",
+	"release rename",
+	"task add",
+	"task block",
+	"task edit",
+	"task move",
+	"task rename",
+	"task start",
+	"task unblock",
+	"chunk add",
+	"chunk edit",
+	"chunk move",
+	"chunk rename",
+	"chunk start",
+	"discovery add",
+	"decision add",
+	"context set",
+}
+
 
 def render(command: str, data: object) -> str:
 	"""Render one command's stable data for a person at a terminal."""
@@ -113,6 +148,27 @@ def render(command: str, data: object) -> str:
 		return _render_doctor(data)
 	if command == "task clean":
 		return _render_task_clean(data)
+	if command in _CONCISE_WRITE_COMMANDS and isinstance(data, dict):
+		if command == "context set":
+			owner_type = "task" if data.get("task_id") else "project"
+			owner_id = data.get("task_id") or data.get("project_id")
+			return (
+				render_status("success", "Updated context:", f"{owner_type} {owner_id}")
+				+ "\n"
+			)
+
+		record_type, action = command.split()
+		verb = _WRITE_ACTIONS[action]
+		if record_type in {"discovery", "decision"}:
+			body_lines = str(data.get("body", "")).splitlines()
+			first_line = next((line for line in body_lines if line.strip()), "")
+			detail = f"{first_line} ({data.get('id', '')})"
+		else:
+			detail = f"{data.get('title', '')} ({data.get('id', '')})"
+
+		if action == "move":
+			detail += f" to position {data.get('position')}"
+		return render_status("success", f"{verb} {record_type}:", detail) + "\n"
 	if command in {"task complete", "chunk complete"} and isinstance(data, dict):
 		# Completion prints one success line, not every record field; handled here
 		# rather than in _render_object so a plain get still shows all fields.

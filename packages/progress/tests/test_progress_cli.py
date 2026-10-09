@@ -890,11 +890,19 @@ def test_start_human_output_only_warns_for_dirty_or_unavailable(
 	command: str, changes: dict[str, object], expected: str | None
 ) -> None:
 	output = cli._render_human_output(
-		command, {"id": "test", "status": "active", "uncommitted_changes": changes}
+		command,
+		{
+			"id": "test",
+			"title": "Sample",
+			"status": "active",
+			"uncommitted_changes": changes,
+		},
 	)
+	plain_lines = render_module._ANSI_ESCAPE_PATTERN.sub("", output).splitlines()
+	assert plain_lines[0].endswith(f"Started {command.split()[0]}: Sample (test)")
 
 	if expected:
-		assert expected in output
+		assert plain_lines[1] == expected
 	else:
 		assert "Uncommitted changes:" not in output
 	assert "{'status':" not in output
@@ -5995,6 +6003,248 @@ def test_human_chunk_complete_output_is_concise(
 	assert ("Task ID: tsk_parent", "muted", "normal") in render_spans
 	assert ("Next: progress next --task tsk_parent", "muted", "normal") in next_spans
 	assert "chk_test" not in output
+
+
+@pytest.mark.parametrize(
+	("arguments", "method_name", "data", "expected"),
+	[
+		(
+			[
+				"release",
+				"add",
+				"--slug",
+				"sample",
+				"--title",
+				"Sample",
+				"--overview",
+				"Plan",
+			],
+			"release_add",
+			{"id": "rel_test", "title": "Sample"},
+			"Added release: Sample (rel_test)",
+		),
+		(
+			["release", "edit", "rel_test", "--overview", "Revised"],
+			"release_edit",
+			{"id": "rel_test", "title": "Sample"},
+			"Updated release: Sample (rel_test)",
+		),
+		(
+			["release", "rename", "rel_test", "--title", "Sample"],
+			"release_rename",
+			{"id": "rel_test", "title": "Sample"},
+			"Renamed release: Sample (rel_test)",
+		),
+		(
+			["release", "move", "rel_test", "--before", "rel_other"],
+			"release_move",
+			{"id": "rel_test", "title": "Sample", "position": 2},
+			"Moved release: Sample (rel_test) to position 2",
+		),
+		(
+			[
+				"task",
+				"add",
+				"--slug",
+				"sample",
+				"--title",
+				"Sample",
+				"--overview",
+				"Plan",
+				"--contract-step",
+				"Deliver it",
+			],
+			"task_add",
+			{"id": "tsk_test", "title": "Sample"},
+			"Added task: Sample (tsk_test)",
+		),
+		(
+			["task", "edit", "tsk_test", "--overview", "Revised"],
+			"task_edit",
+			{"id": "tsk_test", "title": "Sample"},
+			"Updated task: Sample (tsk_test)",
+		),
+		(
+			["task", "rename", "tsk_test", "--title", "Sample"],
+			"task_rename",
+			{"id": "tsk_test", "title": "Sample"},
+			"Renamed task: Sample (tsk_test)",
+		),
+		(
+			["task", "move", "tsk_test", "--before", "tsk_other"],
+			"task_move",
+			{"id": "tsk_test", "title": "Sample", "position": 3},
+			"Moved task: Sample (tsk_test) to position 3",
+		),
+		(
+			["task", "start", "tsk_test"],
+			"task_start",
+			{"id": "tsk_test", "title": "Sample"},
+			"Started task: Sample (tsk_test)",
+		),
+		(
+			["task", "block", "tsk_test", "--reason", "Waiting"],
+			"task_block",
+			{"id": "tsk_test", "title": "Sample"},
+			"Blocked task: Sample (tsk_test)",
+		),
+		(
+			["task", "unblock", "tsk_test"],
+			"task_unblock",
+			{"id": "tsk_test", "title": "Sample"},
+			"Unblocked task: Sample (tsk_test)",
+		),
+		(
+			[
+				"chunk",
+				"add",
+				"--task",
+				"tsk_test",
+				"--title",
+				"Sample",
+				"--description",
+				"Build it",
+				"--review-question",
+				"Does it work?",
+			],
+			"chunk_add",
+			{"id": "chk_test", "task_id": "tsk_test", "title": "Sample"},
+			"Added chunk: Sample (chk_test)",
+		),
+		(
+			["chunk", "edit", "chk_test", "--description", "Revised"],
+			"chunk_edit",
+			{"id": "chk_test", "title": "Sample"},
+			"Updated chunk: Sample (chk_test)",
+		),
+		(
+			["chunk", "rename", "chk_test", "--title", "Sample"],
+			"chunk_rename",
+			{"id": "chk_test", "title": "Sample"},
+			"Renamed chunk: Sample (chk_test)",
+		),
+		(
+			["chunk", "move", "chk_test", "--before", "chk_other"],
+			"chunk_move",
+			{"id": "chk_test", "title": "Sample", "position": 4},
+			"Moved chunk: Sample (chk_test) to position 4",
+		),
+		(
+			["chunk", "start", "chk_test"],
+			"chunk_start",
+			{"id": "chk_test", "title": "Sample"},
+			"Started chunk: Sample (chk_test)",
+		),
+		(
+			["task", "dependency", "add", "tsk_test", "tsk_other"],
+			"task_dependency_add",
+			{"id": "tsk_test", "title": "Sample"},
+			"Added task dependency: Sample (tsk_test) depends on tsk_other",
+		),
+		(
+			["task", "dependency", "remove", "tsk_test", "tsk_other"],
+			"task_dependency_remove",
+			{"task_id": "tsk_test", "depends_on_task_id": "tsk_other"},
+			"Removed task dependency: tsk_test no longer depends on tsk_other",
+		),
+		(
+			["discovery", "add", "--task", "tsk_test", "A finding\nMore detail"],
+			"discovery_add",
+			{"id": "nte_test", "body": "A finding\nMore detail"},
+			"Added discovery: A finding (nte_test)",
+		),
+		(
+			["decision", "add", "--task", "tsk_test", "\nA choice\nMore detail"],
+			"decision_add",
+			{"id": "nte_test", "body": "\nA choice\nMore detail"},
+			"Added decision: A choice (nte_test)",
+		),
+		(
+			["context", "set", "--task", "tsk_test", "--current-goal", "Finish"],
+			"context_set",
+			{"task_id": "tsk_test", "project_id": "prj_test", "current_goal": "Finish"},
+			"Updated context: task tsk_test",
+		),
+		(
+			["context", "set", "--current-goal", "Finish"],
+			"context_set",
+			{"task_id": None, "project_id": "prj_test", "current_goal": "Finish"},
+			"Updated context: project prj_test",
+		),
+	],
+)
+def test_human_single_record_writes_print_one_confirmation(
+	tmp_path: Path,
+	monkeypatch,
+	capsys,
+	arguments: list[str],
+	method_name: str,
+	data: dict[str, object],
+	expected: str,
+) -> None:
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def __getattr__(self, name):
+			assert name == method_name
+			return lambda *args, **kwargs: data
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert cli.main([*arguments, "--database", str(tmp_path / "db")]) == 0
+
+	lines = [
+		render_module._ANSI_ESCAPE_PATTERN.sub("", line)
+		for line in capsys.readouterr().out.splitlines()
+	]
+	assert lines[1].endswith(expected)
+	assert lines[2] == ""
+	assert not any("Overview:" in line or "Status:" in line for line in lines)
+	assert lines[3:] == [] or lines[3].startswith("Next: ")
+
+
+@pytest.mark.parametrize(
+	("arguments", "method_name", "data"),
+	[
+		(
+			["task", "edit", "tsk_test", "--overview", "Revised"],
+			"task_edit",
+			{"id": "tsk_test", "title": "Sample", "overview": "Revised"},
+		),
+		(
+			["task", "move", "tsk_test", "--before", "tsk_other"],
+			"task_move",
+			{"id": "tsk_test", "title": "Sample", "position": 2},
+		),
+		(
+			["task", "rename", "tsk_test", "--title", "New title"],
+			"task_rename",
+			{"id": "tsk_test", "title": "New title"},
+		),
+	],
+)
+def test_json_single_record_writes_keep_the_store_envelope(
+	tmp_path: Path,
+	monkeypatch,
+	capsys,
+	arguments: list[str],
+	method_name: str,
+	data: dict[str, object],
+) -> None:
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def __getattr__(self, name):
+			assert name == method_name
+			return lambda *args, **kwargs: data
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert cli.main([*arguments, "--database", str(tmp_path / "db"), "--json"]) == 0
+
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 
 @pytest.mark.parametrize(

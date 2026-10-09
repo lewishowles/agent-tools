@@ -1338,7 +1338,9 @@ def main(argv: list[str] | None = None) -> int:
 	if json_mode:
 		_write_json({"ok": True, "data": data})
 	else:
-		human_output = _render_human_output(command, data)
+		human_output = _render_human_output(
+			command, data, dependency_id=getattr(args, "depends_on_task_id", None)
+		)
 
 		# Every human command output gets one blank line above it and a trailing
 		# gap before any Next hint, so nothing butts against the previous prompt.
@@ -1358,7 +1360,9 @@ def _single_or_many(values: list[str]) -> str | list[str]:
 	return values[0] if len(values) == 1 else values
 
 
-def _render_human_output(command: str, data: object) -> str:
+def _render_human_output(
+	command: str, data: object, *, dependency_id: str | None = None
+) -> str:
 	"""Render each record as one line, with deleted records listed under it after a forced removal.
 
 	Single-record responses and every other command render as before. For a
@@ -1367,12 +1371,25 @@ def _render_human_output(command: str, data: object) -> str:
 	print only the checkout path, so a launcher can change into it directly.
 	Task completion adds the worktree cleanup result to each task's line. Task
 	and chunk starts add one line when the worktree has uncommitted changes or
-	Git could not check it.
+	Git could not check it. A dependency add names the task it now depends on
+	from dependency_id, because the response holds only the dependent task.
 	"""
 	if command in {"worktree ensure", "worktree get"} and isinstance(data, dict):
 		return f"{data['path']}\n"
 	if command == "worktree cleanup" and isinstance(data, dict):
 		return _worktree_cleanup_line(data) + "\n"
+	if command in {"task dependency add", "task dependency remove"} and isinstance(
+		data, dict
+	):
+		if command == "task dependency add":
+			label = "Added task dependency:"
+			detail = f"{data['title']} ({data['id']}) depends on {dependency_id}"
+		else:
+			label = "Removed task dependency:"
+			detail = (
+				f"{data['task_id']} no longer depends on {data['depends_on_task_id']}"
+			)
+		return render_status("success", label, detail) + "\n"
 	if (
 		command in {"task start", "chunk start"}
 		and isinstance(data, dict)
