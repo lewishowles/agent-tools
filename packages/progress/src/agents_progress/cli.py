@@ -60,7 +60,16 @@ _INVALID_CHOICE_PATTERN = re.compile(
 
 
 class CliUsageError(Exception):
-	"""Signal a parser error to format through the stable JSON envelope."""
+	"""Signal a usage error, with the failing command's usage text when it is known."""
+
+	def __init__(self, message: str, usage: str | None = None) -> None:
+		"""Store the message and, when known, the failing command's usage text.
+
+		Without usage text, main shows the parsed command's usage, or the root
+		usage when parsing never finished.
+		"""
+		super().__init__(message)
+		self.usage = usage
 
 
 class ProgressArgumentParser(argparse.ArgumentParser):
@@ -85,8 +94,8 @@ class ProgressArgumentParser(argparse.ArgumentParser):
 		super().print_help(file)
 
 	def error(self, message: str) -> None:
-		"""Turn an argparse usage error into a CliUsageError the caller can format."""
-		raise CliUsageError(message)
+		"""Turn an argparse usage error into a CliUsageError that carries this parser's usage."""
+		raise CliUsageError(message, self.format_usage())
 
 
 class ProgressHelpFormatter(argparse.HelpFormatter):
@@ -255,6 +264,9 @@ def _add_command_specs(
 		# named with no subcommand. Leaf parsers clear the value they would
 		# otherwise inherit from their group, so their command still dispatches.
 		parser.set_defaults(_help_parser=parser if spec.children else None)
+		# Each parser records its own usage. A leaf overrides its group, while
+		# a group with no matched leaf can still show its own usage.
+		parser.set_defaults(_usage_parser=parser)
 
 		if spec.children:
 			nested_commands = parser.add_subparsers(
@@ -1257,10 +1269,16 @@ def main(argv: list[str] | None = None) -> int:
 
 	try:
 		parser = build_parser()
+		args = None
 		if _should_prompt_add_arguments(arguments):
 			arguments = _prompt_add_arguments(arguments)
 
-		args = parser.parse_args(arguments)
+		# argparse reports unknown arguments from the root parser, which would
+		# show the root usage. Checking them here lets the error handler show
+		# the matched command's usage, with the same message argparse uses.
+		args, unrecognised = parser.parse_known_args(arguments)
+		if unrecognised:
+			raise CliUsageError(f"unrecognized arguments: {' '.join(unrecognised)}")
 		json_mode = bool(getattr(args, "json", json_mode))
 		if (
 			getattr(args, "_all_unpaged", False)
@@ -1302,10 +1320,11 @@ def main(argv: list[str] | None = None) -> int:
 
 		data, command = _run_command(args, include_release_titles=not json_mode)
 	except CliUsageError as error:
+		usage_parser = getattr(args, "_usage_parser", parser)
 		return _write_error(
 			"usage",
 			_suggest_command_error(str(error), arguments),
-			{},
+			{"usage": error.usage or usage_parser.format_usage()},
 			json_mode,
 			status=2,
 		)
@@ -1984,6 +2003,9 @@ def _write_error(
 		hint = details.get("hint")
 		if isinstance(hint, str):
 			sys.stderr.write(hint + "\n")
+		usage = details.get("usage")
+		if isinstance(usage, str):
+			sys.stderr.write(usage)
 
 	return status
 

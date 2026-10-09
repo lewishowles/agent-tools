@@ -21,11 +21,11 @@ from agents_progress.writes import WriteStore
 
 
 def _stderr_error_message(captured_err: str) -> str:
-	"""Return the bare error message from captured stderr, with the status marker, "Error" label, and ANSI codes removed."""
+	"""Return the error message without its status marker, label, ANSI codes, or following usage text."""
 	stripped = render_module._ANSI_ESCAPE_PATTERN.sub("", captured_err)
 	_, _, after_marker = stripped.partition(" ")
 
-	return after_marker.removeprefix("Error ").rstrip("\n")
+	return after_marker.removeprefix("Error ").partition("\nusage: ")[0].rstrip("\n")
 
 
 @pytest.mark.parametrize(
@@ -503,7 +503,7 @@ def test_legacy_command_json_uses_the_same_replacement(capsys, command: str) -> 
 		"error": {
 			"code": "usage",
 			"message": _stderr_error_message(human_output.err),
-			"details": {},
+			"details": {"usage": cli.build_parser().format_usage()},
 		},
 	}
 	assert response["error"]["message"] == (
@@ -527,12 +527,102 @@ def test_unknown_command_json_uses_the_same_multiline_suggestion(capsys) -> None
 		"error": {
 			"code": "usage",
 			"message": _stderr_error_message(human_output.err),
-			"details": {},
+			"details": {"usage": cli.build_parser().format_usage()},
 		},
 	}
 	assert (
 		"Did you mean one of:\n  progress release list" in response["error"]["message"]
 	)
+
+
+@pytest.mark.parametrize("json_mode", [False, True], ids=["human", "json"])
+@pytest.mark.parametrize(
+	"arguments, expected_message, expected_usage",
+	[
+		pytest.param(
+			["task", "list", "--bogus"],
+			"unrecognized arguments: --bogus",
+			"usage: progress task list ",
+			id="unknown-flag",
+		),
+		pytest.param(
+			["task", "--bogus"],
+			"unrecognized arguments: --bogus",
+			"usage: progress task ",
+			id="unknown-flag-after-group",
+		),
+		pytest.param(
+			["task", "list", "extra"],
+			"unrecognized arguments: extra",
+			"usage: progress task list ",
+			id="unexpected-argument",
+		),
+		pytest.param(
+			["task", "get", "--database"],
+			"argument --database: expected one argument",
+			"usage: progress task get ",
+			id="missing-argument",
+		),
+		pytest.param(
+			["task", "bogus"],
+			"'bogus' is not a command on its own",
+			"usage: progress task ",
+			id="unknown-nested-action",
+		),
+		pytest.param(
+			["bogus"],
+			"invalid choice: 'bogus'",
+			"usage: progress ",
+			id="unknown-top-level-word",
+		),
+		pytest.param(
+			["chunk", "list", "first", "--task", "second"],
+			"give the task either as an argument or with --task",
+			"usage: progress chunk list ",
+			id="both-task-forms",
+		),
+		pytest.param(
+			["checkout", "detach"],
+			"checkout detach needs a PATH or --stale",
+			"usage: progress checkout detach ",
+			id="checkout-detach-without-selection",
+		),
+	],
+)
+def test_usage_errors_show_the_failing_command(
+	tmp_path: Path,
+	monkeypatch,
+	capsys,
+	arguments: list[str],
+	expected_message: str,
+	expected_usage: str,
+	json_mode: bool,
+) -> None:
+	"""Show the failing command's usage after each kind of argument error."""
+	monkeypatch.setenv("AGENTS_PROGRESS_DATABASE", str(tmp_path / "progress.db"))
+	if json_mode:
+		arguments = [*arguments, "--json"]
+
+	assert cli.main(arguments) == 2
+
+	output = capsys.readouterr()
+	if json_mode:
+		assert output.err == ""
+		response = json.loads(output.out)
+		assert response["ok"] is False
+		assert response["error"]["code"] == "usage"
+		assert expected_message in response["error"]["message"]
+		usage = response["error"]["details"]["usage"]
+	else:
+		assert output.out == ""
+		stripped_error = render_module._ANSI_ESCAPE_PATTERN.sub("", output.err)
+		error_text, separator, usage_text = stripped_error.partition("\nusage: ")
+		assert separator
+		assert expected_message in error_text
+		usage = "usage: " + usage_text
+
+	assert usage.startswith(expected_usage)
+	assert usage.endswith("\n")
 
 
 def test_top_level_help_lists_commands_without_a_redundant_metavar() -> None:
@@ -1757,17 +1847,13 @@ def test_json_mode_keeps_missing_add_arguments_non_interactive(
 	assert cli.main(["task", "add", "--json"]) == 2
 
 	response = json.loads(capsys.readouterr().out)
-	assert response == {
-		"ok": False,
-		"error": {
-			"code": "usage",
-			"message": (
-				"the following arguments are required: "
-				"--slug, --title, --overview, --contract-step"
-			),
-			"details": {},
-		},
-	}
+	assert response["ok"] is False
+	assert response["error"]["code"] == "usage"
+	assert response["error"]["message"] == (
+		"the following arguments are required: "
+		"--slug, --title, --overview, --contract-step"
+	)
+	assert response["error"]["details"]["usage"].startswith("usage: progress task add ")
 
 
 def test_other_add_commands_do_not_prompt(capsys, monkeypatch) -> None:
@@ -6301,6 +6387,14 @@ def test_checkout_detach_reports_unrecorded_paths_and_requires_a_selection(
 ) -> None:
 	database = tmp_path / "progress.db"
 	missing = tmp_path / "missing"
+
+	assert (
+		cli.main(["checkout", "detach", str(missing), "--database", str(database)]) == 1
+	)
+	human_error = capsys.readouterr()
+	assert human_error.out == ""
+	assert f"checkout {missing} was not found" in _stderr_error_message(human_error.err)
+	assert "usage:" not in human_error.err
 
 	assert (
 		cli.main(

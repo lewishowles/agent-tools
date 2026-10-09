@@ -58,7 +58,9 @@ Commands use a noun followed by a verb, such as `progress task list` or
 legacy command name, or mistype a nested command, `progress` prints the valid
 complete commands to try. The old `progress current` and `progress ready`
 commands both point to `progress next`. With `--json`, the same suggestion is
-returned in the standard error envelope.
+returned in the standard error envelope. For usage errors, readable output
+prints the relevant command's usage after the error; `--json` includes it in
+`error.details.usage`.
 
 ## Current work
 
@@ -958,4 +960,5 @@ sections, still in one transaction.
 
 With `--json`, these failures use the CLI's stable machine-readable error
 envelope. Without it, the same reason and blocking IDs are shown in the
-readable terminal response.
+readable terminal response. Argument errors also use that envelope; their
+`error.details.usage` field contains the relevant command's usage text.
