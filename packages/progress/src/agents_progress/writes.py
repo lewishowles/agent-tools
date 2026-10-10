@@ -682,12 +682,7 @@ class WriteStore(_StoreBase):
 					"DELETE FROM task_worktrees WHERE task_id = ?", (task_id,)
 				)
 				_delete_task_values(connection, task_id)
-				# Databases from before ON DELETE SET NULL was added to this link refuse the
-				# task delete while a project still names the task as its default.
-				connection.execute(
-					"UPDATE projects SET default_task_id = NULL WHERE default_task_id = ?",
-					(task_id,),
-				)
+				_clear_default_task(connection, task_id)
 				connection.execute(
 					"DELETE FROM tasks WHERE id = ? AND project_id = ?",
 					(task_id, project.id),
@@ -2028,12 +2023,7 @@ def _remove_task(
 		)
 		connection.execute("DELETE FROM task_worktrees WHERE task_id = ?", (task_id,))
 		_delete_task_values(connection, task_id)
-		# Databases from before ON DELETE SET NULL was added to this link refuse the
-		# task delete while a project still names the task as its default.
-		connection.execute(
-			"UPDATE projects SET default_task_id = NULL WHERE default_task_id = ?",
-			(task_id,),
-		)
+		_clear_default_task(connection, task_id)
 		connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
 		return {"id": task_id}
@@ -2070,12 +2060,7 @@ def _remove_task(
 	)
 	connection.execute("DELETE FROM task_worktrees WHERE task_id = ?", (task_id,))
 	_delete_task_values(connection, task_id)
-	# Databases from before ON DELETE SET NULL was added to this link refuse the
-	# task delete while a project still names the task as its default.
-	connection.execute(
-		"UPDATE projects SET default_task_id = NULL WHERE default_task_id = ?",
-		(task_id,),
-	)
+	_clear_default_task(connection, task_id)
 	connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
 	# Dependants that became ready, reported so the user can see them.
@@ -2472,6 +2457,18 @@ def _delete_task_values(connection: sqlite3.Connection, task_id: str) -> None:
 	"""Remove one task's contract steps and files before the task row itself is deleted."""
 	for table in _TASK_LIST_TABLES.values():
 		connection.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
+
+
+def _clear_default_task(connection: sqlite3.Connection, task_id: str) -> None:
+	"""Stop any project naming the task as its default, so the task can be deleted.
+
+	Databases created before projects.default_task_id gained ON DELETE SET NULL
+	refuse to delete a task while a project still names it as its default.
+	"""
+	connection.execute(
+		"UPDATE projects SET default_task_id = NULL WHERE default_task_id = ?",
+		(task_id,),
+	)
 
 
 def _assert_checkout_removable(task_id: str, inspection: dict[str, str]) -> None:
