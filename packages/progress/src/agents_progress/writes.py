@@ -682,6 +682,12 @@ class WriteStore(_StoreBase):
 					"DELETE FROM task_worktrees WHERE task_id = ?", (task_id,)
 				)
 				_delete_task_values(connection, task_id)
+				# Databases from before ON DELETE SET NULL was added to this link refuse the
+				# task delete while a project still names the task as its default.
+				connection.execute(
+					"UPDATE projects SET default_task_id = NULL WHERE default_task_id = ?",
+					(task_id,),
+				)
 				connection.execute(
 					"DELETE FROM tasks WHERE id = ? AND project_id = ?",
 					(task_id, project.id),
@@ -2022,6 +2028,12 @@ def _remove_task(
 		)
 		connection.execute("DELETE FROM task_worktrees WHERE task_id = ?", (task_id,))
 		_delete_task_values(connection, task_id)
+		# Databases from before ON DELETE SET NULL was added to this link refuse the
+		# task delete while a project still names the task as its default.
+		connection.execute(
+			"UPDATE projects SET default_task_id = NULL WHERE default_task_id = ?",
+			(task_id,),
+		)
 		connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
 		return {"id": task_id}
@@ -2058,6 +2070,12 @@ def _remove_task(
 	)
 	connection.execute("DELETE FROM task_worktrees WHERE task_id = ?", (task_id,))
 	_delete_task_values(connection, task_id)
+	# Databases from before ON DELETE SET NULL was added to this link refuse the
+	# task delete while a project still names the task as its default.
+	connection.execute(
+		"UPDATE projects SET default_task_id = NULL WHERE default_task_id = ?",
+		(task_id,),
+	)
 	connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
 	# Dependants that became ready, reported so the user can see them.

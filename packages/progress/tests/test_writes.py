@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agents_progress import database as database_module
+from agents_progress import database as database_module, schema as schema_module
 from agents_progress.cli import _render_human_output
 from agents_progress.database import Database
 from agents_progress.errors import (
@@ -3101,6 +3101,56 @@ def test_task_clean_removes_safe_done_tasks_and_reports_blockers(
 	assert empty_release["id"] in release_ids
 	assert mixed_release["id"] in release_ids
 	assert blocked_release["id"] in release_ids
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_task_clean_clears_a_default_task_on_an_older_schema(
+	tmp_path: Path, monkeypatch: pytest.MonkeyPatch, force: bool
+) -> None:
+	def add_default_task_without_delete_action(connection: sqlite3.Connection) -> None:
+		"""Add the default task column as migration 11 first did, without ON DELETE SET NULL."""
+		connection.execute(
+			"ALTER TABLE projects ADD COLUMN default_task_id TEXT REFERENCES tasks (id)"
+		)
+
+	with monkeypatch.context() as patch:
+		patch.setitem(
+			schema_module.MIGRATIONS, 11, add_default_task_without_delete_action
+		)
+		store = _seed_store(tmp_path)
+
+	task = _add_task(store, "default", "Default task")
+	store.task_start(task["id"])
+	store.task_complete(task["id"])
+
+	with store.database.connection() as connection:
+		default = connection.execute(
+			"SELECT default_task_id FROM projects WHERE id = ?", (PROJECT_ID,)
+		).fetchone()
+		assert default["default_task_id"] == task["id"]
+		assert (
+			connection.execute("PRAGMA foreign_key_list(projects)").fetchall()[-1][
+				"on_delete"
+			]
+			== "NO ACTION"
+		)
+
+	result = store.task_clean(force=force)
+
+	assert result["removed"] == [{"id": task["id"], "title": "Default task"}]
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT default_task_id FROM projects WHERE id = ?", (PROJECT_ID,)
+			).fetchone()["default_task_id"]
+			is None
+		)
+		assert (
+			connection.execute(
+				"SELECT 1 FROM tasks WHERE id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
 
 
 def test_task_clean_deletes_contract_and_file_rows(tmp_path: Path) -> None:
