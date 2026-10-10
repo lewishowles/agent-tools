@@ -1,4 +1,4 @@
-"""Find the one live HCOM teammate who holds a role in the sender's team."""
+"""Send an HCOM message to one live teammate in the sender's team."""
 
 import argparse
 import json
@@ -18,9 +18,9 @@ LIVE_STATUSES = frozenset({"active", "listening", "blocked"})
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Print the one live teammate for the requested role and return 0.
+    """Send the piped message to the one live teammate for the requested role and return 0.
 
-    Every refusal prints its reason and returns 1 without sending anything.
+    A refusal or failed send prints the reason and returns 1, and a message is never sent twice.
     Invalid arguments exit with status 2, as argparse does.
     """
     arguments = sys.argv[1:] if argv is None else argv
@@ -28,7 +28,7 @@ def main(argv: list[str] | None = None) -> int:
         json_output="--json" in arguments,
         # Only the exact --json flag switches output to JSON, including for usage errors.
         allow_abbrev=False,
-        description="Find one live teammate for a role in your HCOM team.",
+        description="Send to one live teammate for a role in your HCOM team.",
     )
     parser.add_argument("role", help="orchestrator, scout, implementer, or reviewer")
     parser.add_argument("--intent", required=True, choices=("request", "inform", "ack"))
@@ -65,6 +65,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.intent == "ack" and not args.reply_to:
         return _refuse("--intent ack requires --reply-to.", args.json)
+
+    if sys.stdin.isatty():
+        return _refuse("Pipe a message body to stdin.", args.json)
+
+    body = sys.stdin.read()
+
+    if not body.strip():
+        return _refuse("Message body is empty.", args.json)
 
     if shutil.which("hcom") is None:
         return _refuse("hcom is not installed or is not on PATH.", args.json)
@@ -114,7 +122,73 @@ def main(argv: list[str] | None = None) -> int:
         names = ", ".join(agent["name"] for agent in matches)
         return _refuse(f"Several live teammates for {target_tag}: {names}.", args.json)
 
-    print(f"Would send to {matches[0]['name']}")
+    recipient = matches[0]
+    command = ["hcom", "send", f"@{recipient['name']}", "--intent", args.intent]
+
+    if args.reply_to:
+        command.extend(["--reply-to", args.reply_to])
+
+    if args.thread:
+        command.extend(["--thread", args.thread])
+
+    command.extend(["--name", sender_name, "--json"])
+
+    try:
+        result = subprocess.run(
+            command,
+            input=body,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return _refuse(f"HCOM send failed: {_one_line(str(error))}", args.json)
+
+    if result.returncode:
+        detail = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or f"hcom exited {result.returncode}"
+        )
+        return _refuse(f"HCOM send failed: {_one_line(detail)}", args.json)
+
+    try:
+        receipt = json.loads(result.stdout)
+
+        if not isinstance(receipt, dict):
+            raise TypeError("expected a delivery receipt")
+
+        # HCOM's receipt lists base names, so the chosen agent must be its only entry.
+        if receipt.get("delivered_to") != [recipient["base_name"]]:
+            raise ValueError("delivery did not name only the chosen teammate")
+
+        event_id = receipt.get("event_id")
+
+        if type(event_id) is not int:
+            raise ValueError("expected an integer event ID")
+    except (json.JSONDecodeError, TypeError, ValueError) as error:
+        output = _one_line(result.stdout)
+        detail = f"{error} ({output})" if output else str(error)
+        return _refuse(f"Unexpected HCOM send receipt: {detail}", args.json)
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "data": {
+                        "recipient": recipient["name"],
+                        "base_name": recipient["base_name"],
+                        "tag": target_tag,
+                        "event_id": event_id,
+                    },
+                }
+            )
+        )
+    else:
+        print(f"Sent to {recipient['name']} (event {event_id}).")
+
     return 0
 
 
