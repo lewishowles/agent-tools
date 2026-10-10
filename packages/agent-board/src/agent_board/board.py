@@ -8,7 +8,6 @@ from pathlib import Path
 # with an active agent names what a working team is doing.
 ACTIVITY_LABELS = {
     "implementer": "implementing",
-    "learner": "learning",
     "reviewer": "reviewing",
     "scout": "checking",
     "orchestrator": "coordinating",
@@ -25,7 +24,6 @@ STATUS_SYMBOLS = {
     "stuck": "●",
     "blocked": "✕",
     "implementing": "▶",
-    "learning": "▶",
     "reviewing": "◎",
     "checking": "◌",
     "coordinating": "○",
@@ -85,14 +83,15 @@ def active_team_members(agents: list[dict]) -> list[dict]:
 
 def quiet_team_members(
     agents: list[dict], last_activity: dict[str, float], now: float
-) -> dict[tuple[str, str], str]:
+) -> dict[str, str]:
     """Find the active member to blame for each team that has gone quiet.
 
     A team is quiet when it has an active member and none of its members has
-    had an event for QUIET_AFTER_SECONDS. The result maps each quiet team's
-    key to the name of its active member that has been silent longest, whose
-    terminal the board reads for a reason. A member with no known event time
-    keeps its team working until that time is known.
+    had an event for QUIET_AFTER_SECONDS. The result maps each quiet team,
+    keyed by the tag its members share without their roles (or the agent's
+    name when it has no tag), to the name of its active member that has been
+    silent longest, whose terminal the board reads for a reason. A member with
+    no known event time keeps its team working until that time is known.
     """
     quiet = {}
 
@@ -119,10 +118,10 @@ def render_board(
     colour: bool = False,
     unread_since: dict[str, float] | None = None,
     last_activity: dict[str, float] | None = None,
-    quiet_members: dict[tuple[str, str], str] | None = None,
+    quiet_members: dict[str, str] | None = None,
     quiet_reasons: dict[str, str | None] | None = None,
     now: float = 0,
-    phase_since: dict[tuple[str, str], tuple[str, float, bool]] | None = None,
+    phase_since: dict[str, tuple[str, float, bool]] | None = None,
 ) -> list[str]:
     """Build the framed board lines for one `hcom list --json` snapshot.
 
@@ -170,22 +169,13 @@ def render_board(
     working = []
     stuck_since = {}
 
-    for (prefix, kind), members in teams.items():
+    for prefix, members in teams.items():
         repository, label_rest = _team_label(prefix, members)
         label = repository + label_rest
         statuses = [agent["status"] for agent, _ in members]
-        roles = {role for _, role in members}
-
-        # A learner or review team has no orchestrator, so it counts as running
-        # once both halves of its pair are live.
-        if kind == "review":
-            partly_running = not {"reviewer", "scout"} <= roles
-        elif kind == "learner":
-            partly_running = not {"learner", "scout"} <= roles
-        else:
-            has_orchestrator = any(role == "orchestrator" for _, role in members)
-            has_worker = any(role != "orchestrator" for _, role in members)
-            partly_running = not (has_orchestrator and has_worker)
+        has_orchestrator = any(role == "orchestrator" for _, role in members)
+        has_worker = any(role != "orchestrator" for _, role in members)
+        partly_running = not (has_orchestrator and has_worker)
 
         # Only one reason is shown per team; a blocked agent matters most.
         if "blocked" in statuses:
@@ -200,7 +190,7 @@ def render_board(
                     repository,
                     label_rest,
                     f"blocked · {_format_age(age)}",
-                    (prefix, kind),
+                    prefix,
                 )
             )
         # hcom can move a worker onto a background Codex session that then
@@ -213,19 +203,15 @@ def render_board(
             and session_id not in transcript_path
             for agent, _ in members
         ):
-            needs_you.append(
-                ((1, 0, label), repository, label_rest, "stale", (prefix, kind))
-            )
-        elif (quiet_member := quiet_members.get((prefix, kind))) is not None:
+            needs_you.append(((1, 0, label), repository, label_rest, "stale", prefix))
+        elif (quiet_member := quiet_members.get(prefix)) is not None:
             reason = quiet_reasons.get(quiet_member)
             status = f"stuck · {reason}" if reason else "stuck"
             if all(agent["name"] in last_activity for agent, _ in members):
-                stuck_since[(prefix, kind)] = max(
+                stuck_since[prefix] = max(
                     last_activity[agent["name"]] for agent, _ in members
                 )
-            needs_you.append(
-                ((2, 0, label), repository, label_rest, status, (prefix, kind))
-            )
+            needs_you.append(((2, 0, label), repository, label_rest, status, prefix))
         elif not any(status in {"active", "launching"} for status in statuses) and (
             old_unread_times := [
                 unread_since[agent["name"]]
@@ -236,23 +222,21 @@ def render_board(
                 and now - unread_since[agent["name"]] > STUCK_AFTER_SECONDS
             ]
         ):
-            stuck_since[(prefix, kind)] = min(old_unread_times)
-            needs_you.append(
-                ((2, 0, label), repository, label_rest, "stuck", (prefix, kind))
-            )
+            stuck_since[prefix] = min(old_unread_times)
+            needs_you.append(((2, 0, label), repository, label_rest, "stuck", prefix))
         elif partly_running:
             status = _working_status(members)
 
             if len(members) == 1:
                 label_rest += " (partial team)"
 
-            working.append((label, repository, label_rest, status, (prefix, kind)))
+            working.append((label, repository, label_rest, status, prefix))
         elif all(
             agent["status"] == "listening" and agent["unread_count"] == 0
             for agent, _ in members
         ):
             needs_you.append(
-                ((2, 0, label), repository, label_rest, "needs you", (prefix, kind))
+                ((2, 0, label), repository, label_rest, "needs you", prefix)
             )
         else:
             working.append(
@@ -261,7 +245,7 @@ def render_board(
                     repository,
                     label_rest,
                     _working_status(members),
-                    (prefix, kind),
+                    prefix,
                 )
             )
 
@@ -525,7 +509,7 @@ def _shorten_visible(line: str, width: int) -> str:
 
 def _group_teams(
     agents: list[dict],
-) -> dict[tuple[str, str], list[tuple[dict, str | None]]]:
+) -> dict[str, list[tuple[dict, str | None]]]:
     """Group live agents by their team tag for polling and display."""
     teams = defaultdict(list)
 
@@ -536,12 +520,12 @@ def _group_teams(
         tag = agent.get("tag")
 
         if tag:
-            prefix, role, kind = _split_tag(tag)
+            prefix, role = _split_tag(tag)
         else:
             # An untagged agent forms its own team so it stays on the board.
-            prefix, role, kind = agent["name"], None, "standard"
+            prefix, role = agent["name"], None
 
-        teams[(prefix, kind)].append((agent, role))
+        teams[prefix].append((agent, role))
 
     return teams
 
@@ -574,40 +558,17 @@ def _normalise(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "-", value).rstrip("-")
 
 
-def _split_tag(tag: str) -> tuple[str, str | None, str]:
-    """Split a tag into its team prefix, role, and team kind.
+def _split_tag(tag: str) -> tuple[str, str | None]:
+    """Split an agent tag into the team it belongs to and its role.
 
-    A tag ending in a standard role is read first, so a standard team whose
-    label contains "learner" is not mistaken for a learner pair. Both halves
-    of a learner or insights review pair share one prefix. Any other tag
-    stays whole in a standard team, with no role.
+    A tag that does not end in a known role is its own team, with no role.
     """
     prefix, separator, role = tag.rpartition("-")
 
     if separator and role in ROLES:
-        return prefix, role, "standard"
+        return prefix, role
 
-    prefix, separator, provider = tag.rpartition("-scout-learn-")
-
-    if prefix and separator and provider and "-" not in provider:
-        return f"{prefix}-learner-{provider}", "scout", "learner"
-
-    prefix, separator, provider = tag.rpartition("-learner-")
-
-    if prefix and separator and provider and "-" not in provider:
-        return tag, "learner", "learner"
-
-    prefix, separator, peer = tag.rpartition("-insights-review-peer-")
-
-    if prefix and separator and peer:
-        return f"{prefix}-insights-review", "reviewer", "review"
-
-    prefix, separator, provider = tag.rpartition("-scout-review-")
-
-    if prefix and separator and provider and "-" not in provider:
-        return f"{prefix}-insights-review", "scout", "review"
-
-    return tag, None, "standard"
+    return tag, None
 
 
 def _team_label(prefix: str, members: list[tuple[dict, str | None]]) -> tuple[str, str]:
@@ -663,8 +624,8 @@ def _format_age(seconds: float) -> str:
 
 def _phase_status(
     status: str,
-    key: tuple[str, str],
-    phase_since: dict[tuple[str, str], tuple[str, float, bool]] | None,
+    key: str,
+    phase_since: dict[str, tuple[str, float, bool]] | None,
     now: float,
     stuck_start: float | None = None,
 ) -> str:
@@ -679,7 +640,8 @@ def _phase_status(
 
     Args:
         status: The status text the row would otherwise show.
-        key: The team's repository and team label.
+        key: The tag the team's members share, without their roles, or the
+            agent's name when it has no tag.
         phase_since: The phase timers from the previous refresh. A new or
             changed phase is recorded here in place. When None, the status is
             returned unchanged.

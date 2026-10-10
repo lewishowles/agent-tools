@@ -40,7 +40,7 @@ def board_content(
     last_activity: dict[str, float] | None = None,
     quiet_reasons: dict[str, str | None] | None = None,
     now: float = 0,
-    phase_since: dict[tuple[str, str], tuple[str, float, bool]] | None = None,
+    phase_since: dict[str, tuple[str, float, bool]] | None = None,
 ) -> list[str]:
     """Return the content rows as drawn inside the frame, including headings."""
     quiet_members = (
@@ -910,63 +910,31 @@ def test_active_partial_team_keeps_suffix() -> None:
     assert board_content(agents)[1] == "▶ implementing  Agent-Tools (partial team)"
 
 
-@pytest.mark.parametrize(
-    ("tags", "expected_row"),
-    [
-        (
-            ("Agent-Tools-learner-claude", "Agent-Tools-scout-learn-claude"),
-            "▶ learning  Agent-Tools · learner-claude",
-        ),
-        (
-            (
-                "Agent-Tools-insights-review-peer-pair-1",
-                "Agent-Tools-scout-review-claude",
-            ),
-            "◎ reviewing  Agent-Tools · insights-review",
-        ),
-    ],
-)
-def test_learner_and_review_team_roles_share_one_complete_row(
-    tags: tuple[str, str], expected_row: str
-) -> None:
-    """Learner and review workers share a row with their matching scout."""
-    agents = [agent(tags[0], None, status="active"), agent(tags[1], None)]
+def test_labelled_learner_team_shares_one_complete_row() -> None:
+    """An orchestrator and scout sharing a workflow label form one complete row."""
+    agents = [
+        agent("Agent-Tools-learn-claude", "orchestrator"),
+        agent("Agent-Tools-learn-claude", "scout", status="active"),
+    ]
 
-    assert board_content(agents) == ["WORKING", expected_row]
+    assert board_content(agents) == [
+        "WORKING",
+        "◌ checking  Agent-Tools · learn-claude",
+    ]
 
 
-@pytest.mark.parametrize(
-    ("tag", "expected_row"),
-    [
-        (
-            "Agent-Tools-learner-claude",
-            "▶ learning  Agent-Tools · learner-claude (partial team)",
-        ),
-        (
-            "Agent-Tools-scout-learn-claude",
-            "◌ checking  Agent-Tools · learner-claude (partial team)",
-        ),
-        (
-            "Agent-Tools-insights-review-peer-pair-1",
-            "◎ reviewing  Agent-Tools · insights-review (partial team)",
-        ),
-        (
-            "Agent-Tools-scout-review-claude",
-            "◌ checking  Agent-Tools · insights-review (partial team)",
-        ),
-    ],
-)
-def test_learner_and_review_team_without_matching_role_is_partial(
-    tag: str, expected_row: str
-) -> None:
-    """Each half of a learner or review team stays marked as incomplete."""
-    agents = [agent(tag, None, status="active")]
+def test_lone_labelled_learner_scout_is_partial() -> None:
+    """A workflow scout without its orchestrator is shown as a partial team."""
+    agents = [agent("Agent-Tools-learn-claude", "scout", status="active")]
 
-    assert board_content(agents) == ["WORKING", expected_row]
+    assert board_content(agents) == [
+        "WORKING",
+        "◌ checking  Agent-Tools · learn-claude (partial team)",
+    ]
 
 
 def test_standard_team_with_learner_in_its_label_stays_complete() -> None:
-    """A standard role suffix takes precedence over learner text in the label."""
+    """A team whose label contains "learner" is complete like any other team."""
     agents = [
         agent("Agent-Tools-learner-ui", "orchestrator"),
         agent("Agent-Tools-learner-ui", "implementer"),
@@ -979,7 +947,7 @@ def test_standard_team_with_learner_in_its_label_stays_complete() -> None:
 
 
 def test_repository_name_containing_learner_keeps_standard_team_rule() -> None:
-    """A repository name cannot turn an ordinary team into a learner team."""
+    """A repository name containing "learner" is shown like any other."""
     agents = [
         agent("e-learner-app-board", "orchestrator", directory="/work/e-learner-app"),
         agent("e-learner-app-board", "implementer", directory="/work/e-learner-app"),
@@ -988,16 +956,6 @@ def test_repository_name_containing_learner_keeps_standard_team_rule() -> None:
     assert board_content(agents) == [
         "WAITING ON YOU",
         "● needs you  e-learner-app · board",
-    ]
-
-
-def test_planning_scout_keeps_its_own_non_review_row() -> None:
-    """A planning scout does not join an insights review team."""
-    agents = [agent("Agent-Tools-scout-peer-claude", None, status="active")]
-
-    assert board_content(agents) == [
-        "WORKING",
-        "○ working  Agent-Tools · scout-peer-claude (partial team)",
     ]
 
 
