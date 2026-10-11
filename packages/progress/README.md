@@ -617,8 +617,8 @@ progress chunk move <chunk_id> --after <chunk_id> [--json] [--database <path>]
 ```
 
 Exactly one of `--before` or `--after` is required. The move changes chunk
-positions atomically, moving the selected chunk before or after the target and
-shifting each chunk between its old and new positions by one place.
+positions atomically, placing the selected chunk before or after the target.
+It renumbers the task's chunks from 1 with no gaps.
 
 ### `progress chunk start`
 
@@ -660,6 +660,8 @@ Pass one or more chunk IDs. They are removed in the order given in one
 transaction, so a failure names the failing ID and rolls back every removal.
 Chunks have no referencing child rows, so a chunk can be removed directly.
 Removal is a hard delete and never cascades.
+After each removal, the task's remaining chunks are renumbered from 1 with no
+gaps, even if their positions already had gaps.
 
 ### `progress chunk rename`
 

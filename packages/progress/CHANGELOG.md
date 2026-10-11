@@ -25,6 +25,8 @@ All notable changes to `progress` are documented here. The format is based on [K
   apply them in order in one transaction, and return one result per ID.
 - `task add` and `task edit` now accept repeatable `--contract-step` and `--file` flags, plus an optional `--split-rationale`.
 - `task edit --clear-split-rationale` removes a task's split rationale, and `--clear-files` now clears the whole file list rather than a single value.
+- `chunk remove` and `chunk move` now renumber the task's chunks from 1 with no
+  gaps, so a later `chunk add --position` gets the position it asked for.
 
 ### Removed
 

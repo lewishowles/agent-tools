@@ -1142,14 +1142,7 @@ class WriteStore(_StoreBase):
 					review_question,
 				),
 			)
-			for index, ordered_id in enumerate(ordered_ids, start=1):
-				if positions[ordered_id] == index:
-					continue
-
-				connection.execute(
-					"UPDATE chunks SET position = ? WHERE id = ?",
-					(index, ordered_id),
-				)
+			_renumber_chunks(connection, ordered_ids, positions)
 			connection.execute(
 				"UPDATE tasks SET updated_at = ? WHERE id = ?",
 				(utc_timestamp(), task_id),
@@ -1164,7 +1157,10 @@ class WriteStore(_StoreBase):
 		after_chunk_id: str | None = None,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Move a chunk before or after another chunk on the same task."""
+		"""Move a chunk before or after another chunk on the same task.
+
+		The task's chunks are then renumbered from 1 with no gaps.
+		"""
 		validate_object_id(chunk_id, CHUNK_PREFIX)
 		if (before_chunk_id is None) == (after_chunk_id is None):
 			raise InvalidTransitionError(
@@ -1210,15 +1206,7 @@ class WriteStore(_StoreBase):
 			)
 			ordered_ids.insert(insert_index, chunk_id)
 
-			first_position = min(positions.values(), default=1)
-			for index, ordered_id in enumerate(ordered_ids, start=first_position):
-				if positions[ordered_id] == index:
-					continue
-
-				connection.execute(
-					"UPDATE chunks SET position = ? WHERE id = ?",
-					(index, ordered_id),
-				)
+			_renumber_chunks(connection, ordered_ids, positions)
 			connection.execute(
 				"UPDATE tasks SET updated_at = ? WHERE id = ?",
 				(utc_timestamp(), chunk["task_id"]),
@@ -2186,16 +2174,45 @@ def _complete_task(
 	return completed_task
 
 
+def _renumber_chunks(
+	connection: sqlite3.Connection, ordered_ids: list[str], positions: dict[str, int]
+) -> None:
+	"""Give a task's chunks positions from 1 upwards in the given order.
+
+	`positions` holds each chunk's current position, so only chunks whose
+	position changes are written.
+	"""
+	for index, chunk_id in enumerate(ordered_ids, start=1):
+		if positions[chunk_id] == index:
+			continue
+
+		connection.execute(
+			"UPDATE chunks SET position = ? WHERE id = ?", (index, chunk_id)
+		)
+
+
 def _remove_chunk(
 	connection: sqlite3.Connection, chunk_id: str, project_id: str
 ) -> dict[str, object]:
-	"""Remove one chunk belonging to a current-project task."""
+	"""Remove one chunk belonging to a current-project task.
+
+	The task's remaining chunks keep their order and are renumbered from 1.
+	"""
 	validate_object_id(chunk_id, CHUNK_PREFIX)
 	chunk = _chunk_row(connection, chunk_id, project_id)
 	if chunk is None:
 		raise NotFoundError(f"chunk {chunk_id} was not found", {"id": chunk_id})
 
 	connection.execute("DELETE FROM chunks WHERE id = ?", (chunk_id,))
+	chunk_rows = connection.execute(
+		"SELECT id, position FROM chunks WHERE task_id = ? ORDER BY position, id",
+		(chunk["task_id"],),
+	).fetchall()
+	_renumber_chunks(
+		connection,
+		[row["id"] for row in chunk_rows],
+		{row["id"]: row["position"] for row in chunk_rows},
+	)
 	connection.execute(
 		"UPDATE tasks SET updated_at = ? WHERE id = ?",
 		(utc_timestamp(), chunk["task_id"]),

@@ -376,7 +376,7 @@ def test_next_uses_live_totals_and_ranks_after_sibling_removals(
 	assert result["task_rank"] == 2
 	assert result["task_total"] == 2
 	assert result["chunk"]["id"] == third_chunk["id"]
-	assert result["chunk"]["position"] == 3
+	assert result["chunk"]["position"] == 2
 	assert result["chunk_rank"] == 2
 	assert result["chunk_total"] == 2
 

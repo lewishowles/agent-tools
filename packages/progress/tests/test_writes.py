@@ -726,6 +726,43 @@ def test_chunk_add_without_position_goes_last_after_a_removal(tmp_path: Path) ->
 	assert [item["position"] for item in items] == [1, 2, 3]
 
 
+def test_chunk_remove_renumbers_remaining_chunks(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "chunk-remove", "Chunk remove")
+	first = _add_chunk(store, task["id"], "First")
+	second = _add_chunk(store, task["id"], "Second")
+	third = _add_chunk(store, task["id"], "Third")
+	fourth = _add_chunk(store, task["id"], "Fourth")
+
+	store.chunk_remove(second["id"])
+	items = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)["items"]
+
+	assert [item["id"] for item in items] == [first["id"], third["id"], fourth["id"]]
+	assert [item["position"] for item in items] == [1, 2, 3]
+
+
+def test_chunk_remove_closes_existing_gaps(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "chunk-remove-gap", "Chunk remove gap")
+	first = _add_chunk(store, task["id"], "First")
+	second = _add_chunk(store, task["id"], "Second")
+	third = _add_chunk(store, task["id"], "Third")
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE chunks SET position = position + 2 WHERE task_id = ?", (task["id"],)
+		)
+
+	store.chunk_remove(second["id"])
+	items = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)["items"]
+
+	assert [item["id"] for item in items] == [first["id"], third["id"]]
+	assert [item["position"] for item in items] == [1, 2]
+
+
 def test_chunk_add_at_position_one_moves_existing_chunks_down(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	task = _add_task(store, "chunk-first", "Chunk first")
@@ -756,7 +793,8 @@ def test_chunk_add_at_position_one_closes_a_gap_before_the_first_chunk(
 	first = _add_chunk(store, task["id"], "First")
 	second = _add_chunk(store, task["id"], "Second")
 	third = _add_chunk(store, task["id"], "Third")
-	store.chunk_remove(first["id"])
+	with store.database.transaction() as connection:
+		connection.execute("DELETE FROM chunks WHERE id = ?", (first["id"],))
 
 	inserted = _add_chunk(store, task["id"], "Inserted", position=1)
 	items = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
@@ -825,7 +863,8 @@ def test_chunk_add_at_an_occupied_position_closes_an_earlier_gap(
 	second = _add_chunk(store, task["id"], "Second")
 	third = _add_chunk(store, task["id"], "Third")
 	fourth = _add_chunk(store, task["id"], "Fourth")
-	store.chunk_remove(second["id"])
+	with store.database.transaction() as connection:
+		connection.execute("DELETE FROM chunks WHERE id = ?", (second["id"],))
 
 	inserted = _add_chunk(store, task["id"], "Inserted", position=4)
 	items = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
@@ -891,6 +930,27 @@ def test_chunk_move_reorders_only_the_task_chunks(tmp_path: Path) -> None:
 		second["id"],
 		first["id"],
 	]
+
+
+def test_chunk_move_closes_a_gap_before_the_first_chunk(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "chunk-move-gap", "Chunk move gap")
+	first = _add_chunk(store, task["id"], "First")
+	second = _add_chunk(store, task["id"], "Second")
+	third = _add_chunk(store, task["id"], "Third")
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE chunks SET position = position + 2 WHERE task_id = ?", (task["id"],)
+		)
+
+	moved = store.chunk_move(third["id"], before_chunk_id=first["id"])
+	items = ReadStore(store.database, _ProjectStore(store.database)).chunk_list(
+		task["id"]
+	)["items"]
+
+	assert moved["position"] == 1
+	assert [item["id"] for item in items] == [third["id"], first["id"], second["id"]]
+	assert [item["position"] for item in items] == [1, 2, 3]
 
 
 def test_chunk_move_rejects_chunks_from_different_tasks(tmp_path: Path) -> None:
