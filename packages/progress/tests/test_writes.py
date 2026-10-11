@@ -2784,6 +2784,42 @@ def test_release_remove_checks_a_later_reference_before_removing_a_checkout(
 	assert worktrees.get(task["id"], committed_repository)["path"] == str(checkout)
 
 
+def test_release_remove_clears_a_default_task_on_a_repaired_older_schema(
+	tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+	store = _seed_store_with_older_default_task(tmp_path, monkeypatch)
+	release = store.release_add("release", "Release", overview="Release overview")
+	task = _add_task(store, "default", "Default task", release_id=release["id"])
+	store.task_start(task["id"])
+
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT default_task_id FROM projects WHERE id = ?", (PROJECT_ID,)
+			).fetchone()["default_task_id"]
+			== task["id"]
+		)
+		assert _default_task_delete_action(connection) == "SET NULL"
+
+	result = store.release_remove(release["id"], force=True)
+
+	assert result["id"] == release["id"]
+	assert result["deleted"]["tasks"] == [task["id"]]
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT default_task_id FROM projects WHERE id = ?", (PROJECT_ID,)
+			).fetchone()["default_task_id"]
+			is None
+		)
+		assert (
+			connection.execute(
+				"SELECT 1 FROM tasks WHERE id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+
+
 def test_release_remove_force_deletes_tasks_and_release_rows(
 	tmp_path: Path,
 ) -> None:
