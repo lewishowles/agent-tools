@@ -11,7 +11,7 @@ from .errors import DatabaseBusyError, MigrationFailedError, StaleSchemaError
 Migration = Callable[[sqlite3.Connection], None]
 
 # the schema version this package writes when creating a database from empty
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 # the newest schema version this package knows how to migrate to
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION
 
@@ -570,6 +570,48 @@ def _migrate_to_version_13(connection: sqlite3.Connection) -> None:
 	)
 
 
+def _migrate_to_version_14(connection: sqlite3.Connection) -> None:
+	"""Make deleting a project's default task clear the project's link to it.
+
+	Databases that ran the first version of migration 11 have a link without
+	ON DELETE SET NULL, so the projects table is rebuilt with it. Other
+	databases are left unchanged.
+	"""
+	# The foreign key from projects.default_task_id to tasks. In each row of
+	# foreign_key_list, columns 2, 3 and 6 hold the referenced table, the
+	# local column and the delete action.
+	default_task_reference = next(
+		(
+			row
+			for row in connection.execute("PRAGMA foreign_key_list(projects)")
+			if row[3] == "default_task_id" and row[2] == "tasks"
+		),
+		None,
+	)
+	if default_task_reference is not None and default_task_reference[6] == "SET NULL":
+		return
+
+	connection.execute(
+		"""
+		CREATE TABLE projects_new (
+			id TEXT PRIMARY KEY,
+			slug TEXT NOT NULL,
+			name TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			default_task_id TEXT REFERENCES tasks (id) ON DELETE SET NULL
+		)
+		"""
+	)
+	connection.execute(
+		"""
+		INSERT INTO projects_new (id, slug, name, created_at, default_task_id)
+		SELECT id, slug, name, created_at, default_task_id FROM projects
+		"""
+	)
+	connection.execute("DROP TABLE projects")
+	connection.execute("ALTER TABLE projects_new RENAME TO projects")
+
+
 # maps each supported schema version to the migration that produces it
 MIGRATIONS: dict[int, Migration] = {
 	1: _create_schema,
@@ -585,6 +627,7 @@ MIGRATIONS: dict[int, Migration] = {
 	11: _migrate_to_version_11,
 	12: _migrate_to_version_12,
 	13: _migrate_to_version_13,
+	14: _migrate_to_version_14,
 }
 
 
@@ -623,10 +666,10 @@ def migrate(connection: sqlite3.Connection) -> None:
 
 	# the connection's foreign key setting, restored once the migration ends
 	foreign_keys_enabled = connection.execute("PRAGMA foreign_keys").fetchone()[0]
-	# Rebuilding the tasks table drops the table that chunks, dependencies, and
-	# notes point at, so foreign keys are switched off for the rebuild. SQLite
-	# ignores this setting inside a transaction, so it must be set first.
-	if current_version < 6:
+	# Some migrations rebuild tables that other records reference, so every
+	# upgrade runs with foreign keys off and is checked before it commits. SQLite
+	# ignores changes to this setting inside a transaction, so switch it off first.
+	if current_version < LATEST_SCHEMA_VERSION:
 		connection.execute("PRAGMA foreign_keys = OFF")
 
 	try:

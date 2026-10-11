@@ -571,6 +571,160 @@ def test_version_twelve_migration_moves_only_an_in_progress_default_handoff(
 		assert task_handoff is None
 
 
+def test_version_fourteen_migration_adds_set_null_to_the_default_task_link_and_keeps_project_references(
+	tmp_path,
+) -> None:
+	database_path = tmp_path / "progress.db"
+	project_id = generate_object_id(PROJECT_PREFIX)
+	other_project_id = generate_object_id(PROJECT_PREFIX)
+	default_task_id = generate_object_id(TASK_PREFIX)
+	other_task_id = generate_object_id(TASK_PREFIX)
+	release_id = generate_object_id(RELEASE_PREFIX)
+	note_id = generate_object_id(NOTE_PREFIX)
+
+	with sqlite3.connect(database_path) as connection:
+		for version in range(1, 11):
+			schema.MIGRATIONS[version](connection)
+		connection.execute(
+			"ALTER TABLE projects ADD COLUMN default_task_id TEXT REFERENCES tasks (id)"
+		)
+		for version in (12, 13):
+			schema.MIGRATIONS[version](connection)
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.execute(
+			"INSERT INTO schema_migrations VALUES (13, '2026-01-01T00:00:00+00:00')"
+		)
+		_insert_project(connection, project_id)
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, 'other', 'Other project', '2026-01-02T00:00:00+00:00')",
+			(other_project_id,),
+		)
+		_insert_current_task(connection, project_id, default_task_id, "default")
+		_insert_current_task(connection, project_id, other_task_id, "other")
+		connection.execute(
+			"UPDATE projects SET default_task_id = ? WHERE id = ?",
+			(default_task_id, project_id),
+		)
+		connection.execute(
+			"INSERT INTO releases (id, project_id, slug, title, overview, status, position) "
+			"VALUES (?, ?, 'release', 'Release', 'Overview', 'planned', 1)",
+			(release_id, project_id),
+		)
+		connection.execute(
+			"INSERT INTO notes (id, project_id, release_id, type, body, created_at) "
+			"VALUES (?, ?, ?, 'discovery', 'Note', '2026-01-01T00:00:00+00:00')",
+			(note_id, project_id, release_id),
+		)
+		connection.execute(
+			"INSERT INTO context (project_id, updated_at) VALUES (?, '2026-01-01T00:00:00+00:00')",
+			(project_id,),
+		)
+		connection.execute(
+			"INSERT INTO checkouts (path, project_id, last_seen_at) "
+			"VALUES ('/tmp/progress-checkout', ?, '2026-01-01T00:00:00+00:00')",
+			(project_id,),
+		)
+		connection.execute(
+			"INSERT INTO inbox_notes (id, project_id, text, created_at) "
+			"VALUES ('inb_test', ?, 'Inbox note', '2026-01-01T00:00:00+00:00')",
+			(project_id,),
+		)
+		connection.execute(
+			"INSERT INTO task_worktrees (task_id, project_id, path, branch, common_dir, created_at) "
+			"VALUES (?, ?, '/tmp/progress-worktree', 'task', '/tmp/repository', '2026-01-01T00:00:00+00:00')",
+			(other_task_id, project_id),
+		)
+
+	with Database(database_path).connection() as connection:
+		default_task_reference = next(
+			row
+			for row in connection.execute("PRAGMA foreign_key_list(projects)")
+			if row[3] == "default_task_id"
+		)
+		assert default_task_reference[6] == "SET NULL"
+		assert [
+			tuple(row)
+			for row in connection.execute(
+				"SELECT id, slug, name, created_at, default_task_id FROM projects ORDER BY slug"
+			)
+		] == [
+			(
+				project_id,
+				"agents",
+				"Agent configuration",
+				"2026-01-01T00:00:00+00:00",
+				default_task_id,
+			),
+			(
+				other_project_id,
+				"other",
+				"Other project",
+				"2026-01-02T00:00:00+00:00",
+				None,
+			),
+		]
+		for table in (
+			"releases",
+			"tasks",
+			"notes",
+			"context",
+			"checkouts",
+			"inbox_notes",
+			"task_worktrees",
+		):
+			assert [
+				row[0]
+				for row in connection.execute(
+					f"SELECT DISTINCT project_id FROM {table}"
+				)
+			] == [project_id]
+		assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+		connection.execute("DELETE FROM tasks WHERE id = ?", (default_task_id,))
+
+		assert (
+			connection.execute(
+				"SELECT default_task_id FROM projects WHERE id = ?", (project_id,)
+			).fetchone()[0]
+			is None
+		)
+		assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_version_fourteen_migration_keeps_a_correct_projects_definition(
+	tmp_path,
+) -> None:
+	database_path = tmp_path / "progress.db"
+	with sqlite3.connect(database_path) as connection:
+		for version in range(1, 14):
+			schema.MIGRATIONS[version](connection)
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.execute(
+			"INSERT INTO schema_migrations VALUES (13, '2026-01-01T00:00:00+00:00')"
+		)
+		original_definition = connection.execute(
+			"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'projects'"
+		).fetchone()[0]
+
+	with Database(database_path).connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'projects'"
+			).fetchone()[0]
+			== original_definition
+		)
+		assert (
+			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
+				0
+			]
+			== 14
+		)
+
+
 def test_failed_version_six_migration_leaves_version_five_intact(
 	tmp_path, monkeypatch
 ) -> None:

@@ -66,10 +66,11 @@ def _add_task(store: WriteStore, slug: str, title: str, **arguments):
 def _seed_store_with_older_default_task(
 	tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> WriteStore:
-	"""Create a test store whose projects.default_task_id has no ON DELETE SET NULL.
+	"""Create a test store whose projects.default_task_id began without ON DELETE SET NULL.
 
-	This matches databases created before the column gained that action, where
-	deleting a project's default task fails unless the link is cleared first.
+	This matches databases that ran the first version of migration 11. Later
+	migrations then run as usual, so the store shows how those databases look
+	after an upgrade.
 	"""
 
 	def add_default_task_without_delete_action(connection: sqlite3.Connection) -> None:
@@ -2171,7 +2172,7 @@ def test_task_remove_deletes_its_handoff(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("force", [False, True])
-def test_task_remove_clears_a_default_task_on_an_older_schema(
+def test_task_remove_clears_a_default_task_on_a_repaired_older_schema(
 	tmp_path: Path, monkeypatch: pytest.MonkeyPatch, force: bool
 ) -> None:
 	store = _seed_store_with_older_default_task(tmp_path, monkeypatch)
@@ -2184,7 +2185,7 @@ def test_task_remove_clears_a_default_task_on_an_older_schema(
 			"SELECT default_task_id FROM projects WHERE id = ?", (PROJECT_ID,)
 		).fetchone()
 		assert default["default_task_id"] == task["id"]
-		assert _default_task_delete_action(connection) == "NO ACTION"
+		assert _default_task_delete_action(connection) == "SET NULL"
 
 	result = store.task_remove(task["id"], force=force)
 
@@ -3171,7 +3172,7 @@ def test_task_clean_removes_safe_done_tasks_and_reports_blockers(
 
 
 @pytest.mark.parametrize("force", [False, True])
-def test_task_clean_clears_a_default_task_on_an_older_schema(
+def test_task_clean_clears_a_default_task_on_a_repaired_older_schema(
 	tmp_path: Path, monkeypatch: pytest.MonkeyPatch, force: bool
 ) -> None:
 	store = _seed_store_with_older_default_task(tmp_path, monkeypatch)
@@ -3185,7 +3186,7 @@ def test_task_clean_clears_a_default_task_on_an_older_schema(
 			"SELECT default_task_id FROM projects WHERE id = ?", (PROJECT_ID,)
 		).fetchone()
 		assert default["default_task_id"] == task["id"]
-		assert _default_task_delete_action(connection) == "NO ACTION"
+		assert _default_task_delete_action(connection) == "SET NULL"
 
 	result = store.task_clean(force=force)
 
