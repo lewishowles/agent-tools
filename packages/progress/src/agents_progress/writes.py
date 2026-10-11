@@ -513,7 +513,8 @@ class WriteStore(_StoreBase):
 		Every task's checkout is checked first, and the whole removal is refused if
 		one must stay. Checkout records are deleted with their tasks, then Git removes
 		the folders, which are reported under "removed_worktrees" or, when they stay
-		on disk, "left_worktrees".
+		on disk, "left_worktrees". The remaining tasks in each queue that lost a task
+		are numbered from 1 in their previous order.
 		"""
 		task_ids, multiple = _normalise_write_ids(task_id, "task")
 		project = self.current_project(path)
@@ -541,10 +542,21 @@ class WriteStore(_StoreBase):
 			inspections[identifier] = inspection
 
 		with self.database.transaction() as connection:
+			# The queues that lose a task, read before the rows are deleted. A
+			# task deleted since the check above is skipped here; _remove_task then
+			# raises not found and nothing is removed.
+			release_ids = set()
+			for identifier in task_ids:
+				task = _task_row(connection, identifier, project.id)
+				if task is not None:
+					release_ids.add(task["release_id"])
+
 			results = [
 				_remove_task(connection, identifier, project.id, force=force)
 				for identifier in task_ids
 			]
+			for release_id in release_ids:
+				_renumber_task_queue(connection, project.id, release_id)
 		for result in results:
 			_remove_checkout_folder(
 				result,
@@ -564,7 +576,8 @@ class WriteStore(_StoreBase):
 		"""Remove done tasks with no notes or dependencies, or every done task with force.
 
 		Kept checkouts appear under "blocked". Eligible folders are removed after
-		their task records and listed as removed or left on disk.
+		their task records and listed as removed or left on disk. The remaining tasks
+		in each queue that lost a task are numbered from 1 in their previous order.
 		"""
 		project = self.current_project(path)
 		from .worktrees import WorktreeStore
@@ -686,6 +699,13 @@ class WriteStore(_StoreBase):
 					"DELETE FROM tasks WHERE id = ? AND project_id = ?",
 					(task_id, project.id),
 				)
+
+			# Every queue that lost a task, including the unassigned queue.
+			queue_release_ids = {
+				candidate["task"]["release_id"] for candidate in targets
+			}
+			for release_id in queue_release_ids:
+				_renumber_task_queue(connection, project.id, release_id)
 
 			releases_removed = []
 			for release_id in release_ids:
@@ -2188,6 +2208,35 @@ def _renumber_chunks(
 
 		connection.execute(
 			"UPDATE chunks SET position = ? WHERE id = ?", (index, chunk_id)
+		)
+
+
+def _renumber_task_queue(
+	connection: sqlite3.Connection, project_id: str, release_id: str | None
+) -> None:
+	"""Give the tasks in one queue positions from 1 upwards, keeping their order.
+
+	`release_id` names a release's queue; None means the project's unassigned
+	tasks. Only tasks whose position changes are written.
+	"""
+	if release_id is None:
+		queue_filter = "release_id IS NULL"
+		parameters = (project_id,)
+	else:
+		queue_filter = "release_id = ?"
+		parameters = (project_id, release_id)
+
+	rows = connection.execute(
+		f"SELECT id, position FROM tasks WHERE project_id = ? AND {queue_filter} "
+		"ORDER BY position, id",
+		parameters,
+	).fetchall()
+	for position, row in enumerate(rows, start=1):
+		if row["position"] == position:
+			continue
+
+		connection.execute(
+			"UPDATE tasks SET position = ? WHERE id = ?", (position, row["id"])
 		)
 
 

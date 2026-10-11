@@ -429,7 +429,7 @@ def test_task_add_places_a_position_past_the_end_last(tmp_path: Path) -> None:
 	assert [item["position"] for item in items] == [1, 2, 3]
 
 
-def test_task_add_at_an_occupied_position_closes_an_earlier_gap(
+def test_task_add_past_a_removed_slot_uses_the_requested_position(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
@@ -444,14 +444,83 @@ def test_task_add_at_an_occupied_position_closes_an_earlier_gap(
 		"items"
 	]
 
-	assert inserted["position"] == 3
+	assert inserted["position"] == 4
 	assert [item["id"] for item in items] == [
 		first["id"],
 		third["id"],
-		inserted["id"],
 		fourth["id"],
+		inserted["id"],
 	]
 	assert [item["position"] for item in items] == [1, 2, 3, 4]
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_task_remove_renumbers_a_queue_with_a_completed_task(
+	tmp_path: Path, force: bool
+) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first", "First")
+	removed = _add_task(store, "removed", "Removed")
+	completed = _add_task(store, "completed", "Completed")
+	last = _add_task(store, "last", "Last")
+	store.task_start(completed["id"])
+	store.task_complete(completed["id"])
+
+	store.task_remove(removed["id"], force=force)
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list(
+		show_all=True
+	)["items"]
+
+	assert [(item["id"], item["position"]) for item in items] == [
+		(first["id"], 1),
+		(completed["id"], 2),
+		(last["id"], 3),
+	]
+	assert (
+		next(item for item in items if item["id"] == completed["id"])["status"]
+		== "done"
+	)
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_task_remove_multiple_ids_renumbers_each_affected_queue(
+	tmp_path: Path, force: bool
+) -> None:
+	store = _seed_store(tmp_path)
+	first_release = store.release_add(
+		"first-release", "First release", overview="First release overview"
+	)
+	second_release = store.release_add(
+		"second-release", "Second release", overview="Second release overview"
+	)
+	first = _add_task(store, "first", "First", release_id=first_release["id"])
+	first_removed = _add_task(
+		store, "first-removed", "First removed", release_id=first_release["id"]
+	)
+	first_last = _add_task(
+		store, "first-last", "First last", release_id=first_release["id"]
+	)
+	second = _add_task(store, "second", "Second", release_id=second_release["id"])
+	second_removed = _add_task(
+		store, "second-removed", "Second removed", release_id=second_release["id"]
+	)
+	second_last = _add_task(
+		store, "second-last", "Second last", release_id=second_release["id"]
+	)
+	unassigned = _add_task(store, "unassigned", "Unassigned")
+
+	store.task_remove([first_removed["id"], second_removed["id"]], force=force)
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list(
+		show_all=True
+	)["items"]
+
+	assert {(item["id"], item["position"]) for item in items} == {
+		(first["id"], 1),
+		(first_last["id"], 2),
+		(second["id"], 1),
+		(second_last["id"], 2),
+		(unassigned["id"], 1),
+	}
 
 
 def test_task_move_reorders_only_the_task_queue(tmp_path: Path) -> None:
@@ -3168,6 +3237,45 @@ def test_write_methods_roll_back_earlier_ids_when_a_later_id_fails(
 			record["id"]
 		)
 		assert remaining["status"] == "pending"
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_task_clean_renumbers_each_queue_that_loses_a_done_task(
+	tmp_path: Path, force: bool
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Release overview")
+	release_first = _add_task(
+		store, "release-first", "Release first", release_id=release["id"]
+	)
+	release_done = _add_task(
+		store, "release-done", "Release done", release_id=release["id"]
+	)
+	release_last = _add_task(
+		store, "release-last", "Release last", release_id=release["id"]
+	)
+	unassigned_first = _add_task(store, "unassigned-first", "Unassigned first")
+	unassigned_done = _add_task(store, "unassigned-done", "Unassigned done")
+	unassigned_last = _add_task(store, "unassigned-last", "Unassigned last")
+	for task in (release_done, unassigned_done):
+		store.task_start(task["id"])
+		store.task_complete(task["id"])
+
+	result = store.task_clean(force=force)
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list(
+		show_all=True
+	)["items"]
+
+	assert {task["id"] for task in result["removed"]} == {
+		release_done["id"],
+		unassigned_done["id"],
+	}
+	assert {(item["id"], item["position"]) for item in items} == {
+		(release_first["id"], 1),
+		(release_last["id"], 2),
+		(unassigned_first["id"], 1),
+		(unassigned_last["id"], 2),
+	}
 
 
 def test_task_clean_removes_safe_done_tasks_and_reports_blockers(

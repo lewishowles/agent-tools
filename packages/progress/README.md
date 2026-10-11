@@ -394,6 +394,8 @@ progress task remove <task_id>... [--force] [--json] [--database <path>]
 
 Pass one or more task IDs. They are removed in the order given in one
 transaction, so a failure names the failing ID and rolls back every removal.
+After removal, the remaining tasks in each affected release or unassigned
+queue keep their order and are numbered from 1 without gaps.
 Without `--force`, removal is a hard delete and raises `StillReferencedError`
 when any of these still refer to the task:
 
@@ -422,6 +424,8 @@ each kept task's title and ID, the notes and dependency edges that kept it, and
 any release that became empty because its tasks were removed. Dependency
 details include the other task's title and ID and whether the task depends on
 it or is required by it.
+The remaining tasks in each affected release or unassigned queue keep their
+order and are numbered from 1 without gaps.
 
 Use `--force` only when those notes and dependency edges can be deleted:
 
