@@ -641,6 +641,59 @@ def test_task_move_rehomes_and_unassigns_tasks_in_queue_order(
 	]
 
 
+@pytest.mark.parametrize("before_target", [False, True])
+def test_task_move_to_another_release_renumbers_the_source_queue(
+	tmp_path: Path, before_target: bool
+) -> None:
+	store = _seed_store(tmp_path)
+	source_release = store.release_add(
+		"source-release", "Source release", overview="Source release overview"
+	)
+	target_release = store.release_add(
+		"target-release", "Target release", overview="Target release overview"
+	)
+	first = _add_task(store, "first", "First", release_id=source_release["id"])
+	moved = _add_task(store, "moved", "Moved", release_id=source_release["id"])
+	third = _add_task(store, "third", "Third", release_id=source_release["id"])
+	last = _add_task(store, "last", "Last", release_id=source_release["id"])
+	target = _add_task(store, "target", "Target", release_id=target_release["id"])
+	before_task_id = target["id"] if before_target else None
+
+	store.task_move(
+		moved["id"], release_id=target_release["id"], before_task_id=before_task_id
+	)
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list()[
+		"items"
+	]
+
+	assert [
+		(item["id"], item["position"])
+		for item in items
+		if item["release_id"] == source_release["id"]
+	] == [(first["id"], 1), (third["id"], 2), (last["id"], 3)]
+
+
+def test_task_move_to_current_release_renumbers_the_queue(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Release overview")
+	first = _add_task(store, "first", "First", release_id=release["id"])
+	moved = _add_task(store, "moved", "Moved", release_id=release["id"])
+	third = _add_task(store, "third", "Third", release_id=release["id"])
+	last = _add_task(store, "last", "Last", release_id=release["id"])
+
+	store.task_move(moved["id"], release_id=release["id"])
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list()[
+		"items"
+	]
+
+	assert [(item["id"], item["position"]) for item in items] == [
+		(first["id"], 1),
+		(third["id"], 2),
+		(last["id"], 3),
+		(moved["id"], 4),
+	]
+
+
 def test_task_move_reassigns_before_an_unassigned_task(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	release = store.release_add("release", "Release", overview="Release overview")
@@ -764,10 +817,19 @@ def test_task_move_validates_release_and_position_target(
 		"other-release", "Other release", overview="Other release overview"
 	)
 	task = _add_task(store, "task", "Task", release_id=source_release["id"])
+	_add_task(store, "source-last", "Source last", release_id=source_release["id"])
 	target = _add_task(store, "target", "Target", release_id=other_release["id"])
+	reader = ReadStore(store.database, _ProjectStore(store.database))
+	positions_before = [
+		(item["id"], item["position"]) for item in reader.task_list()["items"]
+	]
 
 	with pytest.raises(NotFoundError, match="release rel_"):
 		store.task_move(task["id"], release_id="rel_" + "r" * 22)
+
+	assert [
+		(item["id"], item["position"]) for item in reader.task_list()["items"]
+	] == positions_before
 
 	with pytest.raises(InvalidTransitionError, match="target release"):
 		store.task_move(
@@ -775,6 +837,10 @@ def test_task_move_validates_release_and_position_target(
 			release_id=source_release["id"],
 			before_task_id=target["id"],
 		)
+
+	assert [
+		(item["id"], item["position"]) for item in reader.task_list()["items"]
+	] == positions_before
 
 
 def test_chunk_add_without_position_goes_last_after_a_removal(tmp_path: Path) -> None:

@@ -957,6 +957,8 @@ class WriteStore(_StoreBase):
 						after_task_id,
 					)
 
+				_renumber_task_queue(connection, project.id, task["release_id"])
+
 				return _task_dict(connection, task_id, project.id)
 
 			target = _task_row(connection, target_task_id, project.id)
