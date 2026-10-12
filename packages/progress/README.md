@@ -281,8 +281,8 @@ progress release move <release_id> --after <release_id> [--json] [--database <pa
 Exactly one of `--before` or `--after` is required, and the target must be
 another release in the same project. The move changes release positions
 atomically, placing the selected release before or after the target and
-renumbering the rest so the order stays gap-free. `progress release list`
-reflects the new order.
+renumbering the list from 1 without gaps. `progress release list` reflects
+the new order.
 
 ### `progress release complete`
 
@@ -345,8 +345,8 @@ progress task move <task_id> --after <task_id> [--json] [--database <path>]
 
 Exactly one of `--before` or `--after` is required when `--release` is not
 used. The move changes task positions atomically, moving the selected task
-before or after the target and shifting each task between its old and new
-positions by one place.
+before or after the target and renumbering that task's queue from 1 without
+gaps.
 
 Reassign a task to a release or the unassigned queue with the same command:
 

@@ -557,6 +557,33 @@ def test_task_move_reorders_only_the_task_queue(tmp_path: Path) -> None:
 	]
 
 
+@pytest.mark.parametrize("before_target", [False, True])
+def test_task_move_renumbers_a_queue_with_position_zero(
+	tmp_path: Path, before_target: bool
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("release", "Release", overview="Release overview")
+	first = _add_task(store, "first", "First", release_id=release["id"])
+	second = _add_task(store, "second", "Second", release_id=release["id"])
+	third = _add_task(store, "third", "Third", release_id=release["id"])
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE tasks SET position = 0 WHERE id = ?", (first["id"],))
+
+	if before_target:
+		store.task_move(third["id"], before_task_id=first["id"])
+		expected_ids = [third["id"], first["id"], second["id"]]
+	else:
+		store.task_move(first["id"], after_task_id=third["id"])
+		expected_ids = [second["id"], third["id"], first["id"]]
+
+	tasks = ReadStore(store.database, _ProjectStore(store.database)).task_list()[
+		"items"
+	]
+	assert [(task["id"], task["position"]) for task in tasks] == list(
+		zip(expected_ids, [1, 2, 3], strict=True)
+	)
+
+
 def test_task_move_rejects_tasks_from_different_releases(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	first_release = store.release_add(
@@ -4381,6 +4408,34 @@ def test_release_move_reorders_releases_and_normalises_positions(
 		second["id"],
 		first["id"],
 	]
+
+
+@pytest.mark.parametrize("before_target", [False, True])
+def test_release_move_renumbers_a_queue_with_position_zero(
+	tmp_path: Path, before_target: bool
+) -> None:
+	store = _seed_store(tmp_path)
+	first = store.release_add("first", "First", overview="First overview")
+	second = store.release_add("second", "Second", overview="Second overview")
+	third = store.release_add("third", "Third", overview="Third overview")
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE releases SET position = 0 WHERE id = ?", (first["id"],)
+		)
+
+	if before_target:
+		store.release_move(third["id"], before_release_id=first["id"])
+		expected_ids = [third["id"], first["id"], second["id"]]
+	else:
+		store.release_move(first["id"], after_release_id=third["id"])
+		expected_ids = [second["id"], third["id"], first["id"]]
+
+	releases = ReadStore(store.database, _ProjectStore(store.database)).release_list()[
+		"items"
+	]
+	assert [(release["id"], release["position"]) for release in releases] == list(
+		zip(expected_ids, [1, 2, 3], strict=True)
+	)
 
 
 def test_release_move_can_move_a_release_to_the_end(tmp_path: Path) -> None:

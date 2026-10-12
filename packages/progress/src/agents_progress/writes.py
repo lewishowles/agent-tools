@@ -2701,7 +2701,7 @@ def _reorder_queue(
 	before_id: str | None,
 	after_id: str | None,
 ) -> None:
-	"""Move one row next to another and renumber the scoped queue gap-free."""
+	"""Move a row next to another and renumber its list from 1 without gaps."""
 	queue_rows = connection.execute(
 		f"SELECT id, position FROM {table} WHERE {scope_filter} ORDER BY position, id",
 		scope_parameters,
@@ -2713,8 +2713,7 @@ def _reorder_queue(
 	insert_index = target_index if before_id is not None else target_index + 1
 	ordered_ids.insert(insert_index, moved_id)
 
-	first_position = min(positions.values(), default=1)
-	for index, ordered_id in enumerate(ordered_ids, start=first_position):
+	for index, ordered_id in enumerate(ordered_ids, start=1):
 		if positions[ordered_id] == index:
 			continue
 
