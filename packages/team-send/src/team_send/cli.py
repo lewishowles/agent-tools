@@ -16,6 +16,14 @@ ROLES = frozenset({"orchestrator", "scout", "implementer", "reviewer"})
 # unknown agents never count as a match.
 LIVE_STATUSES = frozenset({"active", "listening", "blocked"})
 
+# The likely cause and fix when HCOM_TAG or HCOM_NAME is missing. HCOM sets both
+# only for a session it launched or resumed, so a session quit and reopened with
+# plain claude or codex loses them.
+NOT_IN_HCOM_HINT = (
+    "This session isn't connected to HCOM. If it was quit and reopened outside HCOM, "
+    "quit it and reopen it with: hcom r <name>"
+)
+
 
 def main(argv: list[str] | None = None) -> int:
     """Send the piped message to the one live teammate for the requested role and return 0.
@@ -48,10 +56,10 @@ def main(argv: list[str] | None = None) -> int:
     sender_name = os.environ.get("HCOM_NAME")
 
     if not sender_tag:
-        return _refuse("HCOM_TAG is unset.", args.json)
+        return _refuse(f"HCOM_TAG is unset. {NOT_IN_HCOM_HINT}", args.json)
 
     if not sender_name:
-        return _refuse("HCOM_NAME is unset.", args.json)
+        return _refuse(f"HCOM_NAME is unset. {NOT_IN_HCOM_HINT}", args.json)
 
     prefix, _, sender_role = sender_tag.rpartition("-")
 

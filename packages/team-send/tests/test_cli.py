@@ -109,8 +109,16 @@ def test_each_live_status_matches(hcom, capsys, status: str) -> None:
 @pytest.mark.parametrize(
     ("role", "environment", "expected"),
     [
-        ("scout", {"HCOM_TAG": None}, "HCOM_TAG is unset"),
-        ("scout", {"HCOM_NAME": None}, "HCOM_NAME is unset"),
+        (
+            "scout",
+            {"HCOM_TAG": None},
+            "HCOM_TAG is unset. This session isn't connected to HCOM",
+        ),
+        (
+            "scout",
+            {"HCOM_NAME": None},
+            "HCOM_NAME is unset. This session isn't connected to HCOM",
+        ),
         ("scout", {"HCOM_TAG": "implementer"}, "must end in a team role"),
         ("scout", {"HCOM_TAG": "agent-tools-other"}, "must end in a team role"),
         ("unknown", {}, "Unknown role: unknown"),
