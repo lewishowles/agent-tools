@@ -363,6 +363,7 @@ def test_worktree_ensure_creates_from_head_and_reuses_edits(managed_repository) 
 		"project_id": project_id,
 		"path": str(database.path.parent / "worktrees" / project_id / task_id),
 		"branch": f"progress/task/{task_id}",
+		"base_branch": "main",
 		"created": True,
 	}
 	assert checkout_head == head

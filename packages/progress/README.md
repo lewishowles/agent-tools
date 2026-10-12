@@ -141,22 +141,32 @@ progress worktree cleanup TASK_ID [--json] [--database <path>]
 `ensure` creates a task branch from the current checkout's HEAD commit at
 `<database directory>/worktrees/<project ID>/<task ID>`. With the default
 database, this is under `~/.agents/worktrees`. A second `ensure` returns the
-same checkout without resetting its edits. The new checkout uses the repository's
-existing project binding. `get` only reads a recorded checkout and reports an
-error when none is recorded. Both commands check that the
-checkout still belongs to the same Git repository and project. Human output
-prints the checkout path; JSON also includes the task ID, project ID, and branch.
-`ensure` includes committed files only. It does not copy ignored files,
-installed packages, or uncommitted edits from the source checkout.
+same checkout without resetting its edits. Progress records the branch checked
+out at creation as the task's base; a detached HEAD leaves the base unknown.
+The new checkout uses the repository's existing project binding. `get` only
+reads a recorded checkout and reports an error when none is recorded. Both
+commands check that the checkout still belongs to the same Git repository and
+project. Human output prints the checkout path; JSON also includes the task ID,
+project ID, task branch, and base branch when known. `ensure` includes committed
+files only. It does not copy ignored files, installed packages, or uncommitted
+edits from the source checkout.
 
-`cleanup` retries removal after the task is done. It removes only a checkout
-without modified or untracked files, and leaves its branch in place. Ignored
-files in that checkout, such as `.env` or `node_modules`, are deleted with it.
-If Git refuses removal or the command runs from inside that checkout, the
-checkout stays recorded and the result is `pending` with a reason. If the folder
-is already gone, its record is cleared without pruning Git worktrees. Git keeps
-the entry for a hand-deleted folder until `git worktree prune`; until then, Git
-refuses to delete its branch. Repeating cleanup after removal reports `none`.
+`cleanup` retries after the task is done. For a clean checkout, it rebases task
+commits onto the recorded base branch, fast-forwards the base, removes the
+checkout, and safely deletes the task branch. If the base is checked out in
+another worktree, Git merges there and may refuse because of local changes.
+Ignored files in the removed checkout, such as `.env` or `node_modules`, are
+deleted with it. A rebase conflict is aborted. Uncommitted changes, an unknown
+or missing base, a refused fast-forward, a Git removal failure, or running the
+command from inside the task checkout leaves it recorded with a `pending`
+reason and a command for finishing by hand. Worktrees created before base
+tracking have an unknown base and need a manual merge, worktree removal, and
+branch deletion. If the folder is already gone, its record is cleared without
+pruning Git worktrees. If the task branch has commits outside the recorded base,
+the result reports their number and gives a command to merge them from a checkout
+of the base. Git keeps the entry for a hand-deleted folder until
+`git worktree prune`; until then, Git refuses to delete its branch. Repeating
+cleanup after removal reports `none`.
 
 ## Projects
 
@@ -528,10 +538,13 @@ given in one transaction. Each task moves to `done` only when it is `ready` or
 complete, `PendingChunksError` names the failing task and its blocking chunk
 IDs, and all earlier completions are rolled back. Completing a task clears
 that task's handoff and leaves every other handoff as it was.
-After the transaction commits, each completed task's managed worktree is
-removed when Git allows it. The result includes `worktree_cleanup` with a
-`removed`, `pending`, or `none` status. A pending cleanup does not undo task
-completion; run `progress worktree cleanup TASK_ID` after resolving its reason.
+After the transaction commits, each completed task's managed worktree is merged
+into its recorded base and removed when Git allows it. The result includes
+`worktree_cleanup` with a `removed`, `pending`, or `none` status, and records the
+branch names, path, and number of commits merged. Human output prints the merge
+and removal on separate lines. A gone folder reports unmerged commits with a
+merge command. A pending cleanup does not undo task completion; resolve its
+reason, then run the command the result gives.
 
 ### `progress task unblock`
 

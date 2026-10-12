@@ -803,6 +803,41 @@ def test_version_fifteen_migration_repairs_waiting_reasons_from_dependencies(
 		assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
+def test_version_sixteen_migration_leaves_old_worktree_bases_unknown(tmp_path) -> None:
+	"""Existing worktrees remain recorded without guessing their base branch."""
+	database_path = tmp_path / "progress.db"
+	project_id = generate_object_id(PROJECT_PREFIX)
+	task_id = generate_object_id(TASK_PREFIX)
+	with sqlite3.connect(database_path) as connection:
+		for version in range(1, 16):
+			schema.MIGRATIONS[version](connection)
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.execute(
+			"INSERT INTO schema_migrations VALUES (15, '2026-01-01T00:00:00+00:00')"
+		)
+		_insert_project(connection, project_id)
+		_insert_current_task(connection, project_id, task_id, "old-worktree")
+		connection.execute(
+			"INSERT INTO task_worktrees (task_id, project_id, path, branch, common_dir, created_at) "
+			"VALUES (?, ?, '/tmp/old-worktree', 'task', '/tmp/repository', '2026-01-01T00:00:00+00:00')",
+			(task_id, project_id),
+		)
+
+	with Database(database_path).connection() as connection:
+		row = connection.execute(
+			"SELECT base_branch FROM task_worktrees WHERE task_id = ?", (task_id,)
+		).fetchone()
+		assert row["base_branch"] is None
+		assert (
+			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
+				0
+			]
+			== 16
+		)
+
+
 def test_failed_version_six_migration_leaves_version_five_intact(
 	tmp_path, monkeypatch
 ) -> None:

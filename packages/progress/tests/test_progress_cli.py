@@ -6067,7 +6067,15 @@ def test_human_task_complete_output_is_concise(
 		"release_id": "rel_parent",
 		"title": "Dependency",
 		"status": "done",
-		"worktree_cleanup": {"status": "pending", "reason": "checkout is locked"},
+		"worktree_cleanup": {
+			"status": "pending",
+			"task_id": "tsk_test",
+			"path": "/tmp/task-worktree",
+			"branch": "progress/task/tsk_test",
+			"base_branch": "main",
+			"reason": "checkout is locked",
+			"command": "progress worktree cleanup tsk_test",
+		},
 		"unblocked_tasks": [{"id": "tsk_dependent", "title": "Dependent"}],
 	}
 
@@ -6114,20 +6122,117 @@ def test_human_task_complete_output_is_concise(
 
 	assert output.startswith("\n")
 	assert output.endswith("\n\nNext: progress next\n")
-	assert len(plain_lines) == 5
-	assert plain_lines[1].endswith(
-		"Completed task Dependency | Worktree: pending (checkout is locked)"
-	)
+	assert len(plain_lines) == 7
+	assert plain_lines[1].endswith("Completed task Dependency")
 	# Inequality after stripping ANSI proves the line carried styling.
-	assert plain_lines[1] != (
-		"Completed task Dependency | Worktree: pending (checkout is locked)"
-	)
-	assert plain_lines[2] == "Release ID: rel_parent"
-	assert plain_lines[4] == "Next: progress next"
+	assert plain_lines[1] != "Completed task Dependency"
+	assert plain_lines[2] == "Worktree kept at /tmp/task-worktree: checkout is locked"
+	assert plain_lines[3] == "Finish by hand: progress worktree cleanup tsk_test"
+	assert plain_lines[4] == "Release ID: rel_parent"
+	assert plain_lines[6] == "Next: progress next"
 	assert ("Release ID: rel_parent", "muted", "normal") in render_spans
 	assert ("Next: progress next", "muted", "normal") in next_spans
-	assert "tsk_test" not in output
+	assert "Finish by hand: progress worktree cleanup tsk_test" in output
 	assert "Dependent" not in output
+
+
+@pytest.mark.parametrize("multiple", [False, True])
+def test_task_complete_omits_worktree_line_when_none_was_created(
+	multiple: bool,
+) -> None:
+	"""A completed task without a checkout needs no cleanup detail."""
+	task = {
+		"id": "tsk_test",
+		"title": "Plain task",
+		"status": "done",
+		"worktree_cleanup": {"status": "none"},
+	}
+	data = [task] if multiple else task
+
+	output = cli._render_human_output("task complete", data)
+
+	assert "Completed task Plain task" in output
+	assert "worktree" not in output.lower()
+	assert cli._render_human_output("worktree cleanup", {"status": "none"}) == (
+		"No managed worktree\n"
+	)
+
+
+@pytest.mark.parametrize(
+	("commits", "expected"),
+	[
+		(1, "Merged 1 commit from progress/task/tsk_test into main\n"),
+		(2, "Merged 2 commits from progress/task/tsk_test into main\n"),
+	],
+)
+def test_task_complete_prints_merged_commits_on_their_own_line(
+	commits: int, expected: str
+) -> None:
+	"""The completion receipt names the task branch, base, and commit count."""
+	data = {
+		"id": "tsk_test",
+		"title": "Merged task",
+		"status": "done",
+		"worktree_cleanup": {
+			"status": "removed",
+			"path": "/tmp/task-worktree",
+			"branch": "progress/task/tsk_test",
+			"base_branch": "main",
+			"merged_commits": commits,
+		},
+	}
+
+	output = cli._render_human_output("task complete", data)
+
+	assert expected in output
+	assert "Removed worktree at /tmp/task-worktree\n" in output
+
+
+def test_cleanup_prints_a_missing_folder_and_its_unmerged_commits() -> None:
+	"""A deleted folder still exposes commits that need to be merged by hand."""
+	data = {
+		"status": "removed",
+		"reason": "folder already gone",
+		"path": "/tmp/task-worktree",
+		"branch": "progress/task/tsk_test",
+		"base_branch": "main",
+		"unmerged_commits": 2,
+		"command": "git merge refs/heads/progress/task/tsk_test",
+	}
+
+	output = cli._render_human_output("worktree cleanup", data)
+
+	assert output.splitlines() == [
+		"Worktree folder at /tmp/task-worktree was already gone",
+		"2 unmerged commits remain on progress/task/tsk_test",
+		"Run the merge from a checkout of main",
+		"Finish by hand: git merge refs/heads/progress/task/tsk_test",
+	]
+	assert "Removed worktree" not in output
+
+
+def test_cleanup_prints_git_error_when_missing_folder_commits_cannot_be_counted() -> (
+	None
+):
+	"""A failed count stays visible alongside the manual merge command."""
+	data = {
+		"status": "removed",
+		"reason": "folder already gone",
+		"path": "/tmp/task-worktree",
+		"branch": "progress/task/tsk_test",
+		"base_branch": "main",
+		"count_error": "cannot read branch",
+		"command": "git merge refs/heads/progress/task/tsk_test",
+	}
+
+	output = cli._render_human_output("worktree cleanup", data)
+
+	assert output.splitlines() == [
+		"Worktree folder at /tmp/task-worktree was already gone",
+		"Could not count unmerged commits: cannot read branch",
+		"Run the merge from a checkout of main",
+		"Finish by hand: git merge refs/heads/progress/task/tsk_test",
+	]
 
 
 def test_human_chunk_complete_output_is_concise(
@@ -6824,7 +6929,7 @@ def test_worktree_cleanup_command_reports_pending_and_removed(
 		cli.main(["worktree", "cleanup", task["id"], "--database", str(database.path)])
 		== 0
 	)
-	assert "Worktree: removed" in capsys.readouterr().out
+	assert f"Removed worktree at {checkout}" in capsys.readouterr().out
 	assert not checkout.exists()
 
 	assert cli.main(["worktree", "cleanup", task["id"], *arguments]) == 0

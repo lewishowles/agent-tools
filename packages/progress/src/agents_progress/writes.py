@@ -1506,9 +1506,9 @@ class WriteStore(_StoreBase):
 		become ready. All completions run in one transaction, so a failure on any ID
 		rolls back the earlier ones.
 
-		After the tasks are saved, each task's managed worktree is removed if Git
-		finds it clean. Each result gains a worktree_cleanup entry saying whether
-		the checkout was removed, is pending with a reason, or never existed.
+		After the tasks are saved, each managed worktree is merged into its base
+		branch and removed when Git allows it. Each result gains a worktree_cleanup
+		entry with the merge and removal result, or a reason it remains pending.
 		"""
 		task_ids, multiple = _normalise_write_ids(task_id, "task")
 		project = self.current_project(path)

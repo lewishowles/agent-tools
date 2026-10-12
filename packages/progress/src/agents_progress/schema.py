@@ -11,7 +11,7 @@ from .errors import DatabaseBusyError, MigrationFailedError, StaleSchemaError
 Migration = Callable[[sqlite3.Connection], None]
 
 # the schema version this package writes when creating a database from empty
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 # the newest schema version this package knows how to migrate to
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION
 
@@ -653,6 +653,15 @@ def _migrate_to_version_15(connection: sqlite3.Connection) -> None:
 			)
 
 
+def _migrate_to_version_16(connection: sqlite3.Connection) -> None:
+	"""Add the branch each task worktree was created from.
+
+	Worktrees recorded before this version have no base branch, so completing
+	their task keeps the worktree for a manual merge.
+	"""
+	connection.execute("ALTER TABLE task_worktrees ADD COLUMN base_branch TEXT")
+
+
 # maps each supported schema version to the migration that produces it
 MIGRATIONS: dict[int, Migration] = {
 	1: _create_schema,
@@ -670,6 +679,7 @@ MIGRATIONS: dict[int, Migration] = {
 	13: _migrate_to_version_13,
 	14: _migrate_to_version_14,
 	15: _migrate_to_version_15,
+	16: _migrate_to_version_16,
 }
 
 

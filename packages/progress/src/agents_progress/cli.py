@@ -1369,7 +1369,7 @@ def _render_human_output(
 	list response, only the first rendered line of each record is kept unless
 	forced removal details need to be shown below it. The worktree commands
 	print only the checkout path, so a launcher can change into it directly.
-	Task completion adds the worktree cleanup result to each task's line. Task
+	Task completion adds cleanup lines when a task had a managed worktree. Task
 	and chunk starts add one line when the worktree has uncommitted changes or
 	Git could not check it. A dependency add names the task it now depends on
 	from dependency_id, because the response holds only the dependent task.
@@ -1377,7 +1377,7 @@ def _render_human_output(
 	if command in {"worktree ensure", "worktree get"} and isinstance(data, dict):
 		return f"{data['path']}\n"
 	if command == "worktree cleanup" and isinstance(data, dict):
-		return _worktree_cleanup_line(data) + "\n"
+		return "\n".join(_worktree_cleanup_lines(data)) + "\n"
 	if command in {"task dependency add", "task dependency remove"} and isinstance(
 		data, dict
 	):
@@ -1409,15 +1409,17 @@ def _render_human_output(
 		items = [data]
 	else:
 		rendered = render(command, data)
-		if command == "task complete" and "worktree_cleanup" in data:
+		if (
+			command == "task complete"
+			and "worktree_cleanup" in data
+			and data["worktree_cleanup"]["status"] != "none"
+		):
 			first, separator, remainder = rendered.partition("\n")
-			return (
-				first
-				+ " | "
-				+ _worktree_cleanup_line(data["worktree_cleanup"])
-				+ separator
-				+ remainder
+			cleanup = "".join(
+				f"{line}\n"
+				for line in _worktree_cleanup_lines(data["worktree_cleanup"])
 			)
+			return first + separator + cleanup + remainder
 		return rendered + "".join(
 			f"{line}\n"
 			for line in [*_removed_worktree_lines(data), *_left_worktree_lines(data)]
@@ -1428,9 +1430,13 @@ def _render_human_output(
 		rendered = render(command, item).strip("\n")
 		if rendered:
 			line = rendered.splitlines()[0]
-			if command == "task complete" and "worktree_cleanup" in item:
-				line += " | " + _worktree_cleanup_line(item["worktree_cleanup"])
 			lines.append(line)
+			if (
+				command == "task complete"
+				and "worktree_cleanup" in item
+				and item["worktree_cleanup"]["status"] != "none"
+			):
+				lines.extend(_worktree_cleanup_lines(item["worktree_cleanup"]))
 
 		if isinstance(item, dict) and isinstance(item.get("deleted"), dict):
 			for record_type, records in item["deleted"].items():
@@ -1472,11 +1478,41 @@ def _left_worktree_lines(data: dict[str, object]) -> list[str]:
 	]
 
 
-def _worktree_cleanup_line(data: dict[str, str]) -> str:
-	"""Show whether a completed task's checkout was removed or needs attention."""
+def _worktree_cleanup_lines(data: dict[str, object]) -> list[str]:
+	"""Describe the merge and checkout removal, or the action still needed."""
 	status = data["status"]
-	reason = data.get("reason")
-	return f"Worktree: {status}" + (f" ({reason})" if reason else "")
+	if status == "none":
+		return ["No managed worktree"]
+	if status == "pending":
+		lines = [f"Worktree kept at {data['path']}: {data['reason']}"]
+		lines.append(f"Finish by hand: {data['command']}")
+		return lines
+	if data.get("reason") == "folder already gone":
+		lines = [f"Worktree folder at {data['path']} was already gone"]
+		commits = data.get("unmerged_commits", 0)
+		if commits:
+			lines.append(
+				f"{commits} unmerged {'commit remains' if commits == 1 else 'commits remain'} "
+				f"on {data['branch']}"
+			)
+		if data.get("count_error"):
+			lines.append(f"Could not count unmerged commits: {data['count_error']}")
+		if commits or data.get("count_error"):
+			lines.append(f"Run the merge from a checkout of {data['base_branch']}")
+			lines.append(f"Finish by hand: {data['command']}")
+		return lines
+
+	lines = []
+	commits = data.get("merged_commits", 0)
+	if commits:
+		lines.append(
+			f"Merged {commits} {'commit' if commits == 1 else 'commits'} "
+			f"from {data['branch']} into {data['base_branch']}"
+		)
+	lines.append(f"Removed worktree at {data['path']}")
+	if data.get("reason"):
+		lines.append(str(data["reason"]))
+	return lines
 
 
 def _uncommitted_changes_line(data: dict[str, object]) -> str:

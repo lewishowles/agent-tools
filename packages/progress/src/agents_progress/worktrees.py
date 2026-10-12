@@ -2,6 +2,7 @@
 
 import sqlite3
 from pathlib import Path
+from shlex import quote
 
 from .errors import (
 	AlreadyExistsError,
@@ -21,15 +22,25 @@ from .writes import _unresolved_dependencies
 class WorktreeStore(_StoreBase):
 	"""Keep a task's recorded checkout tied to its project and Git repository."""
 
-	def cleanup(self, task_id: str, path: str | Path | None = None) -> dict[str, str]:
-		"""Remove a done task's managed checkout when Git finds it clean.
+	def cleanup(
+		self, task_id: str, path: str | Path | None = None
+	) -> dict[str, object]:
+		"""Merge a done task's branch into its base, then remove its checkout.
 
-		Return status "removed", "pending" with a reason, or "none" when the task
-		has no recorded checkout. A checkout with edits, a locked checkout, or one
-		that contains the current folder or the given path stays on disk with its
-		record kept, so cleanup can be retried later. A recorded folder that no longer
-		exists has its record cleared. The task's branch is never deleted. Raise
-		when the task is missing or not done.
+		The task's commits are replayed onto the base branch recorded when the
+		checkout was created, the base is fast-forwarded to them, the checkout is
+		removed and the merged task branch is deleted. Return status "removed"
+		with the number of commits merged, "pending" with a reason, or "none" when
+		the task has no recorded checkout. Removed and pending results include
+		the path, task branch and base branch.
+
+		A checkout with uncommitted changes, an unknown or missing base, a rebase
+		conflict, a locked checkout, a refused fast-forward, or a checkout that
+		contains the current folder or the given path stays on disk with its branch
+		and record, so cleanup can be retried later. A removal failure can be
+		pending after the commits reached the base; retry then only removes the
+		checkout. A recorded folder that no longer exists has its record cleared.
+		Raise when the task is missing or not done.
 		"""
 		task_id = validate_object_id(task_id, TASK_PREFIX)
 		project = self.current_project(path)
@@ -48,13 +59,34 @@ class WorktreeStore(_StoreBase):
 				)
 
 			row = connection.execute(
-				"SELECT task_id, project_id, path, branch, common_dir "
+				"SELECT task_id, project_id, path, branch, base_branch, common_dir "
 				"FROM task_worktrees WHERE task_id = ?",
 				(task_id,),
 			).fetchone()
 
 		if row is None:
 			return {"status": "none"}
+		# the details every removed or pending result reports
+		info = {
+			"task_id": task_id,
+			"path": row["path"],
+			"branch": row["branch"],
+			"base_branch": row["base_branch"],
+		}
+		retry = f"progress worktree cleanup {task_id}"
+		branch_ref = f"refs/heads/{row['branch']}"
+
+		def pending(reason: str, command: str | None = None) -> dict[str, object]:
+			"""Build a pending result for this task with the next command to run.
+
+			Without a command, the next step is to run cleanup again.
+			"""
+			return {
+				"status": "pending",
+				"reason": reason,
+				"command": command or retry,
+				**info,
+			}
 
 		try:
 			repository = GitRepository(path)
@@ -62,11 +94,29 @@ class WorktreeStore(_StoreBase):
 			target, _ = self._record_location(row, project.id, common_dir)
 
 			if not target.exists() and not target.is_symlink():
+				base = row["base_branch"]
+				unmerged_commits = 0
+				count_error = None
+				if base is not None:
+					count = self._commit_count(
+						repository, f"refs/heads/{base}", branch_ref
+					)
+					if isinstance(count, int):
+						unmerged_commits = count
+					else:
+						count_error = count
 				with self.database.transaction() as connection:
 					connection.execute(
 						"DELETE FROM task_worktrees WHERE task_id = ?", (task_id,)
 					)
-				return {"status": "removed", "reason": "folder already gone"}
+				gone = {"status": "removed", "reason": "folder already gone", **info}
+				if unmerged_commits:
+					gone["unmerged_commits"] = unmerged_commits
+				if count_error:
+					gone["count_error"] = count_error
+				if unmerged_commits or count_error:
+					gone["command"] = f"git merge {quote(branch_ref)}"
+				return gone
 
 			self._validated_record(row, project.id, common_dir)
 
@@ -74,28 +124,181 @@ class WorktreeStore(_StoreBase):
 			if Path.cwd().resolve().is_relative_to(
 				resolved_target
 			) or repository.path.is_relative_to(resolved_target):
-				return {
-					"status": "pending",
-					"reason": "command uses the task worktree",
-				}
+				return pending("command uses the task worktree")
+
+			checkout = GitRepository(target)
+			changes = checkout.run(
+				["status", "--porcelain", "--ignore-submodules=none"]
+			)
+			if changes.returncode != 0:
+				return pending(
+					changes.stderr.strip() or "Git could not inspect the worktree"
+				)
+			if changes.stdout:
+				return pending("worktree has uncommitted changes")
+
+			base = row["base_branch"]
+			if base is None:
+				return pending(
+					"base branch was not recorded; run the command from the intended base checkout, then remove the worktree and branch by hand",
+					f"git merge {quote(branch_ref)}",
+				)
+			base_ref = f"refs/heads/{base}"
+			base_exists = repository.run(["show-ref", "--verify", "--quiet", base_ref])
+			if base_exists.returncode != 0:
+				return pending(
+					f"base branch {base} no longer exists; run the command from the intended base checkout",
+					f"git merge {quote(branch_ref)}",
+				)
+
+			merged = self._merge_into_base(repository, checkout, base, row["branch"])
+			if isinstance(merged, tuple):
+				reason, command = merged
+				return pending(reason, command)
+			merged_commits = merged
+
+			# Point the task branch at its base so the safe `git branch -d` below
+			# checks the merge against the base, not whichever branch the current
+			# checkout has open.
+			upstream = repository.run(
+				["branch", "--set-upstream-to", base, row["branch"]]
+			)
+			if upstream.returncode != 0:
+				return pending(
+					upstream.stderr.strip()
+					or "Git could not prepare safe branch deletion"
+				)
 
 			result = repository.run(["worktree", "remove", str(target)])
 
 			if result.returncode != 0:
-				return {
-					"status": "pending",
-					"reason": result.stderr.strip()
-					or "Git could not remove the worktree",
-				}
+				return pending(
+					result.stderr.strip() or "Git could not remove the worktree"
+				)
+
+			deleted = repository.run(["branch", "-d", row["branch"]])
 
 			with self.database.transaction() as connection:
 				connection.execute(
 					"DELETE FROM task_worktrees WHERE task_id = ?", (task_id,)
 				)
-			return {"status": "removed"}
+			return {
+				"status": "removed",
+				"merged_commits": merged_commits,
+				**info,
+				**(
+					{"reason": f"branch could not be deleted: {deleted.stderr.strip()}"}
+					if deleted.returncode
+					else {}
+				),
+			}
 		except (ProgressError, sqlite3.Error, OSError) as error:
 			reason = error.message if isinstance(error, ProgressError) else str(error)
-			return {"status": "pending", "reason": reason or type(error).__name__}
+			return pending(reason or type(error).__name__)
+
+	def _commit_count(
+		self, repository: GitRepository, base_ref: str, branch_ref: str
+	) -> int | str:
+		"""Count task commits outside the base, or return Git's error."""
+		result = repository.run(["rev-list", "--count", f"{base_ref}..{branch_ref}"])
+		if result.returncode != 0:
+			return result.stderr.strip() or "Git could not count task commits"
+		return int(result.stdout.strip())
+
+	def _merge_into_base(
+		self,
+		repository: GitRepository,
+		checkout: GitRepository,
+		base: str,
+		branch: str,
+	) -> int | tuple[str, str | None]:
+		"""Replay the task commits onto the base, then fast-forward the base to them.
+
+		Return the number of commits merged, or a reason and an optional command
+		when the checkout must stay.
+		"""
+		base_ref = f"refs/heads/{base}"
+		branch_ref = f"refs/heads/{branch}"
+		count = self._commit_count(repository, base_ref, branch_ref)
+		if isinstance(count, str):
+			return count, None
+		if count == 0:
+			return 0
+
+		rebase = checkout.run(["rebase", base_ref])
+		if rebase.returncode != 0:
+			abort = checkout.run(["rebase", "--abort"])
+			if abort.returncode != 0:
+				return (
+					f"rebase failed and abort failed: {abort.stderr.strip()}",
+					f"git -C {quote(str(checkout.path))} rebase --abort",
+				)
+			detail = rebase.stderr.strip() or rebase.stdout.strip()
+			label = (
+				"rebase conflict"
+				if "CONFLICT" in (rebase.stdout + rebase.stderr)
+				else "rebase failed"
+			)
+			return (
+				f"{label}: {detail}",
+				f"git -C {quote(str(checkout.path))} rebase {quote(base_ref)}",
+			)
+
+		replayed = self._commit_count(repository, base_ref, branch_ref)
+		if isinstance(replayed, str):
+			return replayed, None
+		refusal = self._fast_forward_base(repository, checkout, base, branch)
+		if refusal is not None:
+			return f"fast-forward refused: {refusal}", None
+		return replayed
+
+	def _fast_forward_base(
+		self, repository: GitRepository, checkout: GitRepository, base: str, branch: str
+	) -> str | None:
+		"""Fast-forward the base branch to the task branch's rebased commits.
+
+		A base checked out in some worktree is merged there, so Git refuses when
+		that checkout's local changes would be overwritten. A base not checked
+		out anywhere has its ref moved only if it still points where it did when
+		read. Return None on success, or the reason the base was left alone.
+		"""
+		worktrees = repository.run(["worktree", "list", "--porcelain"])
+		if worktrees.returncode != 0:
+			return worktrees.stderr.strip() or "Git could not list worktrees"
+
+		base_ref = f"refs/heads/{base}"
+		for entry in worktrees.stdout.strip().split("\n\n"):
+			lines = entry.splitlines()
+			if f"branch {base_ref}" not in lines or not lines[0].startswith(
+				"worktree "
+			):
+				continue
+
+			base_checkout = GitRepository(lines[0][len("worktree ") :])
+			result = base_checkout.run(["merge", "--ff-only", f"refs/heads/{branch}"])
+			return (
+				None
+				if result.returncode == 0
+				else result.stderr.strip() or result.stdout.strip()
+			)
+
+		old = repository.run(["rev-parse", base_ref])
+		new = checkout.run(["rev-parse", "HEAD"])
+		if old.returncode != 0 or new.returncode != 0:
+			return "Git could not read the branch tips"
+		ancestor = repository.run(
+			["merge-base", "--is-ancestor", old.stdout.strip(), new.stdout.strip()]
+		)
+		if ancestor.returncode != 0:
+			return "base is no longer an ancestor of the task branch"
+		result = repository.run(
+			["update-ref", base_ref, new.stdout.strip(), old.stdout.strip()]
+		)
+		return (
+			None
+			if result.returncode == 0
+			else result.stderr.strip() or "base changed while merging"
+		)
 
 	def inspect_cleanup(
 		self, task_id: str, path: str | Path | None = None, *, force: bool = False
@@ -114,7 +317,8 @@ class WorktreeStore(_StoreBase):
 		with self.database.connection() as connection:
 			row = connection.execute(
 				"SELECT tasks.status, task_worktrees.task_id, task_worktrees.project_id, "
-				"task_worktrees.path, task_worktrees.branch, task_worktrees.common_dir "
+				"task_worktrees.path, task_worktrees.branch, task_worktrees.base_branch, "
+				"task_worktrees.common_dir "
 				"FROM tasks LEFT JOIN task_worktrees ON task_worktrees.task_id = tasks.id "
 				"WHERE tasks.id = ? AND tasks.project_id = ?",
 				(task_id, project.id),
@@ -264,7 +468,7 @@ class WorktreeStore(_StoreBase):
 
 		with self.database.connection() as connection:
 			row = connection.execute(
-				"SELECT task_id, project_id, path, branch, common_dir "
+				"SELECT task_id, project_id, path, branch, base_branch, common_dir "
 				"FROM task_worktrees WHERE task_id = ?",
 				(task_id,),
 			).fetchone()
@@ -288,6 +492,15 @@ class WorktreeStore(_StoreBase):
 		repository = GitRepository(path)
 		common_dir = repository.common_dir()
 		target, branch = self._managed_location(project.id, task_id)
+		# Git exits with 1 when HEAD is detached, which leaves the base unknown.
+		base_result = repository.run(["symbolic-ref", "--quiet", "--short", "HEAD"])
+		if base_result.returncode not in {0, 1}:
+			raise GitBindingError(
+				f"could not read the base branch: {base_result.stderr.strip()}"
+			)
+		base_branch = (
+			base_result.stdout.strip() if base_result.returncode == 0 else None
+		)
 
 		# A plain connection, not a write transaction: the checks below resolve the new
 		# checkout's project through their own connections, which a held write lock
@@ -315,7 +528,7 @@ class WorktreeStore(_StoreBase):
 				)
 
 			row = connection.execute(
-				"SELECT task_id, project_id, path, branch, common_dir "
+				"SELECT task_id, project_id, path, branch, base_branch, common_dir "
 				"FROM task_worktrees WHERE task_id = ?",
 				(task_id,),
 			).fetchone()
@@ -388,13 +601,14 @@ class WorktreeStore(_StoreBase):
 
 				connection.execute(
 					"INSERT INTO task_worktrees "
-					"(task_id, project_id, path, branch, common_dir, created_at) "
-					"VALUES (?, ?, ?, ?, ?, ?)",
+					"(task_id, project_id, path, branch, base_branch, common_dir, created_at) "
+					"VALUES (?, ?, ?, ?, ?, ?, ?)",
 					(
 						task_id,
 						project.id,
 						str(target),
 						branch,
+						base_branch,
 						str(common_dir),
 						utc_timestamp(),
 					),
@@ -440,6 +654,7 @@ class WorktreeStore(_StoreBase):
 				"project_id": project.id,
 				"path": str(target),
 				"branch": branch,
+				"base_branch": base_branch,
 				"created": True,
 			}
 
@@ -493,6 +708,7 @@ class WorktreeStore(_StoreBase):
 			"project_id": project_id,
 			"path": str(path),
 			"branch": branch,
+			"base_branch": row["base_branch"],
 		}
 
 	def _record_location(
