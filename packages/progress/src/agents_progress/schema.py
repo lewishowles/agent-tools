@@ -11,7 +11,7 @@ from .errors import DatabaseBusyError, MigrationFailedError, StaleSchemaError
 Migration = Callable[[sqlite3.Connection], None]
 
 # the schema version this package writes when creating a database from empty
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 # the newest schema version this package knows how to migrate to
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION
 
@@ -612,6 +612,47 @@ def _migrate_to_version_14(connection: sqlite3.Connection) -> None:
 	connection.execute("ALTER TABLE projects_new RENAME TO projects")
 
 
+def _migrate_to_version_15(connection: sqlite3.Connection) -> None:
+	"""Rewrite each waiting task's reason to list the dependencies it still waits on.
+
+	Earlier versions wrote this reason once and never updated it, so a saved
+	reason can name a removed task or leave out dependencies added later.
+	A waiting task whose dependencies are all done becomes ready with no reason.
+	The reason text must match the one writes.py builds in `_dependency_reason`.
+	It is built here rather than imported, so later changes to the write side
+	cannot change what this migration did.
+	"""
+	waiting_tasks = connection.execute(
+		"SELECT id FROM tasks WHERE status = 'waiting'"
+	).fetchall()
+
+	for (task_id,) in waiting_tasks:
+		dependency_ids = [
+			row[0]
+			for row in connection.execute(
+				"""
+				SELECT dependency.id
+				FROM task_dependencies AS dependencies
+				JOIN tasks AS dependency ON dependency.id = dependencies.depends_on_task_id
+				WHERE dependencies.task_id = ? AND dependency.status != 'done'
+				ORDER BY dependency.id
+				""",
+				(task_id,),
+			)
+		]
+
+		if dependency_ids:
+			reason = "unresolved dependencies: " + ", ".join(dependency_ids)
+			connection.execute(
+				"UPDATE tasks SET status_reason = ? WHERE id = ?", (reason, task_id)
+			)
+		else:
+			connection.execute(
+				"UPDATE tasks SET status = 'ready', status_reason = NULL WHERE id = ?",
+				(task_id,),
+			)
+
+
 # maps each supported schema version to the migration that produces it
 MIGRATIONS: dict[int, Migration] = {
 	1: _create_schema,
@@ -628,6 +669,7 @@ MIGRATIONS: dict[int, Migration] = {
 	12: _migrate_to_version_12,
 	13: _migrate_to_version_13,
 	14: _migrate_to_version_14,
+	15: _migrate_to_version_15,
 }
 
 

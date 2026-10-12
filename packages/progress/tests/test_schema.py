@@ -721,8 +721,86 @@ def test_version_fourteen_migration_keeps_a_correct_projects_definition(
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 14
+			== schema.SCHEMA_VERSION
 		)
+
+
+def test_version_fifteen_migration_repairs_waiting_reasons_from_dependencies(
+	tmp_path,
+) -> None:
+	database_path = tmp_path / "progress.db"
+	project_id = generate_object_id(PROJECT_PREFIX)
+	waiting_id = generate_object_id(TASK_PREFIX)
+	cleared_id = generate_object_id(TASK_PREFIX)
+	blocked_id = generate_object_id(TASK_PREFIX)
+	unfinished_ids = sorted(generate_object_id(TASK_PREFIX) for _ in range(2))
+	done_id = generate_object_id(TASK_PREFIX)
+	deleted_id = generate_object_id(TASK_PREFIX)
+
+	with sqlite3.connect(database_path) as connection:
+		for version in range(1, 15):
+			schema.MIGRATIONS[version](connection)
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.execute(
+			"INSERT INTO schema_migrations VALUES (14, '2026-01-01T00:00:00+00:00')"
+		)
+		_insert_project(connection, project_id)
+		for task_id, slug in (
+			(waiting_id, "waiting"),
+			(cleared_id, "cleared"),
+			(blocked_id, "blocked"),
+			(unfinished_ids[0], "unfinished-one"),
+			(unfinished_ids[1], "unfinished-two"),
+			(done_id, "done"),
+		):
+			_insert_current_task(connection, project_id, task_id, slug)
+		connection.execute(
+			"UPDATE tasks SET status = 'waiting', status_reason = ? WHERE id = ?",
+			(f"unresolved dependencies: {deleted_id}, {unfinished_ids[0]}", waiting_id),
+		)
+		connection.execute(
+			"UPDATE tasks SET status = 'waiting', status_reason = 'unresolved dependencies: old' WHERE id = ?",
+			(cleared_id,),
+		)
+		connection.execute(
+			"UPDATE tasks SET status = 'blocked', status_reason = 'Manual decision' WHERE id = ?",
+			(blocked_id,),
+		)
+		connection.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (done_id,))
+		for dependency_id in (*reversed(unfinished_ids), done_id):
+			connection.execute(
+				"INSERT INTO task_dependencies VALUES (?, ?)",
+				(waiting_id, dependency_id),
+			)
+		connection.execute(
+			"INSERT INTO task_dependencies VALUES (?, ?)", (cleared_id, done_id)
+		)
+
+	with Database(database_path).connection() as connection:
+		assert (
+			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
+				0
+			]
+			== schema.SCHEMA_VERSION
+		)
+		assert {
+			row[0]: (row[1], row[2], row[3])
+			for row in connection.execute(
+				"SELECT id, status, status_reason, updated_at FROM tasks WHERE id IN (?, ?, ?)",
+				(waiting_id, cleared_id, blocked_id),
+			)
+		} == {
+			waiting_id: (
+				"waiting",
+				"unresolved dependencies: " + ", ".join(unfinished_ids),
+				"2026-01-01T00:00:00+00:00",
+			),
+			cleared_id: ("ready", None, "2026-01-01T00:00:00+00:00"),
+			blocked_id: ("blocked", "Manual decision", "2026-01-01T00:00:00+00:00"),
+		}
+		assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 def test_failed_version_six_migration_leaves_version_five_intact(
