@@ -238,6 +238,34 @@ def test_release_add_stores_overview_status_and_position(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize(
+	("position", "expected_slugs"),
+	[
+		pytest.param(0, ["inserted", "first", "second", "third"], id="zero"),
+		pytest.param(1, ["inserted", "first", "second", "third"], id="one"),
+		pytest.param(2, ["first", "inserted", "second", "third"], id="middle"),
+		pytest.param(99, ["first", "second", "third", "inserted"], id="past-end"),
+		pytest.param(None, ["first", "second", "third", "inserted"], id="no-position"),
+	],
+)
+def test_release_add_inserts_at_the_requested_position_and_renumbers(
+	tmp_path: Path, position: int | None, expected_slugs: list[str]
+) -> None:
+	store = _seed_store(tmp_path)
+	for slug in ("first", "second", "third"):
+		store.release_add(slug, slug.title(), overview=f"{slug} overview")
+
+	inserted = store.release_add(
+		"inserted", "Inserted", overview="Inserted overview", position=position
+	)
+	releases = ReadStore(store.database, _ProjectStore(store.database)).release_list()
+
+	assert inserted["position"] == expected_slugs.index("inserted") + 1
+	assert [(item["slug"], item["position"]) for item in releases["items"]] == list(
+		zip(expected_slugs, range(1, 5), strict=True)
+	)
+
+
+@pytest.mark.parametrize(
 	"arguments",
 	[
 		pytest.param({"description": ""}, id="empty"),
@@ -299,7 +327,7 @@ def test_chunk_add_renumbers_an_explicit_zero_position_from_one(tmp_path: Path) 
 	)
 	chunk = _add_chunk(store, task["id"], "Zero chunk", position=0)
 
-	assert release["position"] == 0
+	assert release["position"] == 1
 	assert task["position"] == 1
 	assert chunk["position"] == 1
 

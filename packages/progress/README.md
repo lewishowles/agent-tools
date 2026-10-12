@@ -210,7 +210,11 @@ progress release add --slug <slug> --title <title> --overview <overview> [--stat
 - `--title <title>`: display title
 - `--overview <overview>`: non-empty release overview
 - `--status {planned,active,done}`: initial release status
-- `--position <position>`: optional ordering position
+- `--position <position>`: optional ordering position. At an occupied position,
+  the new release goes before the release already there. A position past the
+  end, or no position, places the new release last. Every add renumbers the
+  release list from 1 with no gaps, so the returned position can be lower than
+  requested and a position of 0 becomes 1
 
 ### `progress release list`
 

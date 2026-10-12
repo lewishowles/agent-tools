@@ -84,7 +84,11 @@ class WriteStore(_StoreBase):
 		position: int | None = None,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Create a release at the next position in the current project."""
+		"""Create a release in the current project and renumber its releases from 1.
+
+		A requested position puts the new release before the release already there,
+		so 0 and 1 both make it first. No position, or one past the end, puts it last.
+		"""
 		_require_text(slug, "release slug")
 		_require_text(title, "release title")
 		_require_text(overview, "release overview")
@@ -97,11 +101,24 @@ class WriteStore(_StoreBase):
 		project = self.current_project(path)
 		with self.database.transaction() as connection:
 			release_id = _new_id(connection, RELEASE_PREFIX, "releases")
-			release_position = (
-				position
-				if position is not None
-				else _next_position(connection, "releases", "project_id", project.id)
+			release_rows = connection.execute(
+				"SELECT id, position FROM releases WHERE project_id = ? ORDER BY position, id",
+				(project.id,),
+			).fetchall()
+			next_position = release_rows[-1]["position"] + 1 if release_rows else 1
+			release_position = position if position is not None else next_position
+			ordered_ids = [row["id"] for row in release_rows]
+			positions = {row["id"]: row["position"] for row in release_rows}
+			insert_index = next(
+				(
+					index
+					for index, row in enumerate(release_rows)
+					if row["position"] >= release_position
+				),
+				len(release_rows),
 			)
+			ordered_ids.insert(insert_index, release_id)
+			positions[release_id] = release_position
 			try:
 				connection.execute(
 					"""
@@ -125,6 +142,15 @@ class WriteStore(_StoreBase):
 					f"release slug {slug!r} already exists in project {project.id}",
 					{"slug": slug, "project_id": project.id},
 				) from error
+
+			for index, ordered_id in enumerate(ordered_ids, start=1):
+				if positions[ordered_id] == index:
+					continue
+
+				connection.execute(
+					"UPDATE releases SET position = ? WHERE id = ?",
+					(index, ordered_id),
+				)
 
 			row = connection.execute(
 				f"SELECT {_RELEASE_COLUMNS} FROM releases WHERE id = ?",
@@ -2653,18 +2679,6 @@ def _new_id(connection: sqlite3.Connection, prefix: str, table: str) -> str:
 			).fetchone()
 			is not None
 		),
-	)
-
-
-def _next_position(
-	connection: sqlite3.Connection, table: str, column: str, value: str
-) -> int:
-	"""Return the next position within one release list."""
-	return int(
-		connection.execute(
-			f"SELECT COALESCE(MAX(position), 0) + 1 FROM {table} WHERE {column} = ?",
-			(value,),
-		).fetchone()[0]
 	)
 
 
