@@ -448,7 +448,14 @@ class WriteStore(_StoreBase):
 				else "waiting"
 			)
 			status_reason = (
-				None if status == "ready" else _dependency_reason(dependency_rows)
+				None
+				if status == "ready"
+				else _dependency_reason(
+					sorted(
+						(row for row in dependency_rows if row["status"] != "done"),
+						key=lambda row: row["id"],
+					)
+				)
 			)
 			created_at = utc_timestamp()
 			queue_filter = (
@@ -1081,11 +1088,7 @@ class WriteStore(_StoreBase):
 				"INSERT INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)",
 				(task_id, depends_on_task_id),
 			)
-			if dependency["status"] != "done" and task["status"] == "ready":
-				connection.execute(
-					"UPDATE tasks SET status = 'waiting', status_reason = ?, updated_at = ? WHERE id = ?",
-					(_dependency_reason([dependency]), utc_timestamp(), task_id),
-				)
+			_refresh_dependency_status(connection, task_id, project.id)
 
 			return _task_dict(connection, task_id, project.id)
 
@@ -1131,11 +1134,7 @@ class WriteStore(_StoreBase):
 				"DELETE FROM task_dependencies WHERE task_id = ? AND depends_on_task_id = ?",
 				(task_id, depends_on_task_id),
 			)
-			task = _task_row(connection, task_id, project.id)
-			if task["status"] == "waiting" and not _unresolved_dependencies(
-				connection, task_id
-			):
-				_unblock_task(connection, task_id, project.id, allow_waiting=True)
+			_refresh_dependency_status(connection, task_id, project.id)
 
 		return {
 			"task_id": task_id,
@@ -2116,11 +2115,7 @@ def _remove_task(
 	unblocked_tasks = []
 
 	for dependent_task_id in dependent_task_ids:
-		dependent_task = _task_row(connection, dependent_task_id, project_id)
-		if dependent_task is None or dependent_task["status"] != "waiting":
-			continue
-		if not _unresolved_dependencies(connection, dependent_task_id):
-			_unblock_task(connection, dependent_task_id, project_id, allow_waiting=True)
+		if _refresh_dependency_status(connection, dependent_task_id, project_id):
 			unblocked_tasks.append(dependent_task_id)
 
 	return {
@@ -2221,17 +2216,14 @@ def _complete_task(
 		(project_id, task_id),
 	).fetchall()
 	for dependent in dependent_rows:
-		if _unresolved_dependencies(connection, dependent["id"]):
-			continue
-
-		_unblock_task(connection, dependent["id"], project_id, allow_waiting=True)
-		unblocked_tasks.append(
-			{
-				"id": dependent["id"],
-				"slug": dependent["slug"],
-				"title": dependent["title"],
-			}
-		)
+		if _refresh_dependency_status(connection, dependent["id"], project_id):
+			unblocked_tasks.append(
+				{
+					"id": dependent["id"],
+					"slug": dependent["slug"],
+					"title": dependent["title"],
+				}
+			)
 
 	completed_task = _task_dict(connection, task_id, project_id)
 	completed_task["unblocked_tasks"] = unblocked_tasks
@@ -2819,3 +2811,35 @@ def _unresolved_dependencies(
 def _dependency_reason(rows: Iterable[sqlite3.Row]) -> str:
 	"""Build the persisted reason for a task blocked by unfinished dependencies."""
 	return "unresolved dependencies: " + ", ".join(row["id"] for row in rows)
+
+
+def _refresh_dependency_status(
+	connection: sqlite3.Connection, task_id: str, project_id: str
+) -> bool:
+	"""Match a ready or waiting task's status and reason to its unfinished dependencies.
+
+	A task with unfinished dependencies waits, and its reason lists every one of
+	them. A waiting task with none left becomes ready. Tasks in any other status
+	are left alone, so a manual block or started work is never overwritten.
+
+	Return whether the task moved from waiting to ready.
+	"""
+	task = _task_row(connection, task_id, project_id)
+	if task is None or task["status"] not in {"ready", "waiting"}:
+		return False
+
+	unresolved = _unresolved_dependencies(connection, task_id)
+	if not unresolved:
+		if task["status"] == "waiting":
+			_unblock_task(connection, task_id, project_id, allow_waiting=True)
+			return True
+
+		return False
+
+	reason = _dependency_reason(unresolved)
+	if task["status"] == "ready" or task["status_reason"] != reason:
+		connection.execute(
+			"UPDATE tasks SET status = 'waiting', status_reason = ?, updated_at = ? WHERE id = ?",
+			(reason, utc_timestamp(), task_id),
+		)
+	return False

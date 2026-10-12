@@ -63,6 +63,18 @@ def _add_task(store: WriteStore, slug: str, title: str, **arguments):
 	return store.task_add(slug, title, **arguments)
 
 
+def _dependency_ids(store: WriteStore, task_id: str) -> list[str]:
+	"""Return the IDs a task depends on, read from its dependency rows in ID order."""
+	with store.database.connection() as connection:
+		rows = connection.execute(
+			"SELECT depends_on_task_id FROM task_dependencies WHERE task_id = ? "
+			"ORDER BY depends_on_task_id",
+			(task_id,),
+		).fetchall()
+
+	return [row["depends_on_task_id"] for row in rows]
+
+
 def _seed_store_with_older_default_task(
 	tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> WriteStore:
@@ -1874,6 +1886,79 @@ def test_dependencies_block_and_complete_tasks(tmp_path: Path) -> None:
 	assert ready_dependent["status_reason"] is None
 
 
+def test_adding_a_dependency_refreshes_a_waiting_tasks_reason(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first-dependency", "First dependency")
+	second = _add_task(store, "second-dependency", "Second dependency")
+	dependent = _add_task(store, "dependent", "Dependent", depends_on=[first["id"]])
+
+	store.task_dependency_add(dependent["id"], second["id"])
+	waiting = ReadStore(store.database, _ProjectStore(store.database)).task_get(
+		dependent["id"]
+	)
+	dependency_ids = _dependency_ids(store, dependent["id"])
+
+	assert waiting["status"] == "waiting"
+	assert dependency_ids == sorted([first["id"], second["id"]])
+	assert waiting["status_reason"] == (
+		"unresolved dependencies: " + ", ".join(dependency_ids)
+	)
+
+
+def test_task_add_lists_unfinished_dependencies_in_task_id_order(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first-dependency", "First dependency")
+	second = _add_task(store, "second-dependency", "Second dependency")
+	dependency_ids = sorted([first["id"], second["id"]])
+
+	dependent = _add_task(
+		store, "dependent", "Dependent", depends_on=list(reversed(dependency_ids))
+	)
+
+	assert dependent["status"] == "waiting"
+	assert dependent["status_reason"] == (
+		"unresolved dependencies: " + ", ".join(dependency_ids)
+	)
+
+
+def test_task_add_leaves_done_dependencies_out_of_the_reason(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	done = _add_task(store, "done-dependency", "Done dependency")
+	unfinished = _add_task(store, "unfinished-dependency", "Unfinished dependency")
+	store.task_start(done["id"])
+	store.task_complete(done["id"])
+
+	dependent = _add_task(
+		store, "dependent", "Dependent", depends_on=[done["id"], unfinished["id"]]
+	)
+
+	assert dependent["status"] == "waiting"
+	assert dependent["status_reason"] == f"unresolved dependencies: {unfinished['id']}"
+
+
+def test_removing_one_dependency_refreshes_a_waiting_tasks_reason(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first-dependency", "First dependency")
+	second = _add_task(store, "second-dependency", "Second dependency")
+	dependent = _add_task(
+		store, "dependent", "Dependent", depends_on=[first["id"], second["id"]]
+	)
+
+	store.task_dependency_remove(dependent["id"], first["id"])
+	waiting = ReadStore(store.database, _ProjectStore(store.database)).task_get(
+		dependent["id"]
+	)
+	dependency_ids = _dependency_ids(store, dependent["id"])
+
+	assert waiting["status"] == "waiting"
+	assert dependency_ids == [second["id"]]
+	assert waiting["status_reason"] == f"unresolved dependencies: {second['id']}"
+
+
 def test_task_block_changes_a_waiting_task_to_a_manual_block(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	dependency = _add_task(store, "dependency", "Dependency")
@@ -1997,17 +2082,22 @@ def test_task_complete_keeps_dependents_blocked_with_incomplete_dependencies(
 		"Dependent",
 		depends_on=[completed_dependency["id"], unfinished_dependency["id"]],
 	)
-	status_reason = dependent["status_reason"]
 	store.task_start(completed_dependency["id"])
 
 	completed = store.task_complete(completed_dependency["id"])
 	blocked_dependent = ReadStore(
 		store.database, _ProjectStore(store.database)
 	).task_get(dependent["id"])
+	dependency_ids = _dependency_ids(store, dependent["id"])
 
 	assert completed["unblocked_tasks"] == []
 	assert blocked_dependent["status"] == "waiting"
-	assert blocked_dependent["status_reason"] == status_reason
+	assert dependency_ids == sorted(
+		[completed_dependency["id"], unfinished_dependency["id"]]
+	)
+	assert blocked_dependent["status_reason"] == (
+		f"unresolved dependencies: {unfinished_dependency['id']}"
+	)
 
 
 @pytest.mark.parametrize("start_second_first", [False, True])
@@ -2645,6 +2735,35 @@ def test_task_remove_force_deletes_owned_rows_and_unblocks_dependants(
 			).fetchone()
 			is not None
 		)
+
+
+def test_task_remove_force_refreshes_a_waiting_dependants_reason(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	removed_dependency = _add_task(store, "removed-dependency", "Removed dependency")
+	remaining_dependency = _add_task(
+		store, "remaining-dependency", "Remaining dependency"
+	)
+	dependent = _add_task(
+		store,
+		"dependent",
+		"Dependent",
+		depends_on=[removed_dependency["id"], remaining_dependency["id"]],
+	)
+
+	result = store.task_remove(removed_dependency["id"], force=True)
+	waiting = ReadStore(store.database, _ProjectStore(store.database)).task_get(
+		dependent["id"]
+	)
+	dependency_ids = _dependency_ids(store, dependent["id"])
+
+	assert result["unblocked_tasks"] == []
+	assert waiting["status"] == "waiting"
+	assert dependency_ids == [remaining_dependency["id"]]
+	assert waiting["status_reason"] == (
+		f"unresolved dependencies: {remaining_dependency['id']}"
+	)
 
 
 def test_task_remove_keeps_a_dirty_checkout_until_it_is_clean(
