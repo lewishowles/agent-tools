@@ -183,6 +183,7 @@ class WriteStore(_StoreBase):
 				_remove_release(connection, identifier, project.id, force=force)
 				for identifier in release_ids
 			]
+			_renumber_releases(connection, project.id)
 		for result in results:
 			for task in task_rows:
 				if task["release_id"] == result["id"]:
@@ -724,6 +725,8 @@ class WriteStore(_StoreBase):
 				releases_removed.append(
 					{"id": release["id"], "title": release["title"]}
 				)
+			if releases_removed:
+				_renumber_releases(connection, project.id)
 
 		result = {
 			"removed_count": len(removed),
@@ -2239,6 +2242,24 @@ def _renumber_task_queue(
 
 		connection.execute(
 			"UPDATE tasks SET position = ? WHERE id = ?", (position, row["id"])
+		)
+
+
+def _renumber_releases(connection: sqlite3.Connection, project_id: str) -> None:
+	"""Give a project's releases positions from 1 upwards, keeping their order.
+
+	Only releases whose position changes are written.
+	"""
+	rows = connection.execute(
+		"SELECT id, position FROM releases WHERE project_id = ? ORDER BY position, id",
+		(project_id,),
+	).fetchall()
+	for position, row in enumerate(rows, start=1):
+		if row["position"] == position:
+			continue
+
+		connection.execute(
+			"UPDATE releases SET position = ? WHERE id = ?", (position, row["id"])
 		)
 
 

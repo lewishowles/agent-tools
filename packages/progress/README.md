@@ -235,6 +235,7 @@ progress release remove <release_id>... [--force] [--json] [--database <path>]
 
 Pass one or more release IDs. They are removed in the order given in one
 transaction, so a failure names the failing ID and rolls back every removal.
+The remaining releases keep their order and are numbered from 1 without gaps.
 Without `--force`, removal is a hard delete that raises
 `StillReferencedError` when any task refers to a release or the release owns
 notes. The error names the blocking task or note IDs and suggests `--force`.
@@ -426,6 +427,8 @@ each kept task's title and ID, the notes and dependency edges that kept it, and
 any release that became empty because its tasks were removed. Dependency
 details include the other task's title and ID and whether the task depends on
 it or is required by it.
+When an empty release is removed, the remaining releases keep their order and
+are numbered from 1 without gaps.
 The remaining tasks in each affected release or unassigned queue keep their
 order and are numbered from 1 without gaps.
 

@@ -3015,6 +3015,89 @@ def test_release_remove_clears_a_default_task_on_a_repaired_older_schema(
 		)
 
 
+def test_release_remove_renumbers_remaining_releases(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first = store.release_add("first", "First", overview="First overview")
+	middle = store.release_add("middle", "Middle", overview="Middle overview")
+	last = store.release_add("last", "Last", overview="Last overview")
+
+	store.release_remove(middle["id"])
+
+	with store.database.connection() as connection:
+		rows = connection.execute(
+			"SELECT id, position FROM releases WHERE project_id = ? ORDER BY position, id",
+			(PROJECT_ID,),
+		).fetchall()
+
+	assert [(row["id"], row["position"]) for row in rows] == [
+		(first["id"], 1),
+		(last["id"], 2),
+	]
+
+
+def test_release_remove_force_renumbers_after_deleting_tasks(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first = store.release_add("first", "First", overview="First overview")
+	middle = store.release_add("middle", "Middle", overview="Middle overview")
+	last = store.release_add("last", "Last", overview="Last overview")
+	task = _add_task(store, "task", "Task", release_id=middle["id"])
+
+	result = store.release_remove(middle["id"], force=True)
+
+	assert result["deleted"]["tasks"] == [task["id"]]
+	with store.database.connection() as connection:
+		rows = connection.execute(
+			"SELECT id, position FROM releases WHERE project_id = ? ORDER BY position, id",
+			(PROJECT_ID,),
+		).fetchall()
+
+	assert [(row["id"], row["position"]) for row in rows] == [
+		(first["id"], 1),
+		(last["id"], 2),
+	]
+
+
+def test_release_remove_does_not_renumber_another_project(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first = store.release_add("first", "First", overview="First overview")
+	middle = store.release_add("middle", "Middle", overview="Middle overview")
+	other_project_id = "prj_" + "o" * 22
+	other_release_id = "rel_" + "o" * 22
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(other_project_id, "other", "Other project", "2026-01-01T00:00:00+00:00"),
+		)
+		connection.execute(
+			"""
+			INSERT INTO releases (id, project_id, slug, title, overview, status, position)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			""",
+			(
+				other_release_id,
+				other_project_id,
+				"other",
+				"Other",
+				"Other overview",
+				"planned",
+				3,
+			),
+		)
+
+	store.release_remove(first["id"])
+
+	with store.database.connection() as connection:
+		rows = connection.execute(
+			"SELECT id, position FROM releases WHERE id IN (?, ?) ORDER BY id",
+			(middle["id"], other_release_id),
+		).fetchall()
+
+	assert {(row["id"], row["position"]) for row in rows} == {
+		(middle["id"], 1),
+		(other_release_id, 3),
+	}
+
+
 def test_release_remove_force_deletes_tasks_and_release_rows(
 	tmp_path: Path,
 ) -> None:
@@ -3303,6 +3386,35 @@ def test_write_methods_roll_back_earlier_ids_when_a_later_id_fails(
 			record["id"]
 		)
 		assert remaining["status"] == "pending"
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_task_clean_renumbers_releases_after_removing_an_empty_one(
+	tmp_path: Path, force: bool
+) -> None:
+	store = _seed_store(tmp_path)
+	first = store.release_add("first", "First", overview="First overview")
+	middle = store.release_add("middle", "Middle", overview="Middle overview")
+	last = store.release_add("last", "Last", overview="Last overview")
+	task = _add_task(store, "task", "Task", release_id=middle["id"])
+	store.task_start(task["id"])
+	store.task_complete(task["id"])
+
+	result = store.task_clean(force=force)
+
+	assert result["releases_removed"] == [
+		{"id": middle["id"], "title": middle["title"]}
+	]
+	with store.database.connection() as connection:
+		rows = connection.execute(
+			"SELECT id, position FROM releases WHERE project_id = ? ORDER BY position, id",
+			(PROJECT_ID,),
+		).fetchall()
+
+	assert [(row["id"], row["position"]) for row in rows] == [
+		(first["id"], 1),
+		(last["id"], 2),
+	]
 
 
 @pytest.mark.parametrize("force", [False, True])
