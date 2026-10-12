@@ -365,12 +365,12 @@ progress task move <task_id> --release [--before <task_id> | --after <task_id>] 
   target release or unassigned queue; at most one may be provided when
   `--release` is used
 
-When `--release` is used without a position target, the task is appended at
-the first unused positive position in the target queue. A position target must
-already belong to that release or the unassigned queue. The task's chunks,
-notes, and dependency edges stay attached to it. The tasks left in the old
-queue are renumbered from 1, keeping their order. This also happens when
-`--release` names the task's current release.
+When `--release` is used without a position target, the task goes last in the
+target queue, which is renumbered from 1. A position target must already belong
+to that release or the unassigned queue. The task's chunks, notes, and
+dependency edges stay attached to it. The tasks left in the old queue are
+renumbered from 1, keeping their order. This also happens when `--release`
+names the task's current release.
 
 ### `progress task dependency add`
 

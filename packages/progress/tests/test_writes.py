@@ -726,6 +726,42 @@ def test_task_move_to_another_release_renumbers_the_source_queue(
 		for item in items
 		if item["release_id"] == source_release["id"]
 	] == [(first["id"], 1), (third["id"], 2), (last["id"], 3)]
+	assert [
+		(item["id"], item["position"])
+		for item in items
+		if item["release_id"] == target_release["id"]
+	] == (
+		[(moved["id"], 1), (target["id"], 2)]
+		if before_target
+		else [(target["id"], 1), (moved["id"], 2)]
+	)
+
+
+def test_task_move_to_another_release_appends_after_a_gap(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	source_release = store.release_add(
+		"source-release", "Source release", overview="Source release overview"
+	)
+	target_release = store.release_add(
+		"target-release", "Target release", overview="Target release overview"
+	)
+	moved = _add_task(store, "moved", "Moved", release_id=source_release["id"])
+	first = _add_task(store, "first", "First", release_id=target_release["id"])
+	last = _add_task(store, "last", "Last", release_id=target_release["id"])
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE tasks SET position = 3 WHERE id = ?", (last["id"],))
+
+	result = store.task_move(moved["id"], release_id=target_release["id"])
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list()[
+		"items"
+	]
+
+	assert result["position"] == 3
+	assert [
+		(item["id"], item["position"])
+		for item in items
+		if item["release_id"] == target_release["id"]
+	] == [(first["id"], 1), (last["id"], 2), (moved["id"], 3)]
 
 
 def test_task_move_to_current_release_renumbers_the_queue(tmp_path: Path) -> None:

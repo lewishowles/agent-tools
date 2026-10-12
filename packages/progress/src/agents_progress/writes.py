@@ -969,7 +969,18 @@ class WriteStore(_StoreBase):
 							{"task_id": task_id, "target_task_id": target_task_id},
 						)
 
-				task_position = _next_task_position(connection, project.id, release_id)
+				if release_id is None:
+					queue_filter = "release_id IS NULL"
+					queue_parameters = (project.id,)
+				else:
+					queue_filter = "release_id = ?"
+					queue_parameters = (project.id, release_id)
+
+				last_position = connection.execute(
+					f"SELECT MAX(position) FROM tasks WHERE project_id = ? AND {queue_filter}",
+					queue_parameters,
+				).fetchone()[0]
+				task_position = last_position + 1 if last_position is not None else 1
 				connection.execute(
 					"UPDATE tasks SET release_id = ?, position = ?, updated_at = ? WHERE id = ?",
 					(release_id, task_position, utc_timestamp(), task_id),
@@ -985,6 +996,8 @@ class WriteStore(_StoreBase):
 						before_task_id,
 						after_task_id,
 					)
+				else:
+					_renumber_task_queue(connection, project.id, release_id)
 
 				_renumber_task_queue(connection, project.id, task["release_id"])
 
@@ -2680,29 +2693,6 @@ def _new_id(connection: sqlite3.Connection, prefix: str, table: str) -> str:
 			is not None
 		),
 	)
-
-
-def _next_task_position(
-	connection: sqlite3.Connection, project_id: str, release_id: str | None
-) -> int:
-	"""Return the first unused positive position in one task queue."""
-	if release_id is None:
-		rows = connection.execute(
-			"SELECT position FROM tasks WHERE project_id = ? AND release_id IS NULL",
-			(project_id,),
-		).fetchall()
-	else:
-		rows = connection.execute(
-			"SELECT position FROM tasks WHERE project_id = ? AND release_id = ?",
-			(project_id, release_id),
-		).fetchall()
-
-	used_positions = {row["position"] for row in rows}
-	position = 1
-	while position in used_positions:
-		position += 1
-
-	return position
 
 
 def _reorder_queue(
