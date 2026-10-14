@@ -1089,6 +1089,16 @@ class WriteStore(_StoreBase):
 				(task_id, depends_on_task_id),
 			)
 			_refresh_dependency_status(connection, task_id, project.id)
+			updated_task = _task_row(connection, task_id, project.id)
+			# The refresh already sets updated_at when the status or reason changes.
+			if (updated_task["status"], updated_task["status_reason"]) == (
+				task["status"],
+				task["status_reason"],
+			):
+				connection.execute(
+					"UPDATE tasks SET updated_at = ? WHERE id = ?",
+					(utc_timestamp(), task_id),
+				)
 
 			return _task_dict(connection, task_id, project.id)
 
@@ -1104,7 +1114,8 @@ class WriteStore(_StoreBase):
 		project = self.current_project(path)
 
 		with self.database.transaction() as connection:
-			if _task_row(connection, task_id, project.id) is None:
+			task = _task_row(connection, task_id, project.id)
+			if task is None:
 				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
 			if _task_row(connection, depends_on_task_id, project.id) is None:
 				raise NotFoundError(
@@ -1135,6 +1146,16 @@ class WriteStore(_StoreBase):
 				(task_id, depends_on_task_id),
 			)
 			_refresh_dependency_status(connection, task_id, project.id)
+			updated_task = _task_row(connection, task_id, project.id)
+			# The refresh already sets updated_at when the status or reason changes.
+			if (updated_task["status"], updated_task["status_reason"]) == (
+				task["status"],
+				task["status_reason"],
+			):
+				connection.execute(
+					"UPDATE tasks SET updated_at = ? WHERE id = ?",
+					(utc_timestamp(), task_id),
+				)
 
 		return {
 			"task_id": task_id,
@@ -1726,6 +1747,11 @@ class WriteStore(_StoreBase):
 			)
 
 			connection.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+			if note["task_id"] is not None:
+				connection.execute(
+					"UPDATE tasks SET updated_at = ? WHERE id = ?",
+					(utc_timestamp(), note["task_id"]),
+				)
 
 		return {"id": note_id}
 
@@ -1798,6 +1824,11 @@ class WriteStore(_StoreBase):
 					created_at,
 				),
 			)
+			if task_id is not None:
+				connection.execute(
+					"UPDATE tasks SET updated_at = ? WHERE id = ?",
+					(created_at, task_id),
+				)
 
 			return Note.from_row(
 				connection.execute(

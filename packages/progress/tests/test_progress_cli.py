@@ -2213,6 +2213,261 @@ def test_rejected_task_move_keeps_its_update_time(complete_records, capsys) -> N
 	)
 
 
+@pytest.mark.parametrize("operation", ["add", "remove"])
+@pytest.mark.parametrize("prerequisite_done", [False, True])
+def test_dependency_change_updates_only_the_dependent_task(
+	complete_records, capsys, operation: str, prerequisite_done: bool
+) -> None:
+	"""A dependency change updates the dependent task's time and no other task's."""
+	database_path, task, _chunk = complete_records
+	database = Database(database_path)
+	writer = WriteStore(database)
+	prerequisite = writer.task_add(
+		"prerequisite", "Prerequisite", overview="First work.", contract=["Finish it."]
+	)
+	unrelated = writer.task_add(
+		"unrelated", "Unrelated", overview="Other work.", contract=["Finish it."]
+	)
+	if prerequisite_done:
+		writer.task_complete(prerequisite["id"])
+	if operation == "remove":
+		writer.task_dependency_add(task["id"], prerequisite["id"])
+
+	old_times = {
+		item["id"]: _seed_old_task_updated_at(database_path, item["id"])
+		for item in (task, prerequisite, unrelated)
+	}
+	reader = ReadStore(database)
+	previous_task = reader.task_get(task["id"])
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"dependency",
+				operation,
+				task["id"],
+				prerequisite["id"],
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 0
+	)
+	assert json.loads(capsys.readouterr().out)["ok"] is True
+	updated_task = reader.task_get(task["id"])
+	assert updated_task["updated_at"] > old_times[task["id"]]
+	status_unchanged = (updated_task["status"], updated_task["status_reason"]) == (
+		previous_task["status"],
+		previous_task["status_reason"],
+	)
+	assert status_unchanged is prerequisite_done
+	assert (
+		reader.task_get(prerequisite["id"])["updated_at"]
+		== old_times[prerequisite["id"]]
+	)
+	assert reader.task_get(unrelated["id"])["updated_at"] == old_times[unrelated["id"]]
+
+
+@pytest.mark.parametrize("note_type", ["discovery", "decision"])
+@pytest.mark.parametrize("operation", ["add", "remove"])
+def test_task_note_change_updates_only_its_task(
+	complete_records, capsys, note_type: str, operation: str
+) -> None:
+	"""Adding or removing a task note changes only its owner's time."""
+	database_path, task, _chunk = complete_records
+	database = Database(database_path)
+	writer = WriteStore(database)
+	unrelated = writer.task_add(
+		"unrelated", "Unrelated", overview="Other work.", contract=["Finish it."]
+	)
+	note = None
+	if operation == "remove":
+		note = getattr(writer, f"{note_type}_add")(task["id"], "A note.")
+
+	old_time = _seed_old_task_updated_at(database_path, task["id"])
+	unrelated_old_time = _seed_old_task_updated_at(database_path, unrelated["id"])
+	arguments = (
+		["--task", task["id"], "A note."] if operation == "add" else [note["id"]]
+	)
+
+	assert (
+		cli.main(
+			[
+				note_type,
+				operation,
+				*arguments,
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 0
+	)
+	assert json.loads(capsys.readouterr().out)["ok"] is True
+	reader = ReadStore(database)
+	assert reader.task_get(task["id"])["updated_at"] > old_time
+	assert reader.task_get(unrelated["id"])["updated_at"] == unrelated_old_time
+
+
+def test_superseding_a_decision_updates_only_the_new_notes_task(
+	complete_records, capsys
+) -> None:
+	"""Superseding updates only the new note's task, even when another task owns the old one."""
+	database_path, task, _chunk = complete_records
+	database = Database(database_path)
+	writer = WriteStore(database)
+	other = writer.task_add(
+		"other", "Other", overview="Other work.", contract=["Finish it."]
+	)
+	old_note = writer.decision_add(other["id"], "Earlier choice.")
+	old_time = _seed_old_task_updated_at(database_path, task["id"])
+	other_old_time = _seed_old_task_updated_at(database_path, other["id"])
+
+	assert (
+		cli.main(
+			[
+				"decision",
+				"add",
+				"--task",
+				task["id"],
+				"--supersedes",
+				old_note["id"],
+				"New choice.",
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 0
+	)
+	assert json.loads(capsys.readouterr().out)["ok"] is True
+	reader = ReadStore(database)
+	assert reader.task_get(task["id"])["updated_at"] > old_time
+	assert reader.task_get(other["id"])["updated_at"] == other_old_time
+
+
+@pytest.mark.parametrize("failure", ["missing", "self", "duplicate"])
+def test_rejected_dependency_add_keeps_task_times(
+	complete_records, capsys, failure: str
+) -> None:
+	"""A rejected dependency leaves both tasks' times unchanged."""
+	database_path, task, _chunk = complete_records
+	database = Database(database_path)
+	writer = WriteStore(database)
+	prerequisite = writer.task_add(
+		"prerequisite", "Prerequisite", overview="First work.", contract=["Finish it."]
+	)
+	if failure == "duplicate":
+		writer.task_dependency_add(task["id"], prerequisite["id"])
+
+	old_time = _seed_old_task_updated_at(database_path, task["id"])
+	prerequisite_old_time = _seed_old_task_updated_at(database_path, prerequisite["id"])
+	target_id = {
+		"missing": "tsk_" + "x" * 22,
+		"self": task["id"],
+		"duplicate": prerequisite["id"],
+	}[failure]
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"dependency",
+				"add",
+				task["id"],
+				target_id,
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 1
+	)
+	assert json.loads(capsys.readouterr().out)["ok"] is False
+	reader = ReadStore(database)
+	assert reader.task_get(task["id"])["updated_at"] == old_time
+	assert reader.task_get(prerequisite["id"])["updated_at"] == prerequisite_old_time
+
+
+def test_missing_dependency_remove_keeps_task_times(complete_records, capsys) -> None:
+	"""Removing a dependency that does not exist leaves both tasks' times unchanged."""
+	database_path, task, _chunk = complete_records
+	database = Database(database_path)
+	prerequisite = WriteStore(database).task_add(
+		"prerequisite", "Prerequisite", overview="First work.", contract=["Finish it."]
+	)
+	old_time = _seed_old_task_updated_at(database_path, task["id"])
+	prerequisite_old_time = _seed_old_task_updated_at(database_path, prerequisite["id"])
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"dependency",
+				"remove",
+				task["id"],
+				prerequisite["id"],
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 1
+	)
+	assert json.loads(capsys.readouterr().out)["ok"] is False
+	reader = ReadStore(database)
+	assert reader.task_get(task["id"])["updated_at"] == old_time
+	assert reader.task_get(prerequisite["id"])["updated_at"] == prerequisite_old_time
+
+
+def test_referenced_note_remove_keeps_task_time(complete_records, capsys) -> None:
+	"""A refused removal of a superseded note leaves its task's time unchanged."""
+	database_path, task, _chunk = complete_records
+	database = Database(database_path)
+	writer = WriteStore(database)
+	note = writer.discovery_add(task["id"], "A finding.")
+	writer.decision_add(task["id"], "A choice.", supersedes_id=note["id"])
+	old_time = _seed_old_task_updated_at(database_path, task["id"])
+
+	assert (
+		cli.main(
+			[
+				"discovery",
+				"remove",
+				note["id"],
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 1
+	)
+	assert json.loads(capsys.readouterr().out)["ok"] is False
+	assert ReadStore(database).task_get(task["id"])["updated_at"] == old_time
+
+
+def test_release_note_and_context_change_keep_task_time(
+	complete_records, capsys
+) -> None:
+	"""Release notes and handoffs do not count as task updates."""
+	database_path, task, _chunk = complete_records
+	database = Database(database_path)
+	writer = WriteStore(database)
+	release = writer.release_add("release", "Release", overview="Planned work.")
+	old_time = _seed_old_task_updated_at(database_path, task["id"])
+
+	for arguments in (
+		["discovery", "add", "--release", release["id"], "A finding."],
+		["decision", "add", "--release", release["id"], "A choice."],
+		["context", "set", "--task", task["id"], "--current-goal", "Continue."],
+	):
+		assert cli.main([*arguments, "--database", str(database_path), "--json"]) == 0
+		assert json.loads(capsys.readouterr().out)["ok"] is True
+		assert ReadStore(database).task_get(task["id"])["updated_at"] == old_time
+
+
 def test_complete_finishes_a_real_chunk_by_id(complete_records, capsys) -> None:
 	"""Complete an active chunk through the public command."""
 	database_path, task, chunk = complete_records
