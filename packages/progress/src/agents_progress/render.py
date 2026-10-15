@@ -269,7 +269,7 @@ def _render_doctor(data: object) -> str:
 
 
 def _render_task_clean(data: object) -> str:
-	"""Render task-clean counts and the tasks kept for explicit review."""
+	"""Render task-clean counts, the tasks it removed, and the tasks kept for explicit review."""
 	if not isinstance(data, dict):
 		return str(data)
 
@@ -291,13 +291,27 @@ def _render_task_clean(data: object) -> str:
 			"success",
 			weight="normal",
 		),
-		render_span(
-			f"{_count_label(kept_count, 'task', 'tasks')} kept",
-			"warning" if kept_count else "muted",
-			weight="normal",
-		),
-		"",
 	]
+
+	removed = data.get("removed", [])
+	if isinstance(removed, list):
+		for task in removed:
+			if isinstance(task, dict):
+				blocks.append(
+					f"{_render_task_clean_label('Removed task')}  "
+					f"{task.get('title', '')} ({task.get('id', '')})"
+				)
+
+	blocks.extend(
+		[
+			render_span(
+				f"{_count_label(kept_count, 'task', 'tasks')} kept",
+				"warning" if kept_count else "muted",
+				weight="normal",
+			),
+			"",
+		]
+	)
 	if kept_tasks:
 		show_history_hint = any(
 			(task.get("notes") or task.get("dependencies")) and not task.get("worktree")

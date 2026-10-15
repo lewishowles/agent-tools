@@ -5171,7 +5171,14 @@ def test_human_task_clean_renders_counts_and_kept_task_details() -> None:
 
 	assert "2 tasks removed" in output
 	assert "2 tasks kept" in output
-	assert "Old completed task (tsk_removed)" not in output
+	assert "Removed task  Old completed task (tsk_removed)" in output
+	assert "Removed task  Another completed task (tsk_removed_two)" in output
+	assert (
+		output.index("2 tasks removed")
+		< output.index("Removed task  Old completed task (tsk_removed)")
+		< output.index("Removed task  Another completed task (tsk_removed_two)")
+		< output.index("2 tasks kept")
+	)
 	assert "Hint  Tasks with notes or dependencies are kept" in output
 	assert "Kept task      Task with history (tsk_kept)" in output
 	assert "Reason         1 discovery note, 1 decision note, 2 dependencies" in output
@@ -5201,6 +5208,7 @@ def test_human_task_clean_always_shows_zero_counts() -> None:
 	assert "0 tasks removed" in output
 	assert "0 tasks kept" in output
 	assert "0 releases removed" in output
+	assert "Removed task" not in output
 	assert "Hint" not in output
 
 
