@@ -3776,8 +3776,11 @@ def test_remove_childless_rows_and_dependency_edges(tmp_path: Path) -> None:
 	}
 	assert store.chunk_remove(chunk["id"]) == {"id": chunk["id"]}
 	assert store.discovery_remove(discovery["id"]) == {"id": discovery["id"]}
-	assert store.task_remove(task["id"]) == {"id": task["id"]}
-	assert store.task_remove(dependency["id"]) == {"id": dependency["id"]}
+	assert store.task_remove(task["id"]) == {"id": task["id"], "title": task["title"]}
+	assert store.task_remove(dependency["id"]) == {
+		"id": dependency["id"],
+		"title": dependency["title"],
+	}
 	assert store.release_remove(release["id"]) == {"id": release["id"]}
 
 	with store.database.connection() as connection:

@@ -6814,7 +6814,7 @@ def test_json_single_record_writes_keep_the_store_envelope(
 		(
 			["task", "remove", "tsk_first", "tsk_second"],
 			"task_remove",
-			["ID: tsk_first", "ID: tsk_second"],
+			["Removed task: First (tsk_first)", "Removed task: Second (tsk_second)"],
 		),
 		(
 			["task", "complete", "tsk_first", "tsk_second"],
@@ -6887,6 +6887,7 @@ def test_force_remove_passes_the_flag_and_returns_deleted_json(
 	data = [
 		{
 			"id": identifier,
+			"title": title,
 			"deleted": {
 				"chunks": [],
 				"notes": [],
@@ -6894,7 +6895,7 @@ def test_force_remove_passes_the_flag_and_returns_deleted_json(
 				"tasks": [identifier],
 			},
 		}
-		for identifier in ids
+		for identifier, title in zip(ids, ["First", "Second"])
 	]
 	arguments_seen: dict[str, object] = {}
 
@@ -6928,11 +6929,62 @@ def test_force_remove_passes_the_flag_and_returns_deleted_json(
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 
+def test_task_remove_json_names_the_deleted_task(
+	complete_records: tuple[Path, dict, dict], capsys
+) -> None:
+	database_path, task, chunk = complete_records
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"remove",
+				task["id"],
+				"--force",
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 0
+	)
+
+	removed = json.loads(capsys.readouterr().out)["data"]
+	assert removed["id"] == task["id"]
+	assert removed["title"] == task["title"]
+	assert removed["deleted"]["chunks"] == [chunk["id"]]
+
+
+def test_task_remove_human_output_names_one_task(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def task_remove(self, task_id, *, force):
+			assert task_id == "tsk_test"
+			assert force is False
+			return {"id": task_id, "title": "Sample task"}
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(["task", "remove", "tsk_test", "--database", str(tmp_path / "db")])
+		== 0
+	)
+
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert plain_output.splitlines()[1].endswith("Removed task: Sample task (tsk_test)")
+	assert plain_output.splitlines()[2:] == [""]
+
+
 def test_force_remove_human_output_groups_deleted_records(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
 	data = {
 		"id": "tsk_test",
+		"title": "Sample task",
 		"deleted": {
 			"chunks": ["chk_test"],
 			"notes": ["nte_test"],
@@ -6968,12 +7020,52 @@ def test_force_remove_human_output_groups_deleted_records(
 	)
 
 	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
-	assert "ID: tsk_test" in plain_output
+	assert next(line for line in plain_output.splitlines() if line.strip()).endswith(
+		"Removed task: Sample task (tsk_test)"
+	)
 	assert "Chunks: chk_test" in plain_output
 	assert "Notes: nte_test" in plain_output
 	assert "Dependencies: tsk_other -> tsk_test" in plain_output
 	assert "Tasks: tsk_test" in plain_output
 	assert "Unblocked tasks: tsk_ready" in plain_output
+
+
+def test_force_release_remove_human_output_stays_unchanged(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def release_remove(self, release_id, *, force):
+			assert release_id == "rel_test"
+			assert force is True
+			return {
+				"id": release_id,
+				"deleted": {"chunks": ["chk_test"], "tasks": ["tsk_test"]},
+				"unblocked_tasks": ["tsk_ready"],
+			}
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				"release",
+				"remove",
+				"rel_test",
+				"--force",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+
+	assert capsys.readouterr().out == (
+		"\nID: rel_test\nChunks: chk_test\nTasks: tsk_test\n"
+		"Unblocked tasks: tsk_ready\n\n"
+	)
 
 
 def test_human_task_complete_output_omits_null_release_id(

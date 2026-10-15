@@ -423,7 +423,9 @@ when any of these still refer to the task:
 The error names every blocking child ID and suggests `--force`. With
 `--force`, the task is removed with its chunks, notes, dependency edges,
 contract and file rows. Dependants blocked only by the removed task become
-ready. The human output lists the deleted records grouped by type.
+ready. The human output prints `Removed task: <title> (<id>)` for each task.
+With `--force`, it lists the deleted records grouped by type and any unblocked
+tasks below that line. The JSON result includes each removed task's title.
 The `--force` option still refuses to remove a task note that is superseded by
 a note outside the cascade, so the superseding note must be removed first.
 

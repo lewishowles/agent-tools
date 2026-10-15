@@ -74,6 +74,7 @@ _WRITE_ACTIONS = {
 	"edit": "Updated",
 	"move": "Moved",
 	"rename": "Renamed",
+	"remove": "Removed",
 	"start": "Started",
 	"unblock": "Unblocked",
 }
@@ -90,6 +91,7 @@ _CONCISE_WRITE_COMMANDS = {
 	"task edit",
 	"task move",
 	"task rename",
+	"task remove",
 	"task start",
 	"task unblock",
 	"chunk add",

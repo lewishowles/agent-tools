@@ -2083,6 +2083,10 @@ def _remove_task(
 	Without ``force`` the task must own no chunks, notes, or dependency edges.
 	With ``force`` those rows are deleted with the task, and any task that was
 	blocked only by it becomes ready, as it would on completion.
+
+	Returns the task's ID and title, so output can still name the task after
+	its row is gone. A forced removal also returns the deleted records and the
+	tasks it unblocked.
 	"""
 	validate_object_id(task_id, TASK_PREFIX)
 	task = _task_row(connection, task_id, project_id)
@@ -2106,7 +2110,7 @@ def _remove_task(
 		_delete_task_values(connection, task_id)
 		connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
-		return {"id": task_id}
+		return {"id": task_id, "title": task["title"]}
 
 	# Deleted records grouped by type so the release cascade can merge task results.
 	deleted = {
@@ -2151,6 +2155,7 @@ def _remove_task(
 
 	return {
 		"id": task_id,
+		"title": task["title"],
 		"deleted": deleted,
 		"unblocked_tasks": unblocked_tasks,
 	}
