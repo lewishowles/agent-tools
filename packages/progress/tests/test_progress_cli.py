@@ -1,5 +1,6 @@
 import json
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -1313,6 +1314,181 @@ def test_context_commands_pass_the_selected_task_to_the_store(
 		"ok": True,
 		"data": {"task_id": task_id},
 	}
+
+
+def test_context_get_shows_full_handoff_with_styled_heading_and_local_date(
+	monkeypatch,
+) -> None:
+	"""Show all handoff fields in order, with the task identity and local update time."""
+	spans = []
+	original_span = render_module.render_span
+
+	def record_span(value: str, tone: str = "info", weight: str | None = None) -> str:
+		"""Record the requested styling while keeping the real rendered output."""
+		spans.append((value, tone, weight))
+		return original_span(value, tone, weight)
+
+	monkeypatch.setattr(render_module, "render_span", record_span)
+	context = {
+		"project_id": "prj_test",
+		"task_id": "tsk_test",
+		"task_title": "Readable task",
+		"current_goal": "Finish the renderer.",
+		"previous_step": "Read the task details.",
+		"next_step": "Run the scoped checks.",
+		"standing_context": "Keep the JSON shape intact.",
+		"verify_with": "Run the progress tests.",
+		"stop_marker": "Stop after the receipt.",
+		"updated_at": "2026-10-06T09:27:00+00:00",
+	}
+
+	try:
+		with monkeypatch.context() as timezone_patch:
+			timezone_patch.setenv("TZ", "Europe/London")
+			time.tzset()
+			output = render_module.render("context get", context)
+	finally:
+		time.tzset()
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", output)
+
+	assert ("tsk_test", "accent", "bold") in spans
+	assert ("Readable task", "text", "bold") in spans
+	sections = (
+		("Current goal", "current_goal"),
+		("Previous step", "previous_step"),
+		("Next step", "next_step"),
+		("Standing context", "standing_context"),
+		("Verify with", "verify_with"),
+		("Stop marker", "stop_marker"),
+	)
+	for label, key in sections:
+		assert (label, "muted", "normal") in spans
+		assert (context[key], "text", "normal") in spans
+		assert f"{label}\n{context[key]}" in plain_output
+	assert plain_output.startswith("tsk_test Readable task\n\nCurrent goal\nFinish")
+	assert (
+		"Finish the renderer.\n\nPrevious step\nRead the task details." in plain_output
+	)
+	assert "Project: prj_test\nLast updated: 6 Oct 2026, 10:27" in plain_output
+	assert [plain_output.index(label) for label, _ in sections] == sorted(
+		plain_output.index(label) for label, _ in sections
+	)
+
+
+@pytest.mark.parametrize(
+	("fields", "expected", "absent"),
+	[
+		(
+			{"current_goal": "Keep this goal.", "next_step": "Run the tests."},
+			["Current goal\nKeep this goal.", "Next step\nRun the tests."],
+			["Previous step", "Standing context", "Verify with", "Stop marker"],
+		),
+		({"status": "not-set"}, ["No handoff recorded."], ["Last updated:"]),
+		(
+			{"current_goal": "", "next_step": ""},
+			["No handoff recorded."],
+			["Next step"],
+		),
+	],
+)
+def test_context_get_omits_empty_fields(
+	fields: dict[str, str], expected: list[str], absent: list[str]
+) -> None:
+	"""Show only recorded details, with one clear message for an empty handoff."""
+	output = render_module.render(
+		"context get",
+		{
+			"project_id": "prj_test",
+			"task_id": "tsk_test",
+			"task_title": "Task",
+			**fields,
+		},
+	)
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", output)
+
+	for value in expected:
+		assert value in plain_output
+	for value in absent:
+		assert value not in plain_output
+	assert plain_output.startswith("tsk_test Task\n\n")
+	assert "Project: prj_test" in plain_output
+
+
+def test_context_get_keeps_multiline_fields() -> None:
+	"""Keep paragraph breaks and list items on separate lines."""
+	output = render_module.render(
+		"context get",
+		{
+			"project_id": "prj_test",
+			"task_id": "tsk_test",
+			"current_goal": "First paragraph.\n\n- First item\n- Second item",
+		},
+	)
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", output)
+
+	assert (
+		"Current goal\nFirst paragraph.\n\n- First item\n- Second item" in plain_output
+	)
+
+
+def test_context_get_fetches_task_title_only_for_human_output(
+	complete_records, capsys
+) -> None:
+	"""Add the task title to the readable view without changing the stored JSON."""
+	database_path, task, _chunk = complete_records
+	arguments = [
+		"context",
+		"get",
+		"--task",
+		task["id"],
+		"--database",
+		str(database_path),
+	]
+
+	assert cli.main(arguments) == 0
+	human_output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert f"{task['id']} Complete command" in human_output
+	assert "No handoff recorded." in human_output
+
+	assert cli.main([*arguments, "--json"]) == 0
+	json_output = json.loads(capsys.readouterr().out)
+	assert json_output == {
+		"ok": True,
+		"data": ReadStore(Database(database_path)).context_get(task_id=task["id"]),
+	}
+	assert "task_title" not in json_output["data"]
+
+
+def test_context_get_project_handoff_uses_project_heading_without_task_lookup(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	"""Show the project ID alone when the handoff has no task."""
+	context = {
+		"project_id": "prj_test",
+		"task_id": None,
+		"current_goal": "Keep the project ready.",
+	}
+
+	class _ReadStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def context_get(self, *, task_id):
+			assert task_id is None
+			return context
+
+		def task_get(self, task_id):
+			pytest.fail("A project handoff must not look up a task title")
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+	arguments = ["context", "get", "--database", str(tmp_path / "db")]
+
+	assert cli.main(arguments) == 0
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+
+	assert plain_output.startswith(
+		"\nprj_test\n\nCurrent goal\nKeep the project ready."
+	)
 
 
 @pytest.mark.parametrize(

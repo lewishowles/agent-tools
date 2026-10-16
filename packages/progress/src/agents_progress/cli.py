@@ -1842,7 +1842,7 @@ def _run_command(
 			"context set",
 		),
 		("context", "get"): lambda: (
-			ReadStore(database).context_get(task_id=args.task_id),
+			_run_context_get(args, database, human_output),
 			"context get",
 		),
 	}
@@ -1864,6 +1864,24 @@ def _run_command(
 				ProjectStore(database).record_checkout()
 
 	return data, command
+
+
+def _run_context_get(
+	args: argparse.Namespace, database: Database, human_output: bool
+) -> object:
+	"""Load a handoff, adding its task's title for the human view.
+
+	The title is not part of the stored handoff, so --json output leaves it out.
+	A project-level handoff has no task and gets no title.
+	"""
+	store = ReadStore(database)
+	context = store.context_get(task_id=args.task_id)
+
+	if human_output and context.get("task_id"):
+		task = store.task_get(str(context["task_id"]))
+		context = {**context, "task_title": task["title"]}
+
+	return context
 
 
 def _run_chunk_list(args: argparse.Namespace, database: Database) -> object:

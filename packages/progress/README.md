@@ -952,6 +952,29 @@ Read the selected handoff with:
 progress context get [--task <task_id>] [--json] [--database <path>]
 ```
 
+For a task with a handoff, the human output shows the task title, each recorded
+field, and the last update in your local time zone. Empty fields are omitted:
+
+```text
+tsk_aaaaaaaaaaaaaaaaaaaaaa Finish the task
+
+Current goal
+Finish the renderer.
+
+Next step
+Run the progress tests.
+
+----------------------------------------
+
+Project: prj_pppppppppppppppppppppp
+Last updated: 16 Oct 2026, 10:27
+```
+
+For a project-level handoff, the project ID appears alone as the heading.
+
+When no handoff has been recorded, the fields are replaced by
+`No handoff recorded.` Use `--json` for the full record, including the exact timestamp.
+
 ## Listing
 
 The list commands support pagination with `--limit` and `--offset`. Task lists

@@ -2,6 +2,7 @@
 
 import re
 import textwrap
+from datetime import datetime
 from pathlib import Path
 
 from .style import (
@@ -17,6 +18,16 @@ from .style import (
 
 # Column width the long prose fields wrap to.
 _ROW_WRAP_WIDTH = 72
+
+# Fields shown in both the standalone handoff and task or chunk read views.
+_HANDOFF_FIELDS = (
+	("Current goal", "current_goal"),
+	("Previous step", "previous_step"),
+	("Next step", "next_step"),
+	("Standing context", "standing_context"),
+	("Verify with", "verify_with"),
+	("Stop marker", "stop_marker"),
+)
 
 # Match ANSI control sequences so styled text can be measured by its width.
 _ANSI_ESCAPE_PATTERN = re.compile(
@@ -140,6 +151,8 @@ def render(command: str, data: object) -> str:
 		return _render_release(data)
 	if command == "task get" and isinstance(data, dict):
 		return _render_task_get(data)
+	if command == "context get" and isinstance(data, dict):
+		return _render_context_get(data)
 	if command == "chunk get" and isinstance(data, dict):
 		return _render_chunk(data)
 	if command == "show note" and isinstance(data, dict):
@@ -633,6 +646,64 @@ def _render_task_get(task: dict[str, object]) -> str:
 	return "\n\n".join([_render_task(task), _render_read_context(task)])
 
 
+def _render_context_get(context: dict[str, object]) -> str:
+	"""Render one handoff for context get.
+
+	The heading shows the task ID and title, or the project ID alone for a
+	project-level handoff. Each recorded field follows under its label, empty
+	fields are left out, and the project ID and last update time close the view.
+	"""
+	owner_id = context.get("task_id") or context.get("project_id") or ""
+	title = context.get("task_title")
+	heading = render_span(str(owner_id), "accent", weight="bold")
+	if title:
+		heading += " " + render_span(str(title), "text", weight="bold")
+
+	blocks = [heading]
+
+	if context.get("status") != "not-set":
+		for label, key in _HANDOFF_FIELDS:
+			value = context.get(key)
+			if value:
+				wrapped_value = "\n".join(
+					textwrap.fill(line, _ROW_WRAP_WIDTH)
+					for line in str(value).split("\n")
+				)
+
+				blocks.append(
+					render_span(label, "muted", weight="normal")
+					+ "\n"
+					+ render_span(wrapped_value, "text", weight="normal")
+				)
+
+	if len(blocks) == 1:
+		blocks.append(render_span("No handoff recorded.", "muted", weight="normal"))
+
+	footer = [
+		render_span(
+			f"Project: {context.get('project_id', '')}", "muted", weight="normal"
+		)
+	]
+	updated_at = context.get("updated_at")
+	if updated_at:
+		footer.append(
+			render_span(
+				f"Last updated: {_format_local_date(str(updated_at))}",
+				"muted",
+				weight="normal",
+			)
+		)
+	blocks.extend([render_divider(divider_colour="muted"), "\n".join(footer)])
+
+	return "\n\n".join(blocks)
+
+
+def _format_local_date(value: str) -> str:
+	"""Show a stored ISO timestamp as local time, such as 16 Oct 2026, 10:27."""
+	local = datetime.fromisoformat(value).astimezone()
+	return f"{local.day} {local:%b %Y, %H:%M}"
+
+
 def _render_read_context(data: dict[str, object]) -> str:
 	"""Render the project, release, notes and handoff for a task or chunk read."""
 	blocks = []
@@ -664,14 +735,7 @@ def _render_read_context(data: dict[str, object]) -> str:
 	if isinstance(handoff, dict) and handoff.get("status") != "not-set":
 		rows = [
 			{"label": label, "value": str(handoff[key])}
-			for label, key in (
-				("Current goal", "current_goal"),
-				("Previous step", "previous_step"),
-				("Next step", "next_step"),
-				("Standing context", "standing_context"),
-				("Verify with", "verify_with"),
-				("Stop marker", "stop_marker"),
-			)
+			for label, key in _HANDOFF_FIELDS
 			if handoff.get(key)
 		]
 		blocks.append(
