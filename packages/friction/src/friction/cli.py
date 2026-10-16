@@ -206,7 +206,7 @@ def _human_output(
 		return "\n".join(
 			style.row(
 				str(item["count"]),
-				f"{item['category']}  {item['cwd']}  {item['detail']}",
+				_summary_row_text(item),
 			)
 			for item in data
 		)
@@ -269,6 +269,17 @@ def _human_output(
 			style.row("Integrity", str(data["integrity_check"])),
 		)
 	)
+
+
+def _summary_row_text(item: dict[str, object]) -> str:
+	"""Return the text after a summary row's count: family, class, and latest example for tool errors; category, directory, and detail otherwise."""
+	if item["category"] == "tool-error":
+		return (
+			f"tool-error  {item['command_family']}  {item['error_class']}  "
+			f"(latest: {item['example']})"
+		)
+
+	return f"{item['category']}  {item['cwd']}  {item['detail']}"
 
 
 def _run_command(

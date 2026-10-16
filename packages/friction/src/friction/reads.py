@@ -1,8 +1,10 @@
 """Read friction events from SQLite, either grouped (summary) or row by row (list)."""
 
+import sqlite3
 from collections.abc import Sequence
 
 from .database import Database
+from .tool_errors import classify_tool_error
 
 # Categories that stay hidden unless a caller explicitly includes them.
 AUTOMATED_CATEGORIES = frozenset({"check-fail", "tool-error"})
@@ -40,7 +42,10 @@ def summary(
 	include_check_fails: bool = False,
 	include_tool_errors: bool = False,
 ) -> list[dict[str, object]]:
-	"""Return active events grouped by category, directory, and exact detail."""
+	"""Count active events by group, most frequent first.
+
+	Tool errors group by command family and error class across directories, with the most recent entry's detail as the example. Every other category groups by category, directory, and exact detail.
+	"""
 	category_conditions, parameters = _category_conditions(
 		categories,
 		include_check_fails,
@@ -69,14 +74,57 @@ def summary(
 				cwd,
 				detail
 			FROM events
-			WHERE {where_clause}
+			WHERE {where_clause} AND events.category != 'tool-error'
 			GROUP BY category, cwd, detail
-			ORDER BY count DESC, category, cwd, detail
+			""",
+			parameters,
+		).fetchall()
+		tool_rows = connection.execute(
+			f"""
+			SELECT detail, tool_name, discriminator, error
+			FROM events
+			WHERE {where_clause} AND events.category = 'tool-error'
+			ORDER BY timestamp_utc DESC, id DESC
 			""",
 			parameters,
 		).fetchall()
 
-	return [dict(row) for row in rows]
+	results = [dict(row) for row in rows] + _group_tool_errors(tool_rows)
+	return sorted(
+		results,
+		key=lambda item: (
+			-item["count"],
+			item["category"],
+			item.get("command_family", item.get("cwd")),
+			item.get("error_class", item.get("detail")),
+		),
+	)
+
+
+def _group_tool_errors(rows: Sequence[sqlite3.Row]) -> list[dict[str, object]]:
+	"""Count tool-error rows by command family and error class.
+
+	Expects rows newest first, so each group's example is its most recent detail.
+	"""
+	groups: dict[tuple[str, str], dict[str, object]] = {}
+	for row in rows:
+		family, error_class = classify_tool_error(
+			row["tool_name"], row["discriminator"], row["error"]
+		)
+
+		key = (family, error_class)
+		if key not in groups:
+			groups[key] = {
+				"count": 0,
+				"category": "tool-error",
+				"command_family": family,
+				"error_class": error_class,
+				"example": row["detail"],
+			}
+
+		groups[key]["count"] += 1
+
+	return list(groups.values())
 
 
 def list_events(

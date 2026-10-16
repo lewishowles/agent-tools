@@ -54,7 +54,7 @@ friction summary
 1  wrong-approach  /Users/you/project-a  tried a manual retry loop instead of fixing the root cause
 ```
 
-Rows group by exact category, working directory, and detail, sorted by count. `check-fail` and `tool-error` are excluded by default (`--include-check-fails`, `--include-tool-errors` bring them back), and `--category <name>` filters to one or more categories (repeat the flag to select several).
+Rows sort by count, highest first. Every category except `tool-error` groups by exact category, working directory, and detail. With `--include-tool-errors`, tool errors group by command family and error class across directories, with the latest matching detail as an example. For Bash, the family is the command's program name after leading directory changes, assignments, and common wrappers; for other tools, it is the tool name. Error classes use the exit code or the first sentence, with numbers shown as `N` and paths as `PATH`. Missing values group under `unknown`. In JSON, each tool-error row has `count`, `category`, `command_family`, `error_class`, and `example`, without `cwd` or `detail`. `check-fail` and `tool-error` are excluded by default (`--include-check-fails`, `--include-tool-errors` bring them back), and `--category <name>` filters to one or more categories (repeat the flag to select several).
 
 ```bash
 friction list --since 2026-09-01 --until 2026-09-04

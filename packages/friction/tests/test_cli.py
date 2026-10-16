@@ -379,6 +379,230 @@ def test_summary_excludes_automated_categories_until_their_flags_are_passed(
 	]
 
 
+def test_summary_groups_tool_errors_across_directories_and_keeps_other_rows(
+	tmp_path, capsys
+) -> None:
+	database_path = tmp_path / "friction.db"
+	with Database(database_path).transaction() as connection:
+		connection.executemany(
+			"""
+			INSERT INTO events (
+				timestamp_utc, category, cwd, detail, source,
+				tool_name, discriminator, error
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			""",
+			(
+				(
+					"2026-09-03T09:00:00+00:00",
+					"tool-error",
+					"/one",
+					"first git failure",
+					"claude-hook",
+					"Bash",
+					"git diff",
+					"Exit code 1",
+				),
+				(
+					"2026-09-03T10:00:00+00:00",
+					"tool-error",
+					"/two",
+					"latest git failure",
+					"claude-hook",
+					"Bash",
+					"git status",
+					"Exit code 1",
+				),
+				(
+					"2026-09-03T11:00:00+00:00",
+					"tool-error",
+					"/three",
+					"resolved git failure",
+					"claude-hook",
+					"Bash",
+					"git log",
+					"Exit code 1",
+				),
+				(
+					"2026-09-03T09:00:00+00:00",
+					"tool-error",
+					"/one",
+					"missing fields",
+					"manual",
+					None,
+					None,
+					None,
+				),
+				(
+					"2026-09-03T09:00:00+00:00",
+					"rule-ignored",
+					"/one",
+					"same detail",
+					"manual",
+					None,
+					None,
+					None,
+				),
+				(
+					"2026-09-03T09:00:00+00:00",
+					"rule-ignored",
+					"/two",
+					"same detail",
+					"manual",
+					None,
+					None,
+					None,
+				),
+				(
+					"2026-09-03T09:00:00+00:00",
+					"check-fail",
+					"/one",
+					"check failed",
+					"manual",
+					None,
+					None,
+					None,
+				),
+			),
+		)
+		connection.execute(
+			"""
+			INSERT INTO resolutions (category, pattern, resolved_at_utc, reference)
+			VALUES (?, ?, ?, ?)
+			""",
+			(
+				"tool-error",
+				"resolved git failure",
+				"2026-09-03T12:00:00+00:00",
+				"fixed",
+			),
+		)
+
+	assert (
+		cli.main(
+			[
+				"summary",
+				"--include-tool-errors",
+				"--include-check-fails",
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 0
+	)
+	response = json.loads(capsys.readouterr().out)
+
+	assert response == {
+		"ok": True,
+		"data": [
+			{
+				"count": 2,
+				"category": "tool-error",
+				"command_family": "git",
+				"error_class": "exit 1",
+				"example": "latest git failure",
+			},
+			{
+				"count": 1,
+				"category": "check-fail",
+				"cwd": "/one",
+				"detail": "check failed",
+			},
+			{
+				"count": 1,
+				"category": "rule-ignored",
+				"cwd": "/one",
+				"detail": "same detail",
+			},
+			{
+				"count": 1,
+				"category": "rule-ignored",
+				"cwd": "/two",
+				"detail": "same detail",
+			},
+			{
+				"count": 1,
+				"category": "tool-error",
+				"command_family": "unknown",
+				"error_class": "unknown",
+				"example": "missing fields",
+			},
+		],
+	}
+
+	assert (
+		cli.main(
+			[
+				"summary",
+				"--include-tool-errors",
+				"--include-check-fails",
+				"--database",
+				str(database_path),
+			]
+		)
+		== 0
+	)
+	assert "1  rule-ignored  /one  same detail" in capsys.readouterr().out
+
+	assert (
+		cli.main(
+			[
+				"summary",
+				"--include-tool-errors",
+				"--category",
+				"tool-error",
+				"--database",
+				str(database_path),
+			]
+		)
+		== 0
+	)
+	human_output = capsys.readouterr().out
+	assert "2  tool-error  git  exit 1  (latest: latest git failure)" in human_output
+	assert "1  tool-error  unknown  unknown  (latest: missing fields)" in human_output
+	assert "rule-ignored" not in human_output
+
+
+def test_summary_orders_equal_count_tool_errors_by_family_and_class(
+	tmp_path, capsys
+) -> None:
+	database_path = tmp_path / "friction.db"
+	with Database(database_path).transaction() as connection:
+		connection.executemany(
+			"""
+			INSERT INTO events (
+				timestamp_utc, category, cwd, detail, source,
+				tool_name, discriminator, error
+			) VALUES (?, 'tool-error', '/workspace', ?, 'claude-hook', ?, ?, ?)
+			""",
+			(
+				("2026-09-03", "third", "Bash", "git log", "Exit code 3"),
+				("2026-09-03", "second", "Bash", "git diff", "Exit code 2"),
+				("2026-09-03", "first", "Read", "/workspace/file", "File missing"),
+			),
+		)
+
+	assert (
+		cli.main(
+			[
+				"summary",
+				"--include-tool-errors",
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 0
+	)
+	rows = json.loads(capsys.readouterr().out)["data"]
+
+	assert [(row["command_family"], row["error_class"]) for row in rows] == [
+		("Read", "File missing"),
+		("git", "exit 2"),
+		("git", "exit 3"),
+	]
+
+
 def test_list_returns_the_raw_event_envelope_in_timestamp_order(
 	tmp_path, capsys
 ) -> None:
