@@ -45,10 +45,14 @@ name = "agents-progress"
 source = { editable = "packages/progress" }
 dependencies = [
     { name = "prompt-toolkit" },
+    { name = "questionary" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "prompt-toolkit", specifier = ">=3.0" }]
+requires-dist = [
+    { name = "prompt-toolkit", specifier = ">=3.0" },
+    { name = "questionary", specifier = ">=2.1.1" },
+]
 
 [[package]]
 name = "colorama"

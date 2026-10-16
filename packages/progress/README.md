@@ -343,10 +343,12 @@ The new task is `ready` when its dependencies allow it to start, or `blocked`
 when it still has unresolved dependencies.
 
 Running `progress task add` at a real terminal without every required flag
-prompts for whatever is missing, field by field, instead of raising the usual
-missing-argument error. Already-supplied flags are skipped; optional fields
-can be left blank by pressing Enter. Piped or non-interactive stdin (scripts,
-CI, agents) always gets the missing-argument error instead of a prompt.
+asks for the missing required fields first and asks again if an answer is blank.
+It then shows a checkbox of optional fields that were not supplied as flags and
+asks only for the ones selected. Space ticks a field and Enter confirms;
+confirming with none ticked finishes straight away.
+Piped or non-interactive stdin (scripts, CI, agents) gets the usual
+missing-argument error instead of a prompt.
 
 ### `progress task move`
 
@@ -633,7 +635,8 @@ progress chunk add --task <task_id> --title <title> --description <description> 
   a position of 0 becomes 1
 
 Running `progress chunk add` at a real terminal without every required flag
-prompts for whatever is missing, the same way `progress task add` does.
+asks for missing required fields, then offers optional fields in a checkbox,
+the same way `progress task add` does.
 
 ### `progress chunk move`
 

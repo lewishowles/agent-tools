@@ -10,6 +10,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import TextIO
 
+import questionary
 from prompt_toolkit import prompt
 
 from . import __version__
@@ -133,12 +134,13 @@ class _ArgumentSpec:
 
 @dataclass(frozen=True)
 class _PromptArgument:
-	"""One argparse flag the interactive add prompt can ask for, paired with its prompt hint."""
+	"""One argparse flag the interactive add prompt can ask for, with its hint and an optional label to show instead of the flag name."""
 
 	names: tuple[str, ...]
 	hint: str
 	required: bool = False
 	repeatable: bool = False
+	label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -949,41 +951,70 @@ def _command_words(arguments: list[str]) -> list[str]:
 
 # Fields `task add` prompts for, in the same order as its parser flags.
 _TASK_ADD_PROMPT_ARGUMENTS = (
-	_PromptArgument(("--slug",), "short identifier stored on the task", required=True),
-	_PromptArgument(("--title",), "display title", required=True),
-	_PromptArgument(("--overview",), "non-empty task summary", required=True),
+	_PromptArgument(
+		("--slug",), "A short name for commands, for example fix-login", required=True
+	),
+	_PromptArgument(
+		("--title",),
+		"The task name people will read, for example 'Fix login errors'",
+		required=True,
+	),
+	_PromptArgument(
+		("--overview",), "What this task will achieve and why it matters", required=True
+	),
 	_PromptArgument(
 		("--contract-step",),
-		"non-empty task contract step",
+		"One specific result you can check, for example 'a blank title is asked again'; you can add several",
 		required=True,
 		repeatable=True,
+		label="Done when",
 	),
-	_PromptArgument(("--file",), "optional file covered by the task", repeatable=True),
 	_PromptArgument(
-		("--split-rationale",),
-		"reason for splitting the task; doctor expects every task to have one",
-	),
-	_PromptArgument(("--verification",), "optional verification instructions"),
-	_PromptArgument(("--release", "--release-id"), "associate the task with a release"),
-	_PromptArgument(
-		("--depends-on", "--dependency"),
-		"task ID dependency",
+		("--file",),
+		"A file this task will change, for example src/app.py",
 		repeatable=True,
 	),
-	_PromptArgument(("--position",), "optional ordering position"),
+	_PromptArgument(
+		("--split-rationale",),
+		"Why the work is split into these chunks, or kept as one; progress doctor warns when this is missing",
+	),
+	_PromptArgument(
+		("--verification",),
+		"How to check the work, for example 'run the progress tests'",
+	),
+	_PromptArgument(
+		("--release", "--release-id"),
+		"The release this task belongs to; enter its release ID",
+	),
+	_PromptArgument(
+		("--depends-on", "--dependency"),
+		"A task that must finish first; enter its task ID",
+		repeatable=True,
+	),
+	_PromptArgument(
+		("--position",), "Where to place this task in the queue, for example 2"
+	),
 )
 
 # Fields `chunk add` prompts for, in the same order as its parser flags.
 _CHUNK_ADD_PROMPT_ARGUMENTS = (
-	_PromptArgument(("--task",), "task ID that owns the chunk", required=True),
-	_PromptArgument(("--title",), "display title", required=True),
-	_PromptArgument(("--description",), "non-empty chunk description", required=True),
 	_PromptArgument(
-		("--review-question",),
-		"the one question a reviewer answers about this chunk",
+		("--task",), "The task this chunk belongs to; enter its task ID", required=True
+	),
+	_PromptArgument(
+		("--title",),
+		"The chunk name people will read, for example 'Add prompt tests'",
 		required=True,
 	),
-	_PromptArgument(("--position",), "optional ordering position"),
+	_PromptArgument(("--description",), "What work this chunk covers", required=True),
+	_PromptArgument(
+		("--review-question",),
+		"One question a reviewer can answer about the finished work",
+		required=True,
+	),
+	_PromptArgument(
+		("--position",), "Where to place this chunk in the task, for example 2"
+	),
 )
 
 # Looks up a command's prompt fields by its first two argv words.
@@ -1010,10 +1041,20 @@ def _argument_is_present(arguments: list[str], names: tuple[str, ...]) -> bool:
 	)
 
 
-def _prompt_value(argument: _PromptArgument, *, repeatable_value: bool = False) -> str:
-	"""Ask for one field's value, showing its hint and, for optional fields, how to skip it."""
+def _prompt_label(argument: _PromptArgument) -> str:
+	"""Return the field name shown in the checkbox and at the value prompt: its label, or the flag name in plain words."""
+	return (
+		argument.label
+		or argument.names[0].removeprefix("--").replace("-", " ").capitalize()
+	)
+
+
+def _prompt_value(
+	argument: _PromptArgument, *, repeatable_value: bool = False
+) -> str | None:
+	"""Ask for one field's value; return None when stdin closes during the prompt."""
 	names = "/".join(argument.names)
-	field_name = argument.names[0].removeprefix("--")
+	field_name = _prompt_label(argument)
 	optional_hint = ""
 	if not argument.required or repeatable_value:
 		optional_hint = (
@@ -1036,9 +1077,7 @@ def _prompt_value(argument: _PromptArgument, *, repeatable_value: bool = False) 
 		# 130 is the conventional exit status for a command ended by SIGINT.
 		raise SystemExit(130)
 	except EOFError:
-		# A closed stdin mid-prompt reads as a blank answer, so required-field
-		# validation reports it instead of the prompt crashing.
-		value = ""
+		return None
 
 	return value
 
@@ -1062,25 +1101,67 @@ def _should_prompt_add_arguments(arguments: list[str]) -> bool:
 
 
 def _prompt_add_arguments(arguments: list[str]) -> list[str]:
-	"""Prompt for each missing field and append the answers to argv, so parsing and validation run unchanged."""
+	"""Ask for missing required fields, then for the optional fields the user ticks, and append the answers to argv so parsing and validation run unchanged."""
 	prompt_arguments = _prompt_arguments_for_command(arguments)
 	prompted_arguments = list(arguments)
 
 	for argument in prompt_arguments:
-		if _argument_is_present(prompted_arguments, argument.names):
+		if not argument.required or _argument_is_present(
+			prompted_arguments, argument.names
+		):
 			continue
 
-		if argument.required:
-			prompted_arguments.extend((argument.names[0], _prompt_value(argument)))
-			if not argument.repeatable:
-				continue
-			has_value = True
-		else:
-			has_value = False
+		while True:
+			value = _prompt_value(argument)
+			if value is None:
+				# A closed stdin ends the form; let the parser handle the empty value.
+				prompted_arguments.extend((argument.names[0], ""))
+				return prompted_arguments
+			if value.strip():
+				prompted_arguments.extend((argument.names[0], value))
+				break
+			print("This field cannot be blank. Please enter a value.")
 
+		if argument.repeatable:
+			while True:
+				value = _prompt_value(argument, repeatable_value=True)
+				if value is None or not value.strip():
+					break
+				prompted_arguments.extend((argument.names[0], value))
+
+	optional_arguments = [
+		argument
+		for argument in prompt_arguments
+		if not argument.required
+		and not _argument_is_present(prompted_arguments, argument.names)
+	]
+	if not optional_arguments:
+		return prompted_arguments
+
+	choices = [
+		questionary.Choice(
+			title=_prompt_label(argument),
+			value=argument.names[0],
+		)
+		for argument in optional_arguments
+	]
+	try:
+		selected = questionary.checkbox(
+			"Which optional fields would you like to add?", choices=choices
+		).unsafe_ask()
+	except (KeyboardInterrupt, EOFError):
+		print()
+		print("Cancelled.")
+		raise SystemExit(130)
+
+	for argument in optional_arguments:
+		if argument.names[0] not in selected:
+			continue
+
+		has_value = False
 		while True:
 			value = _prompt_value(argument, repeatable_value=has_value)
-			if not value:
+			if not value or not value.strip():
 				break
 
 			prompted_arguments.extend((argument.names[0], value))

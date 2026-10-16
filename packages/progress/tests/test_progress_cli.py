@@ -1794,7 +1794,29 @@ def test_multi_id_write_failure_names_the_failing_id(
 		assert failing_id in _stderr_error_message(output.err)
 
 
-def test_task_add_prompts_for_required_and_optional_arguments(
+def _fake_checkbox(answer, choices_seen=None):
+	"""Return a stand-in for questionary.checkbox that answers with `answer`, or raises it when it is an exception, and copies the offered choices into `choices_seen` when given."""
+
+	class _Checkbox:
+		"""A checkbox question whose answer is fixed by the test."""
+
+		def unsafe_ask(self):
+			"""Return the chosen fields or interrupt the prompt."""
+			if isinstance(answer, BaseException):
+				raise answer
+			return answer
+
+	def fake_checkbox(message, *, choices):
+		"""Check the question text, record the offered choices and return the fixed question."""
+		assert message == "Which optional fields would you like to add?"
+		if choices_seen is not None:
+			choices_seen.extend(choices)
+		return _Checkbox()
+
+	return fake_checkbox
+
+
+def test_task_add_prompts_for_required_and_selected_optional_arguments(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
 	data = {"id": "tsk_test"}
@@ -1805,10 +1827,14 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 			"Task title",
 			"Task overview",
 			"Task contract step",
-			*([""] * 7),
+			"  ",
+			"src/app.py",
+			"",
+			"Run the progress tests",
 		]
 	)
 	prompts: list[str] = []
+	choices_seen = []
 
 	class _WriteStore:
 		def __init__(self, database) -> None:
@@ -1826,6 +1852,11 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 	monkeypatch.setattr(cli, "render", lambda command, data: "")
 	monkeypatch.setattr(cli, "prompt", fake_input)
 	monkeypatch.setattr(
+		cli.questionary,
+		"checkbox",
+		_fake_checkbox(["--file", "--verification"], choices_seen),
+	)
+	monkeypatch.setattr(
 		cli.sys,
 		"stdin",
 		type("_InteractiveStdin", (), {"isatty": lambda self: True})(),
@@ -1838,25 +1869,38 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 		"title": "Task title",
 		"overview": "Task overview",
 		"contract": ["Task contract step"],
-		"files": None,
+		"files": ["src/app.py"],
 		"split_rationale": None,
-		"verification": "",
+		"verification": "Run the progress tests",
 		"release_id": None,
 		"depends_on": [],
 		"position": None,
 	}
 	assert prompts == [
-		"slug: ",
-		"title: ",
-		"overview: ",
-		"contract-step: ",
-		"contract-step: ",
-		"file: ",
-		"split-rationale: ",
-		"verification: ",
-		"release: ",
-		"depends-on: ",
-		"position: ",
+		"Slug: ",
+		"Title: ",
+		"Overview: ",
+		"Done when: ",
+		"Done when: ",
+		"File: ",
+		"File: ",
+		"Verification: ",
+	]
+	assert [choice.value for choice in choices_seen] == [
+		"--file",
+		"--split-rationale",
+		"--verification",
+		"--release",
+		"--depends-on",
+		"--position",
+	]
+	assert [choice.title for choice in choices_seen] == [
+		"File",
+		"Split rationale",
+		"Verification",
+		"Release",
+		"Depends on",
+		"Position",
 	]
 
 	output = capsys.readouterr()
@@ -1864,19 +1908,12 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 	assert all(
 		f") {hint}" in output.out
 		for hint in (
-			"Short identifier stored on the task",
-			"Display title",
-			"Non-empty task summary",
-			"Non-empty task contract step",
-			"Optional file covered by the task; press Enter to skip",
-			(
-				"Reason for splitting the task; doctor expects every task "
-				"to have one; press Enter to skip"
-			),
-			"Optional verification instructions; press Enter to skip",
-			"Associate the task with a release; press Enter to skip",
-			"Task ID dependency; press Enter to skip",
-			"Optional ordering position; press Enter to skip",
+			"A short name for commands, for example fix-login",
+			"The task name people will read, for example 'Fix login errors'",
+			"What this task will achieve and why it matters",
+			"One specific result you can check, for example 'a blank title is asked again'; you can add several",
+			"A file this task will change, for example src/app.py",
+			"How to check the work, for example 'run the progress tests'",
 		)
 	)
 	assert all(
@@ -1887,14 +1924,10 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 			"--overview",
 			"--contract-step",
 			"--file",
-			"--split-rationale",
 			"--verification",
-			"--release/--release-id",
-			"--depends-on/--dependency",
-			"--position",
 		)
 	)
-	assert output.out.count("press Enter to skip") == 6
+	assert output.out.count("press Enter to skip") == 2
 	# render is stubbed empty here, so main() adds only its blank-line frame and
 	# the Next hint after the guided prompts. Check spacing on the prompt section.
 	prompt_section, _, next_hint = output.out.partition("\n\n\n\nNext: ")
@@ -1903,13 +1936,13 @@ def test_task_add_prompts_for_required_and_optional_arguments(
 	assert prompt_section.count("\n\n") == len(prompts) - 1
 
 
-def test_chunk_add_prompts_for_required_and_optional_arguments(
+def test_chunk_add_asks_no_optional_field_when_none_is_ticked(
 	tmp_path: Path, monkeypatch
 ) -> None:
 	data = {"id": "chk_test", "task_id": "tsk_test"}
 	arguments_seen: dict[str, object] = {}
 	prompt_values = iter(
-		["tsk_test", "Chunk title", "Chunk description", "Does it work?", ""]
+		["tsk_test", "Chunk title", "Chunk description", "Does it work?"]
 	)
 
 	class _WriteStore:
@@ -1923,6 +1956,7 @@ def test_chunk_add_prompts_for_required_and_optional_arguments(
 	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
 	monkeypatch.setattr(cli, "render", lambda command, data: "")
 	monkeypatch.setattr(cli, "prompt", lambda prompt: next(prompt_values))
+	monkeypatch.setattr(cli.questionary, "checkbox", _fake_checkbox([]))
 	monkeypatch.setattr(
 		cli.sys,
 		"stdin",
@@ -1952,10 +1986,10 @@ def test_prompt_value_uses_editable_prompt(monkeypatch) -> None:
 
 	assert cli._prompt_value(argument) == "task-slug"
 
-	assert prompts == ["slug: "]
+	assert prompts == ["Slug: "]
 
 
-def test_prompt_value_treats_eof_as_a_blank_answer(monkeypatch) -> None:
+def test_prompt_value_reports_eof(monkeypatch) -> None:
 	argument = cli._PromptArgument(("--slug",), "short identifier", required=True)
 
 	def raise_eof(prompt: str) -> str:
@@ -1963,7 +1997,7 @@ def test_prompt_value_treats_eof_as_a_blank_answer(monkeypatch) -> None:
 
 	monkeypatch.setattr(cli, "prompt", raise_eof)
 
-	assert cli._prompt_value(argument) == ""
+	assert cli._prompt_value(argument) is None
 
 
 def test_prompt_value_exits_130_when_cancelled(capsys, monkeypatch) -> None:
@@ -1979,6 +2013,81 @@ def test_prompt_value_exits_130_when_cancelled(capsys, monkeypatch) -> None:
 
 	assert error.value.code == 130
 	assert capsys.readouterr().out.endswith("Cancelled.\n")
+
+
+def test_checkbox_exits_130_with_one_cancellation_message(capsys, monkeypatch) -> None:
+	"""Cancel the optional-field checkbox without printing a second notice."""
+	values = iter(["tsk_test", "Chunk title", "Description", "Review question"])
+	monkeypatch.setattr(cli, "prompt", lambda label: next(values))
+	monkeypatch.setattr(
+		cli.questionary, "checkbox", _fake_checkbox(KeyboardInterrupt())
+	)
+
+	with pytest.raises(SystemExit) as error:
+		cli._prompt_add_arguments(["chunk", "add"])
+
+	assert error.value.code == 130
+	assert capsys.readouterr().out.count("Cancelled.\n") == 1
+
+
+@pytest.mark.parametrize(
+	("command", "answers", "expected_flags"),
+	[
+		(
+			["task", "add"],
+			[" ", "task-slug", "", "Task title", "Overview", "Done", ""],
+			["--slug", "--title", "--overview", "--contract-step"],
+		),
+		(
+			["chunk", "add"],
+			["", "tsk_test", "Chunk title", " ", "Description", "Question"],
+			["--task", "--title", "--description", "--review-question"],
+		),
+	],
+)
+def test_add_prompts_retry_blank_required_answers(
+	monkeypatch,
+	capsys,
+	command: list[str],
+	answers: list[str],
+	expected_flags: list[str],
+) -> None:
+	values = iter(answers)
+	monkeypatch.setattr(cli, "prompt", lambda label: next(values))
+	monkeypatch.setattr(cli.questionary, "checkbox", _fake_checkbox([]))
+
+	result = cli._prompt_add_arguments(command)
+
+	assert [result[index] for index in range(2, len(result), 2)] == expected_flags
+	assert all(result[index].strip() for index in range(3, len(result), 2))
+	assert capsys.readouterr().out.count("This field cannot be blank") == 2
+
+
+def test_add_prompt_skips_checkbox_when_all_optional_flags_are_supplied(
+	monkeypatch,
+) -> None:
+	arguments = [
+		"chunk",
+		"add",
+		"--position",
+		"2",
+		"--task",
+		"tsk_test",
+		"--title",
+		"Chunk title",
+		"--description",
+		"Description",
+	]
+	monkeypatch.setattr(cli, "prompt", lambda label: "Can a reviewer check this?")
+	monkeypatch.setattr(
+		cli.questionary,
+		"checkbox",
+		lambda message, *, choices: pytest.fail("No optional fields remain"),
+	)
+
+	result = cli._prompt_add_arguments(arguments)
+
+	assert result[-2:] == ["--review-question", "Can a reviewer check this?"]
 
 
 @pytest.mark.parametrize("help_flag", ["--help", "-h"])
@@ -2016,7 +2125,7 @@ def test_add_prompt_skips_arguments_already_supplied(
 			"Task title",
 			"Task overview",
 			"Task contract step",
-			*([""] * 7),
+			"",
 		]
 	)
 
@@ -2034,6 +2143,7 @@ def test_add_prompt_skips_arguments_already_supplied(
 	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
 	monkeypatch.setattr(cli, "render", lambda command, data: "")
 	monkeypatch.setattr(cli, "prompt", fake_input)
+	monkeypatch.setattr(cli.questionary, "checkbox", _fake_checkbox([]))
 	monkeypatch.setattr(
 		cli.sys,
 		"stdin",
@@ -2055,10 +2165,10 @@ def test_add_prompt_skips_arguments_already_supplied(
 	)
 
 	output = capsys.readouterr()
-	assert prompts[0] == "title: "
-	assert all(prompt != "slug: " for prompt in prompts)
+	assert prompts[0] == "Title: "
+	assert all(prompt != "Slug: " for prompt in prompts)
 	assert "--slug" not in output.out
-	assert ") Display title" in output.out
+	assert ") The task name people will read" in output.out
 	# render is stubbed empty here, so main() adds only its blank-line frame and
 	# the Next hint after the guided prompts. Check spacing on the prompt section.
 	prompt_section, _, next_hint = output.out.partition("\n\n\n\nNext: ")
