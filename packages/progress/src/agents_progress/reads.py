@@ -49,8 +49,9 @@ _TASK_COLUMNS_QUALIFIED = ", ".join(
 )
 
 # Task fields stored as ordered rows rather than columns, mapped to the table holding them.
+# The done-when rows keep their older table name so existing databases need no migration.
 _TASK_LIST_TABLES = {
-	"contract": "task_contract_steps",
+	"done_when": "task_contract_steps",
 	"files": "task_files",
 }
 
@@ -101,7 +102,7 @@ NOTE_TYPES = frozenset({"discovery", "decision"})
 # Fields checked by the doctor command for each record type.
 REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
 	"release": ("overview",),
-	"task": ("overview", "contract", "split_rationale"),
+	"task": ("overview", "done_when", "split_rationale"),
 	"chunk": ("description",),
 }
 
@@ -248,7 +249,7 @@ def _task_values_by_id(
 	connection: sqlite3.Connection,
 	task_ids: Sequence[str],
 ) -> dict[str, dict[str, list[str]]]:
-	"""Load the ordered contract steps and files for several tasks, one query per field.
+	"""Load the ordered done-when checks and files for several tasks, one query per field.
 
 	Returns each field mapped to the tasks that have values, in position order. A task with
 	no rows for a field is absent rather than present with an empty list.
@@ -656,8 +657,8 @@ def _search_task_item(
 ) -> dict[str, object]:
 	"""Turn one matching task row into a search result item.
 
-	Contract steps and file paths are loaded from their child tables when selected.
-	File matches list every matching path; a contract match shows an excerpt of the
+	Done-when checks and file paths are loaded from their child tables when selected.
+	File matches list every matching path; a done-when match shows an excerpt of the
 	first matching step; the title gets no excerpt because the item already shows it.
 	"""
 	child_values: dict[str, list[str]] = {}
@@ -1228,7 +1229,7 @@ class ReadStore(_StoreBase):
 			"title",
 			"overview",
 			"verification",
-			"contract",
+			"done_when",
 			"files",
 		)
 		all_fields = (*task_fields, "description")
@@ -1248,7 +1249,7 @@ class ReadStore(_StoreBase):
 				"title": "tasks.title LIKE ? ESCAPE '\\'",
 				"overview": "tasks.overview LIKE ? ESCAPE '\\'",
 				"verification": "tasks.verification LIKE ? ESCAPE '\\'",
-				"contract": "EXISTS (SELECT 1 FROM task_contract_steps "
+				"done_when": "EXISTS (SELECT 1 FROM task_contract_steps "
 				"WHERE task_id = tasks.id AND text LIKE ? ESCAPE '\\')",
 				"files": "EXISTS (SELECT 1 FROM task_files "
 				"WHERE task_id = tasks.id AND text LIKE ? ESCAPE '\\')",

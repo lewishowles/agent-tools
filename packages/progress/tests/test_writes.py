@@ -59,7 +59,7 @@ def _seed_store(tmp_path: Path) -> WriteStore:
 def _add_task(store: WriteStore, slug: str, title: str, **arguments):
 	"""Create a valid test task with default planning text."""
 	arguments.setdefault("overview", f"{title} overview")
-	arguments.setdefault("contract", [f"{title} contract"])
+	arguments.setdefault("done_when", [f"{title} check"])
 	return store.task_add(slug, title, **arguments)
 
 
@@ -170,21 +170,21 @@ def test_task_add_requires_an_overview_argument(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
 	"arguments",
 	[
-		pytest.param({"contract": [""]}, id="empty-contract"),
-		pytest.param({"contract": [" \t"]}, id="whitespace-contract"),
+		pytest.param({"done_when": [""]}, id="empty-done_when"),
+		pytest.param({"done_when": [" \t"]}, id="whitespace-done_when"),
 	],
 )
-def test_task_add_rejects_blank_contract(
+def test_task_add_rejects_blank_done_when(
 	tmp_path: Path, arguments: dict[str, object]
 ) -> None:
 	store = _seed_store(tmp_path)
 
-	with pytest.raises(ProgressError, match="task contract"):
+	with pytest.raises(ProgressError, match="done-when check"):
 		store.task_add(
 			"task",
 			"Task",
 			overview="Task overview",
-			contract=arguments.get("contract", ["Task contract"]),
+			done_when=arguments.get("done_when", ["Task check"]),
 		)
 
 	tasks = ReadStore(store.database, _ProjectStore(store.database)).task_list()
@@ -192,10 +192,10 @@ def test_task_add_rejects_blank_contract(
 	assert tasks["items"] == []
 
 
-@pytest.mark.parametrize("field", ["contract", "files"])
+@pytest.mark.parametrize("field", ["done_when", "files"])
 def test_task_add_rejects_scalar_task_values(tmp_path: Path, field: str) -> None:
 	store = _seed_store(tmp_path)
-	arguments = {"contract": ["Task contract"], "files": None}
+	arguments = {"done_when": ["Task check"], "files": None}
 	arguments[field] = "Task value"
 
 	with pytest.raises(ProgressError, match="must be a list of text"):
@@ -2972,7 +2972,7 @@ def test_task_remove_force_deletes_owned_rows_and_unblocks_dependants(
 		store,
 		"task",
 		"Task",
-		contract=["Task contract"],
+		done_when=["Task check"],
 		files=["src/task.py"],
 		release_id=release["id"],
 		depends_on=[dependency["id"]],
@@ -4101,13 +4101,13 @@ def test_task_clean_clears_a_default_task_on_a_repaired_older_schema(
 		)
 
 
-def test_task_clean_deletes_contract_and_file_rows(tmp_path: Path) -> None:
+def test_task_clean_deletes_done_when_and_file_rows(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	task = _add_task(
 		store,
 		"task",
 		"Task",
-		contract=["Task step"],
+		done_when=["Task step"],
 		files=["src/task.py"],
 	)
 	chunk = _add_chunk(store, task["id"], "Chunk")
@@ -4588,7 +4588,7 @@ def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
 		"task",
 		"Task",
 		overview="Original overview",
-		contract=["Original contract"],
+		done_when=["Original check"],
 		files=["original.py"],
 		verification="Original verification",
 		release_id=release["id"],
@@ -4614,7 +4614,7 @@ def test_task_edit_updates_selected_fields_and_preserves_lifecycle_data(
 	assert updated["release_id"] == task["release_id"]
 	assert updated["title"] == task["title"]
 	assert updated["overview"] == "Updated overview"
-	assert updated["contract"] == task["contract"]
+	assert updated["done_when"] == task["done_when"]
 	assert updated["files"] == ["updated.py"]
 	assert updated["verification"] == task["verification"]
 	assert updated["status"] == task["status"]
@@ -4675,17 +4675,17 @@ def test_task_edit_updates_and_clears_split_rationale(tmp_path: Path) -> None:
 		)
 
 
-def test_task_contract_and_files_round_trip_in_order(tmp_path: Path) -> None:
+def test_task_done_when_and_files_round_trip_in_order(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	task = _add_task(
 		store,
 		"task",
 		"Task",
-		contract=["First step", "Second step"],
+		done_when=["First step", "Second step"],
 		files=["src/first.py", "src/second.py"],
 	)
 
-	assert task["contract"] == ["First step", "Second step"]
+	assert task["done_when"] == ["First step", "Second step"]
 	assert task["files"] == ["src/first.py", "src/second.py"]
 	with store.database.connection() as connection:
 		assert [
@@ -4705,11 +4705,11 @@ def test_task_contract_and_files_round_trip_in_order(tmp_path: Path) -> None:
 
 	updated = store.task_edit(
 		task["id"],
-		contract=("Updated first", "Updated second", "Updated third"),
+		done_when=("Updated first", "Updated second", "Updated third"),
 		files=("src/updated.py",),
 	)
 
-	assert updated["contract"] == [
+	assert updated["done_when"] == [
 		"Updated first",
 		"Updated second",
 		"Updated third",
@@ -4717,13 +4717,13 @@ def test_task_contract_and_files_round_trip_in_order(tmp_path: Path) -> None:
 	assert updated["files"] == ["src/updated.py"]
 
 
-def test_task_remove_deletes_contract_and_file_rows(tmp_path: Path) -> None:
+def test_task_remove_deletes_done_when_and_file_rows(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 	task = _add_task(
 		store,
 		"task",
 		"Task",
-		contract=["Task step"],
+		done_when=["Task step"],
 		files=["src/task.py"],
 	)
 
@@ -4768,19 +4768,19 @@ def test_task_edit_requires_at_least_one_field(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-	("field", "value"),
+	("field", "value", "error_label"),
 	[
-		("overview", ""),
-		("contract", [""]),
+		("overview", "", "task overview"),
+		("done_when", [""], "done-when check"),
 	],
 )
 def test_task_edit_rejects_blank_required_text(
-	tmp_path: Path, field: str, value: str | list[str]
+	tmp_path: Path, field: str, value: str | list[str], error_label: str
 ) -> None:
 	store = _seed_store(tmp_path)
 	task = _add_task(store, "task", "Task")
 
-	with pytest.raises(ProgressError, match=f"task {field}"):
+	with pytest.raises(ProgressError, match=error_label):
 		store.task_edit(task["id"], **{field: value})
 
 

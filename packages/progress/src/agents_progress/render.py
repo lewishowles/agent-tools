@@ -611,9 +611,9 @@ def _render_task(task: dict[str, object]) -> str:
 
 
 def _render_task_details(task: dict[str, object]) -> list[str]:
-	"""Render the task's contract, files and verification blocks."""
+	"""Render the task's done-when checks, files and verification blocks."""
 	blocks = []
-	for label, key in (("Contract", "contract"), ("Files", "files")):
+	for label, key in (("Done when", "done_when"), ("Files", "files")):
 		values = task.get(key)
 		if not isinstance(values, list) or not values:
 			continue
@@ -754,7 +754,7 @@ def _render_chunk(chunk: dict[str, object]) -> str:
 
 	The description is shown whole here; chunk list keeps only its first line.
 	Position and timestamps are left to --json. The parent task's title, status,
-	contract, files and verification follow the chunk, then the same project,
+	done-when checks, files and verification follow the chunk, then the same project,
 	release, notes and handoff sections as task get.
 	"""
 	blocks = [render_span(str(chunk.get("title", "")), "text", weight="bold")]

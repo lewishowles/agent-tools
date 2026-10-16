@@ -711,7 +711,7 @@ def test_commands_json_lists_the_registry_with_required_flags(
 		"required": True,
 	}
 	assert commands["task add"]["flags"][3] == {
-		"names": ["--contract-step"],
+		"names": ["--done-when"],
 		"required": True,
 	}
 	assert commands["task add"]["flags"][7] == {
@@ -1076,8 +1076,8 @@ def test_new_read_commands_dispatch_with_the_json_envelope(
 				"Task",
 				"--overview",
 				"Task overview",
-				"--contract-step",
-				"Task contract",
+				"--done-when",
+				"Task check",
 			],
 			"task_add",
 			"write",
@@ -1607,8 +1607,8 @@ def test_release_removed_flags_are_rejected(tmp_path: Path, capsys, flag: str) -
 				"Task",
 				"--overview",
 				"Overview",
-				"--contract-step",
-				"Contract",
+				"--done-when",
+				"Done when",
 				"--purpose",
 				"Removed",
 			],
@@ -1625,8 +1625,8 @@ def test_release_removed_flags_are_rejected(tmp_path: Path, capsys, flag: str) -
 				"Task",
 				"--overview",
 				"Overview",
-				"--contract-step",
-				"Contract",
+				"--done-when",
+				"Done when",
 				"--acceptance-criteria",
 				"Removed",
 			],
@@ -1643,8 +1643,8 @@ def test_release_removed_flags_are_rejected(tmp_path: Path, capsys, flag: str) -
 				"Task",
 				"--overview",
 				"Overview",
-				"--contract-step",
-				"Contract",
+				"--done-when",
+				"Done when",
 				"--risks",
 				"Removed",
 			],
@@ -1826,7 +1826,7 @@ def test_task_add_prompts_for_required_and_selected_optional_arguments(
 			"task-slug",
 			"Task title",
 			"Task overview",
-			"Task contract step",
+			"Task check",
 			"  ",
 			"src/app.py",
 			"",
@@ -1868,7 +1868,7 @@ def test_task_add_prompts_for_required_and_selected_optional_arguments(
 		"slug": "task-slug",
 		"title": "Task title",
 		"overview": "Task overview",
-		"contract": ["Task contract step"],
+		"done_when": ["Task check"],
 		"files": ["src/app.py"],
 		"split_rationale": None,
 		"verification": "Run the progress tests",
@@ -1922,7 +1922,7 @@ def test_task_add_prompts_for_required_and_selected_optional_arguments(
 			"--slug",
 			"--title",
 			"--overview",
-			"--contract-step",
+			"--done-when",
 			"--file",
 			"--verification",
 		)
@@ -2036,7 +2036,7 @@ def test_checkbox_exits_130_with_one_cancellation_message(capsys, monkeypatch) -
 		(
 			["task", "add"],
 			[" ", "task-slug", "", "Task title", "Overview", "Done", ""],
-			["--slug", "--title", "--overview", "--contract-step"],
+			["--slug", "--title", "--overview", "--done-when"],
 		),
 		(
 			["chunk", "add"],
@@ -2124,7 +2124,7 @@ def test_add_prompt_skips_arguments_already_supplied(
 		[
 			"Task title",
 			"Task overview",
-			"Task contract step",
+			"Task check",
 			"",
 		]
 	)
@@ -2215,8 +2215,7 @@ def test_json_mode_keeps_missing_add_arguments_non_interactive(
 	assert response["ok"] is False
 	assert response["error"]["code"] == "usage"
 	assert response["error"]["message"] == (
-		"the following arguments are required: "
-		"--slug, --title, --overview, --contract-step"
+		"the following arguments are required: --slug, --title, --overview, --done-when"
 	)
 	assert response["error"]["details"]["usage"].startswith("usage: progress task add ")
 
@@ -2296,7 +2295,7 @@ def complete_records(tmp_path: Path, monkeypatch) -> tuple[Path, dict, dict]:
 		"complete-command",
 		"Complete command",
 		overview="Complete a task or chunk by ID.",
-		contract=["Complete the requested record."],
+		done_when=["Complete the requested record."],
 	)
 	chunk = writer.chunk_add(
 		task["id"],
@@ -2380,7 +2379,7 @@ def test_task_update_time_changes_after_task_and_chunk_commands(
 	database = Database(database_path)
 	writer = WriteStore(database)
 	other_task = writer.task_add(
-		"other-task", "Other task", overview="Other work.", contract=["Finish it."]
+		"other-task", "Other task", overview="Other work.", done_when=["Finish it."]
 	)
 	other_chunk = writer.chunk_add(
 		task["id"], "Other chunk", "Complete other work.", "Is it done?"
@@ -2412,7 +2411,7 @@ def test_task_move_to_another_release_updates_only_the_moved_task(
 	database = Database(database_path)
 	writer = WriteStore(database)
 	other_task = writer.task_add(
-		"other-task", "Other task", overview="Other work.", contract=["Finish it."]
+		"other-task", "Other task", overview="Other work.", done_when=["Finish it."]
 	)
 	release = writer.release_add(
 		"new-release", "New release", overview="Work in a new release."
@@ -2509,10 +2508,10 @@ def test_dependency_change_updates_only_the_dependent_task(
 	database = Database(database_path)
 	writer = WriteStore(database)
 	prerequisite = writer.task_add(
-		"prerequisite", "Prerequisite", overview="First work.", contract=["Finish it."]
+		"prerequisite", "Prerequisite", overview="First work.", done_when=["Finish it."]
 	)
 	unrelated = writer.task_add(
-		"unrelated", "Unrelated", overview="Other work.", contract=["Finish it."]
+		"unrelated", "Unrelated", overview="Other work.", done_when=["Finish it."]
 	)
 	if prerequisite_done:
 		writer.task_complete(prerequisite["id"])
@@ -2566,7 +2565,7 @@ def test_task_note_change_updates_only_its_task(
 	database = Database(database_path)
 	writer = WriteStore(database)
 	unrelated = writer.task_add(
-		"unrelated", "Unrelated", overview="Other work.", contract=["Finish it."]
+		"unrelated", "Unrelated", overview="Other work.", done_when=["Finish it."]
 	)
 	note = None
 	if operation == "remove":
@@ -2605,7 +2604,7 @@ def test_superseding_a_decision_updates_only_the_new_notes_task(
 	database = Database(database_path)
 	writer = WriteStore(database)
 	other = writer.task_add(
-		"other", "Other", overview="Other work.", contract=["Finish it."]
+		"other", "Other", overview="Other work.", done_when=["Finish it."]
 	)
 	old_note = writer.decision_add(other["id"], "Earlier choice.")
 	old_time = _seed_old_task_updated_at(database_path, task["id"])
@@ -2643,7 +2642,7 @@ def test_rejected_dependency_add_keeps_task_times(
 	database = Database(database_path)
 	writer = WriteStore(database)
 	prerequisite = writer.task_add(
-		"prerequisite", "Prerequisite", overview="First work.", contract=["Finish it."]
+		"prerequisite", "Prerequisite", overview="First work.", done_when=["Finish it."]
 	)
 	if failure == "duplicate":
 		writer.task_dependency_add(task["id"], prerequisite["id"])
@@ -2682,7 +2681,7 @@ def test_missing_dependency_remove_keeps_task_times(complete_records, capsys) ->
 	database_path, task, _chunk = complete_records
 	database = Database(database_path)
 	prerequisite = WriteStore(database).task_add(
-		"prerequisite", "Prerequisite", overview="First work.", contract=["Finish it."]
+		"prerequisite", "Prerequisite", overview="First work.", done_when=["Finish it."]
 	)
 	old_time = _seed_old_task_updated_at(database_path, task["id"])
 	prerequisite_old_time = _seed_old_task_updated_at(database_path, prerequisite["id"])
@@ -3462,7 +3461,7 @@ def task_list_pages(tmp_path: Path, monkeypatch) -> Path:
 				title.lower().replace(" ", "-"),
 				title,
 				overview=title,
-				contract=[title],
+				done_when=[title],
 				release_id=release["id"],
 				position=position,
 			)
@@ -4262,6 +4261,8 @@ def test_search_dispatches_parsed_arguments(
 				"overview",
 				"--in",
 				"files",
+				"--in",
+				"done_when",
 				"--status",
 				"done",
 				"--limit",
@@ -4278,7 +4279,7 @@ def test_search_dispatches_parsed_arguments(
 	output = capsys.readouterr()
 
 	assert output.err == ""
-	assert calls == [("button", ["overview", "files"], "done", 7, 3)]
+	assert calls == [("button", ["overview", "files", "done_when"], "done", 7, 3)]
 	assert "  overview: A <button> result." in output.out
 
 
@@ -4319,7 +4320,7 @@ def test_task_list_uses_release_priority_for_json_and_table_output(
 		"project-review-context",
 		"Project review context",
 		overview="Review context.",
-		contract=["Review context contract."],
+		done_when=["Review the context."],
 		release_id=later_release["id"],
 		position=1,
 	)
@@ -4327,7 +4328,7 @@ def test_task_list_uses_release_priority_for_json_and_table_output(
 		"progress-cli-read-parity",
 		"Progress CLI read parity",
 		overview="Keep read commands aligned.",
-		contract=["Keep read ordering aligned."],
+		done_when=["Keep read ordering aligned."],
 		release_id=active_release["id"],
 		position=1,
 	)
@@ -4335,7 +4336,7 @@ def test_task_list_uses_release_priority_for_json_and_table_output(
 		"unassigned-task",
 		"Unassigned task",
 		overview="An unassigned task.",
-		contract=["Unassigned tasks use the final queue bucket."],
+		done_when=["Unassigned tasks use the final queue bucket."],
 		position=1,
 	)
 
@@ -4862,7 +4863,7 @@ def test_chunk_get_renders_one_readable_chunk_view() -> None:
 			"id": "tsk_chunk_view",
 			"title": "Parent task title",
 			"status": "in-progress",
-			"contract": ["Keep the task contract."],
+			"done_when": ["Keep the task check."],
 			"files": ["src/task.py"],
 			"verification": "Run the task tests.",
 		},
@@ -4887,7 +4888,7 @@ def test_chunk_get_renders_one_readable_chunk_view() -> None:
 	assert "The second line remains." in plain_output
 	assert "Parent task title" in plain_output
 	assert "in progress" in plain_output
-	assert "Keep the task contract." in plain_output
+	assert "Keep the task check." in plain_output
 	assert "src/task.py" in plain_output
 	assert "Run the task tests." in plain_output
 	assert "Chunk project" in plain_output
@@ -4899,8 +4900,8 @@ def test_chunk_get_renders_one_readable_chunk_view() -> None:
 	assert plain_output.index("Readable chunk") < plain_output.index("Status")
 	assert plain_output.index("Status") < plain_output.index("Description")
 	assert plain_output.index("Description") < plain_output.index("Parent task")
-	assert plain_output.index("Parent task") < plain_output.index("Contract")
-	assert plain_output.index("Contract") < plain_output.index("Files")
+	assert plain_output.index("Parent task") < plain_output.index("Done when")
+	assert plain_output.index("Done when") < plain_output.index("Files")
 	assert plain_output.index("Files") < plain_output.index("Verification")
 	assert plain_output.index("Verification") < plain_output.index("Chunk project")
 	assert plain_output.index("Chunk release") < plain_output.index("Notes")
@@ -4966,7 +4967,7 @@ def test_task_get_uses_one_readable_task_view() -> None:
 			},
 		],
 		"split_rationale": "Keep the two chunks independently reviewable.",
-		"contract": ["First contract step.", "Second contract step."],
+		"done_when": ["First check.", "Second check."],
 		"files": ["src/task.py", "tests/test_task.py"],
 		"verification": "Run the task tests.",
 		"project": {"id": "prj_task_view", "name": "Task project"},
@@ -5002,8 +5003,8 @@ def test_task_get_uses_one_readable_task_view() -> None:
 	assert "Hidden first chunk line." not in plain_output
 	assert "Hidden second chunk line." not in plain_output
 	assert "Split rationale" in plain_output
-	assert "First contract step." in plain_output
-	assert "Second contract step." in plain_output
+	assert "First check." in plain_output
+	assert "Second check." in plain_output
 	assert "src/task.py" in plain_output and "tests/test_task.py" in plain_output
 	assert "Verification" in plain_output
 	assert "Project ID" in plain_output and "prj_task_view" in plain_output
@@ -5025,8 +5026,8 @@ def test_task_get_uses_one_readable_task_view() -> None:
 	assert plain_output.index("Status") < plain_output.index("Overview")
 	assert plain_output.index("Overview") < plain_output.index("Chunks")
 	assert plain_output.index("Chunks") < plain_output.index("Split rationale")
-	assert plain_output.index("Split rationale") < plain_output.index("Contract")
-	assert plain_output.index("Contract") < plain_output.index("Files")
+	assert plain_output.index("Split rationale") < plain_output.index("Done when")
+	assert plain_output.index("Done when") < plain_output.index("Files")
 	assert plain_output.index("Files") < plain_output.index("Verification")
 	assert plain_output.index("Verification") < plain_output.index("Project ID")
 	assert plain_output.index("Task release") < plain_output.index("Notes")
@@ -5987,8 +5988,8 @@ def test_json_write_success_uses_the_changed_object_shape(
 				"Write surface",
 				"--overview",
 				"Write surface overview",
-				"--contract-step",
-				"Write surface contract",
+				"--done-when",
+				"Write surface check",
 				"--database",
 				str(tmp_path / "db"),
 				"--json",
@@ -6019,8 +6020,8 @@ def test_json_write_success_uses_the_changed_object_shape(
 				"--overview",
 				"Task overview",
 			],
-			"--contract-step",
-			id="task-contract",
+			"--done-when",
+			id="task-done-when",
 		),
 		pytest.param(
 			["release", "add", "--slug", "release", "--title", "Release"],
@@ -6089,11 +6090,11 @@ def test_add_rejects_an_omitted_planning_field(
 				"Task",
 				"--overview",
 				"Task overview",
-				"--contract-step",
+				"--done-when",
 				" \t",
 			],
-			"--contract-step",
-			id="task-contract",
+			"--done-when",
+			id="task-done-when",
 		),
 		pytest.param(
 			[
@@ -6164,7 +6165,7 @@ def test_add_rejects_a_whitespace_only_planning_field(
 		pytest.param(
 			["task", "edit", "tsk_test", "--clear-contract"],
 			"--clear-contract",
-			id="task-contract",
+			id="task-done-when",
 		),
 		pytest.param(
 			["chunk", "edit", "chk_test", "--clear-description"],
@@ -6215,9 +6216,9 @@ def test_edit_rejects_removed_clear_flags(
 			id="task-overview-empty",
 		),
 		pytest.param(
-			["task", "edit", "tsk_test", "--contract-step", ""],
-			"--contract-step",
-			id="task-contract-empty",
+			["task", "edit", "tsk_test", "--done-when", ""],
+			"--done-when",
+			id="task-done-when-empty",
 		),
 		pytest.param(
 			["task", "edit", "tsk_test", "--split-rationale", ""],
@@ -6301,7 +6302,7 @@ def test_task_edit_dispatches_values_and_optional_clear_flags(
 	assert arguments_seen == {
 		"task_id": "tsk_test",
 		"overview": "Updated",
-		"contract": None,
+		"done_when": None,
 		"files": None,
 		"split_rationale": None,
 		"verification": None,
@@ -6312,7 +6313,7 @@ def test_task_edit_dispatches_values_and_optional_clear_flags(
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 
-def test_task_add_dispatches_repeatable_contract_steps_and_files(
+def test_task_add_dispatches_repeatable_done_when_checks_and_files(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
 	data = {"id": "tsk_test"}
@@ -6339,9 +6340,9 @@ def test_task_add_dispatches_repeatable_contract_steps_and_files(
 				"Task",
 				"--overview",
 				"Task overview",
-				"--contract-step",
+				"--done-when",
 				"First step",
-				"--contract-step",
+				"--done-when",
 				"Second step",
 				"--file",
 				"src/first.py",
@@ -6357,13 +6358,13 @@ def test_task_add_dispatches_repeatable_contract_steps_and_files(
 		== 0
 	)
 
-	assert arguments_seen["contract"] == ["First step", "Second step"]
+	assert arguments_seen["done_when"] == ["First step", "Second step"]
 	assert arguments_seen["files"] == ["src/first.py", "src/second.py"]
 	assert arguments_seen["split_rationale"] == "Keep each behaviour slice reviewable"
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 
-def test_task_edit_dispatches_repeatable_contract_steps_and_files(
+def test_task_edit_dispatches_repeatable_done_when_checks_and_files(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
 	data = {"id": "tsk_test"}
@@ -6386,9 +6387,9 @@ def test_task_edit_dispatches_repeatable_contract_steps_and_files(
 				"task",
 				"edit",
 				"tsk_test",
-				"--contract-step",
+				"--done-when",
 				"Updated first",
-				"--contract-step",
+				"--done-when",
 				"Updated second",
 				"--file",
 				"src/updated.py",
@@ -6405,7 +6406,7 @@ def test_task_edit_dispatches_repeatable_contract_steps_and_files(
 	assert arguments_seen == {
 		"task_id": "tsk_test",
 		"overview": None,
-		"contract": ["Updated first", "Updated second"],
+		"done_when": ["Updated first", "Updated second"],
 		"files": ["src/updated.py"],
 		"split_rationale": "The chunks have separate review questions",
 		"verification": None,
@@ -6468,7 +6469,7 @@ def test_removed_task_contract_and_files_flags_are_rejected(capsys) -> None:
 				"Task",
 				"--overview",
 				"Task overview",
-				"--contract-step",
+				"--done-when",
 				"Current step",
 				"--contract",
 				"Old",
@@ -6485,6 +6486,36 @@ def test_removed_task_contract_and_files_flags_are_rejected(capsys) -> None:
 	second = json.loads(capsys.readouterr().out)
 	assert second["ok"] is False
 	assert second["error"]["message"] == "unrecognized arguments: --files old"
+
+
+@pytest.mark.parametrize("action", ["add", "edit"])
+def test_task_rejects_removed_contract_step_flag(capsys, action: str) -> None:
+	arguments = ["task", action]
+	if action == "add":
+		arguments.extend(
+			["--slug", "task", "--title", "Task", "--overview", "Task overview"]
+		)
+	else:
+		arguments.append("tsk_test")
+	arguments.extend(
+		["--done-when", "Current check", "--contract-step", "Old check", "--json"]
+	)
+
+	assert cli.main(arguments) == 2
+
+	result = json.loads(capsys.readouterr().out)
+	assert (
+		result["error"]["message"]
+		== "unrecognized arguments: --contract-step Old check"
+	)
+
+
+def test_search_rejects_removed_contract_field(capsys) -> None:
+	assert cli.main(["search", "check", "--in", "contract", "--json"]) == 2
+
+	result = json.loads(capsys.readouterr().out)
+	assert result["error"]["code"] == "usage"
+	assert "invalid choice: 'contract'" in result["error"]["message"]
 
 
 @pytest.mark.parametrize("action", ["edit", "update"])
@@ -6896,7 +6927,7 @@ def test_human_chunk_complete_output_is_concise(
 				"Sample",
 				"--overview",
 				"Plan",
-				"--contract-step",
+				"--done-when",
 				"Deliver it",
 			],
 			"task_add",

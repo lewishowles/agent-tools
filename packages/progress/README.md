@@ -254,7 +254,7 @@ Without `--force`, removal is a hard delete that raises
 `StillReferencedError` when any task refers to a release or the release owns
 notes. The error names the blocking task or note IDs and suggests `--force`.
 With `--force`, every task in the release is removed with its chunks, notes,
-dependency edges, contract and file rows, followed by the release's notes. The
+dependency edges, done-when and file rows, followed by the release's notes. The
 human output lists the deleted records grouped by
 type. Forced removal does not ask for confirmation.
 
@@ -321,13 +321,13 @@ chunks, notes, and dependencies.
 Create a task:
 
 ```text
-progress task add --slug <slug> --title <title> --overview <overview> --contract-step <contract_step> [--contract-step <contract_step> ...] [--file <file> ...] [--split-rationale <split_rationale>] [--verification <verification>] [--release <release_id> | --release-id <release_id>] [--depends-on <task_id> | --dependency <task_id>] [--position <position>] [--json] [--database <path>]
+progress task add --slug <slug> --title <title> --overview <overview> --done-when <done_when> [--done-when <done_when> ...] [--file <file> ...] [--split-rationale <split_rationale>] [--verification <verification>] [--release <release_id> | --release-id <release_id>] [--depends-on <task_id> | --dependency <task_id>] [--position <position>] [--json] [--database <path>]
 ```
 
 - `--slug <slug>`: stable slug stored on the task
 - `--title <title>`: display title
 - `--overview <overview>`: non-empty task summary
-- `--contract-step <contract_step>`: non-empty task contract step; repeat for each step
+- `--done-when <done_when>`: one non-empty check that shows the task is done; repeat for each check
 - `--file <file>`: optional file covered by the task; repeat for each file
 - `--split-rationale <split_rationale>`: reason for splitting the task; doctor expects every task to have one
 - `--verification <verification>`: optional verification instructions
@@ -424,7 +424,7 @@ when any of these still refer to the task:
 
 The error names every blocking child ID and suggests `--force`. With
 `--force`, the task is removed with its chunks, notes, dependency edges,
-contract and file rows. Dependants blocked only by the removed task become
+done-when and file rows. Dependants blocked only by the removed task become
 ready. The human output prints `Removed task: <title> (<id>)` for each task.
 With `--force`, it lists the deleted records grouped by type and any unblocked
 tasks below that line. The JSON result includes each removed task's title.
@@ -482,13 +482,13 @@ progress task rename <task_id> --title <title> [--json] [--database <path>]
 Update task planning fields:
 
 ```text
-progress task edit <task_id> [--overview <overview>] [--contract-step <contract_step> ...] [--file <file> ...] [--split-rationale <split_rationale>] [--verification <verification>] [--clear-files] [--clear-split-rationale] [--clear-verification] [--json] [--database <path>]
+progress task edit <task_id> [--overview <overview>] [--done-when <done_when> ...] [--file <file> ...] [--split-rationale <split_rationale>] [--verification <verification>] [--clear-files] [--clear-split-rationale] [--clear-verification] [--json] [--database <path>]
 ```
 
 You can use `progress task update` with the same arguments.
 
-`--overview`, each `--contract-step`, and `--split-rationale` value must contain
-text. `--overview` and `--contract-step` are required when creating a task and
+`--overview`, each `--done-when`, and `--split-rationale` value must contain
+text. `--overview` and `--done-when` are required when creating a task and
 cannot be cleared. Pass replacement values when one needs changing. Use
 `--clear-split-rationale` to remove the rationale. Doctor reports every task
 without one.
@@ -759,7 +759,7 @@ For example, `progress chunk get my-task position-2` shows the second chunk in
 in a not-found error. If no chunk is selected, the command returns an error with a
 recovery hint.
 
-Both forms show the parent task's title, status, contract, files and verification,
+Both forms show the parent task's title, status, done-when checks, files and verification,
 followed by the project and release names, task notes and the task's handoff. The
 release name is omitted when there is no release; absent notes and handoff are
 shown explicitly.
@@ -777,7 +777,7 @@ Search tasks and chunks by a case-insensitive term:
 progress search <term> [--in <field>]... [--status <status>] [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
 ```
 
-- `--in <field>`: restrict the search to a field, and repeat it to search multiple fields
+- `--in <field>`: restrict the search to a field, and repeat it to search multiple fields. The fields are `title`, `overview`, `verification`, `done_when`, `files` and `description`
 - `--status <status>`: filter by task status, including chunks whose parent task has that status
 - `--limit <limit>`: maximum number of results to return
 - `--offset <offset>`: number of results to skip before returning matches

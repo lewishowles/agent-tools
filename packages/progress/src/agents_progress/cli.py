@@ -79,8 +79,9 @@ class ProgressArgumentParser(argparse.ArgumentParser):
 	def __init__(self, *args: object, **kwargs: object) -> None:
 		"""Turn off argparse's abbreviation matching for this parser and every subparser built from it.
 
-		A removed flag would otherwise keep working wherever its name is a prefix of a longer one, so
-		`--contract` would still reach `--contract-step`.
+		A removed flag would otherwise keep working wherever its name is a prefix of a flag that still
+		exists. For example, removing `--contract` while `--contract-step` existed would have left
+		`--contract` working.
 		"""
 		kwargs["allow_abbrev"] = False
 		super().__init__(*args, **kwargs)
@@ -384,7 +385,7 @@ _COMMAND_SPECS = (
 					"title",
 					"overview",
 					"verification",
-					"contract",
+					"done_when",
 					"files",
 					"description",
 				),
@@ -520,11 +521,11 @@ _COMMAND_SPECS = (
 						type=_non_empty_text_argument("--overview"),
 					),
 					_argument(
-						"--contract-step",
-						dest="contract",
+						"--done-when",
+						dest="done_when",
 						required=True,
 						action="append",
-						type=_non_empty_text_argument("--contract-step"),
+						type=_non_empty_text_argument("--done-when"),
 					),
 					_argument(
 						"--file",
@@ -624,11 +625,11 @@ _COMMAND_SPECS = (
 						type=_non_empty_text_argument("--overview"),
 					),
 					_argument(
-						"--contract-step",
-						dest="contract",
+						"--done-when",
+						dest="done_when",
 						default=argparse.SUPPRESS,
 						action="append",
-						type=_non_empty_text_argument("--contract-step"),
+						type=_non_empty_text_argument("--done-when"),
 					),
 					_argument(
 						"--file",
@@ -963,7 +964,7 @@ _TASK_ADD_PROMPT_ARGUMENTS = (
 		("--overview",), "What this task will achieve and why it matters", required=True
 	),
 	_PromptArgument(
-		("--contract-step",),
+		("--done-when",),
 		"One specific result you can check, for example 'a blank title is asked again'; you can add several",
 		required=True,
 		repeatable=True,
@@ -1746,7 +1747,7 @@ def _run_command(
 				slug=args.slug,
 				title=args.title,
 				overview=args.overview,
-				contract=args.contract,
+				done_when=args.done_when,
 				files=args.files,
 				split_rationale=args.split_rationale,
 				verification=args.verification,
@@ -2077,7 +2078,7 @@ def _run_task_edit(args: argparse.Namespace, database: Database) -> tuple[object
 		WriteStore(database).task_edit(
 			args.task_id,
 			overview=getattr(args, "overview", None),
-			contract=getattr(args, "contract", None),
+			done_when=getattr(args, "done_when", None),
 			files=getattr(args, "files", None),
 			split_rationale=getattr(args, "split_rationale", None),
 			verification=getattr(args, "verification", None),

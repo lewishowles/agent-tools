@@ -36,7 +36,7 @@ class Task:
 	release_id: str | None
 	title: str
 	overview: str
-	contract: list[str]
+	done_when: list[str]
 	files: list[str]
 	split_rationale: str | None
 	verification: str

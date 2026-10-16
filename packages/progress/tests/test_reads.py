@@ -90,7 +90,7 @@ def _seed_store(tmp_path: Path) -> ReadStore:
 			)
 			connection.execute(
 				"INSERT INTO task_contract_steps (task_id, position, text) VALUES (?, ?, ?)",
-				(task_id, 1, f"Contract for {slug}."),
+				(task_id, 1, f"{slug} passes its check."),
 			)
 		connection.execute(
 			"INSERT INTO chunks (id, task_id, position, title, description, status, started_at, completed_at, review_question) "
@@ -178,7 +178,7 @@ def test_next_keeps_the_default_when_a_secondary_task_starts(
 		"third",
 		"Third task",
 		overview="Third task overview",
-		contract=["Third task contract"],
+		done_when=["Third task check"],
 	)
 	writer.chunk_add(
 		third["id"],
@@ -190,7 +190,7 @@ def test_next_keeps_the_default_when_a_secondary_task_starts(
 		"fourth",
 		"Fourth task",
 		overview="Fourth task overview",
-		contract=["Fourth task contract"],
+		done_when=["Fourth task check"],
 	)
 	fourth_chunk = writer.chunk_add(
 		fourth["id"],
@@ -331,7 +331,7 @@ def test_next_uses_live_totals_and_ranks_after_sibling_removals(
 		"third",
 		"Third task",
 		overview="Third task overview",
-		contract=["Third task contract"],
+		done_when=["Third task check"],
 		release_id=RELEASE_A,
 		position=3,
 	)
@@ -390,7 +390,7 @@ def test_next_returns_the_earliest_ready_task_when_nothing_is_in_progress(
 		"first-ready",
 		"First ready",
 		overview="First ready overview",
-		contract=["First ready contract"],
+		done_when=["First ready check"],
 		release_id=RELEASE_A,
 		position=0,
 	)
@@ -422,7 +422,7 @@ def test_next_prefers_active_release_over_lower_position_planned_release(
 		"planned-task",
 		"Planned task",
 		overview="Planned task overview",
-		contract=["Planned task contract"],
+		done_when=["Planned task check"],
 		release_id=planned_release["id"],
 		position=0,
 	)
@@ -445,7 +445,7 @@ def test_next_reports_the_earliest_blocked_task_without_changing_it(
 		"blocked",
 		"Blocked",
 		overview="Blocked task overview",
-		contract=["Blocked task contract"],
+		done_when=["Blocked task check"],
 		release_id=RELEASE_A,
 		depends_on=[TASK_A],
 		position=3,
@@ -479,7 +479,7 @@ def test_next_reports_the_earliest_waiting_task_and_its_unfinished_dependency(
 		"waiting",
 		"Waiting",
 		overview="Waiting task overview",
-		contract=["Waiting task contract"],
+		done_when=["Waiting task check"],
 		release_id=RELEASE_A,
 		depends_on=[TASK_A, TASK_B],
 		position=0,
@@ -563,7 +563,7 @@ def test_task_list_numbers_unfinished_queue_independent_of_filters_and_pages(
 		"third",
 		"Third task",
 		overview="Third task overview.",
-		contract=["Third task contract."],
+		done_when=["Third task check."],
 		release_id=RELEASE_A,
 		position=3,
 	)
@@ -571,7 +571,7 @@ def test_task_list_numbers_unfinished_queue_independent_of_filters_and_pages(
 		"fourth",
 		"Fourth task",
 		overview="Fourth task overview.",
-		contract=["Fourth task contract."],
+		done_when=["Fourth task check."],
 		release_id=RELEASE_A,
 		position=4,
 	)
@@ -703,7 +703,7 @@ def test_task_list_filters_waiting_tasks(tmp_path: Path) -> None:
 		"waiting",
 		"Waiting",
 		overview="Waiting task overview",
-		contract=["Waiting task contract"],
+		done_when=["Waiting task check"],
 		release_id=RELEASE_A,
 		depends_on=[TASK_A],
 	)
@@ -754,19 +754,19 @@ def test_search_reports_a_matching_task_file_path(tmp_path: Path) -> None:
 	]
 
 
-def test_search_reports_a_matching_task_contract_step(tmp_path: Path) -> None:
+def test_search_reports_a_matching_task_done_when_check(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 
 	with store.database.transaction() as connection:
 		connection.execute(
 			"INSERT INTO task_contract_steps (task_id, position, text) VALUES (?, ?, ?)",
-			(TASK_A, 2, "The button contract is ready."),
+			(TASK_A, 2, "The button check is ready."),
 		)
 
-	item = store.search("button", fields=["contract"])["items"][0]
+	item = store.search("button", fields=["done_when"])["items"][0]
 
-	assert item["matched"] == ["contract"]
-	assert item["snippets"]["contract"] == "The button contract is ready."
+	assert item["matched"] == ["done_when"]
+	assert item["snippets"]["done_when"] == "The button check is ready."
 
 
 def test_search_reports_a_matching_chunk_description(tmp_path: Path) -> None:
@@ -901,7 +901,7 @@ def test_search_returns_an_empty_page_when_nothing_matches(tmp_path: Path) -> No
 	}
 
 
-def test_task_reads_return_contract_files_and_split_rationale_in_order(
+def test_task_reads_return_done_when_files_and_split_rationale_in_order(
 	tmp_path: Path,
 ) -> None:
 	store = _seed_store(tmp_path)
@@ -909,19 +909,19 @@ def test_task_reads_return_contract_files_and_split_rationale_in_order(
 		"ordered",
 		"Ordered task",
 		overview="Ordered task overview",
-		contract=["First step", "Second step"],
+		done_when=["First step", "Second step"],
 		files=["src/first.py", "src/second.py"],
 		split_rationale="Keep each step reviewable",
 	)
 
-	assert store.task_get(task["id"])["contract"] == ["First step", "Second step"]
+	assert store.task_get(task["id"])["done_when"] == ["First step", "Second step"]
 	assert store.task_get(task["id"])["files"] == ["src/first.py", "src/second.py"]
 	assert store.task_get(task["id"])["split_rationale"] == "Keep each step reviewable"
 	listed = next(
 		item for item in store.task_list()["items"] if item["id"] == task["id"]
 	)
 
-	assert listed["contract"] == ["First step", "Second step"]
+	assert listed["done_when"] == ["First step", "Second step"]
 	assert listed["files"] == ["src/first.py", "src/second.py"]
 	assert listed["split_rationale"] == "Keep each step reviewable"
 
@@ -960,7 +960,7 @@ def test_doctor_reports_blank_required_fields_across_all_pages(
 					"id": "tsk_" + "c" * 22,
 					"title": "Blank task",
 					"overview": "  ",
-					"contract": [" \t"],
+					"done_when": [" \t"],
 					"split_rationale": "",
 				}
 			],
@@ -1037,7 +1037,7 @@ def test_doctor_reports_blank_required_fields_across_all_pages(
 				"title": "Blank task",
 			},
 			{
-				"field": "task.contract",
+				"field": "task.done_when",
 				"id": "tsk_" + "c" * 22,
 				"noun": "task",
 				"title": "Blank task",

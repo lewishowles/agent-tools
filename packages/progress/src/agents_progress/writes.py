@@ -383,7 +383,7 @@ class WriteStore(_StoreBase):
 		slug: str,
 		title: str,
 		overview: str,
-		contract: Sequence[str] = (),
+		done_when: Sequence[str] = (),
 		files: Sequence[str] | None = None,
 		split_rationale: str | None = None,
 		verification: str = "",
@@ -403,8 +403,8 @@ class WriteStore(_StoreBase):
 		_require_text(slug, "task slug")
 		_require_text(title, "task title")
 		_require_text(overview, "task overview")
-		contract_steps = _normalise_ordered_values(
-			contract, "task contract", required=True
+		done_when_checks = _normalise_ordered_values(
+			done_when, "done-when check", required=True
 		)
 		file_paths = _normalise_ordered_values(files, "task file")
 		if split_rationale is not None:
@@ -523,7 +523,7 @@ class WriteStore(_StoreBase):
 					(task_id, dependency_id),
 				)
 
-			_write_task_values(connection, "contract", task_id, contract_steps)
+			_write_task_values(connection, "done_when", task_id, done_when_checks)
 			_write_task_values(connection, "files", task_id, file_paths)
 			for index, ordered_id in enumerate(ordered_ids, start=1):
 				if positions[ordered_id] == index:
@@ -804,7 +804,7 @@ class WriteStore(_StoreBase):
 		self,
 		task_id: str,
 		overview: str | None = None,
-		contract: Sequence[str] | None = None,
+		done_when: Sequence[str] | None = None,
 		files: Sequence[str] | None = None,
 		split_rationale: str | None = None,
 		verification: str | None = None,
@@ -817,16 +817,16 @@ class WriteStore(_StoreBase):
 		validate_object_id(task_id, TASK_PREFIX)
 
 		list_values: dict[str, tuple[str, ...]] = {}
-		if contract is not None:
-			list_values["contract"] = _normalise_ordered_values(
-				contract, "task contract", required=True
+		if done_when is not None:
+			list_values["done_when"] = _normalise_ordered_values(
+				done_when, "done-when check", required=True
 			)
 		if files is not None:
 			list_values["files"] = _normalise_ordered_values(files, "task file")
 
 		values = {
 			"overview": overview,
-			"contract": contract,
+			"done_when": done_when,
 			"files": files,
 			"split_rationale": split_rationale,
 			"verification": verification,
@@ -850,7 +850,7 @@ class WriteStore(_StoreBase):
 
 		required_text_labels = {
 			"overview": "task overview",
-			"contract": "task contract",
+			"done_when": "done-when check",
 			"split_rationale": "task split rationale",
 		}
 		for field, value in values.items():
@@ -861,7 +861,7 @@ class WriteStore(_StoreBase):
 					{"id": task_id, "field": field},
 				)
 
-			# _normalise_ordered_values has already checked contract and files, and they hold
+			# _normalise_ordered_values has already checked the done-when and file values. They are
 			# lists rather than text, so the text checks below would reject them.
 			if field in list_values:
 				continue
@@ -880,7 +880,7 @@ class WriteStore(_StoreBase):
 		updates = []
 		parameters: list[object] = []
 		for field, value in values.items():
-			# contract and files live in their own tables, so they never join a tasks UPDATE.
+			# Done-when checks and files live in their own tables, so they never join a tasks UPDATE.
 			if field in list_values:
 				continue
 
@@ -2580,7 +2580,7 @@ def _write_task_values(
 	task_id: str,
 	values: Sequence[str],
 ) -> None:
-	"""Replace one task's stored contract steps or files."""
+	"""Replace one task's stored done-when checks or files."""
 	_write_ordered_values(
 		connection, _TASK_LIST_TABLES[field], "task_id", task_id, values
 	)
@@ -2607,7 +2607,7 @@ def _write_ordered_values(
 
 
 def _delete_task_values(connection: sqlite3.Connection, task_id: str) -> None:
-	"""Remove one task's contract steps and files before the task row itself is deleted."""
+	"""Remove one task's done-when checks and files before the task row itself is deleted."""
 	for table in _TASK_LIST_TABLES.values():
 		connection.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
 

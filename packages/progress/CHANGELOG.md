@@ -23,7 +23,8 @@ All notable changes to `progress` are documented here. The format is based on [K
 - Breaking: abbreviated flags no longer work anywhere in the CLI.
 - Release, task and chunk remove and complete commands now accept multiple IDs,
   apply them in order in one transaction, and return one result per ID.
-- `task add` and `task edit` now accept repeatable `--contract-step` and `--file` flags, plus an optional `--split-rationale`.
+- `task add` and `task edit` now accept repeatable `--done-when` and `--file` flags, plus an optional `--split-rationale`.
+- Breaking: task JSON uses `done_when` instead of `contract`; search uses `--in done_when` instead of `--in contract`; doctor reports `task.done_when` instead of `task.contract`.
 - `task edit --clear-split-rationale` removes a task's split rationale, and `--clear-files` now clears the whole file list rather than a single value.
 - `chunk remove` and `chunk move` now renumber the task's chunks from 1 with no
   gaps, so a later `chunk add --position` gets the position it asked for.
@@ -32,7 +33,7 @@ All notable changes to `progress` are documented here. The format is based on [K
 
 - Breaking: releases no longer have a purpose, risks or out-of-scope list, and `release add` and `release edit` no longer accept `--purpose`, `--risks`, `--out-of-scope` or their `--clear-*` flags. Upgrading the database adds existing purpose text and out-of-scope items to the end of each release overview; release risks are deleted.
 - The unused `model_tier` task column is removed from databases that have it.
-- Breaking: `--contract` and `--files` have been removed. Use `--contract-step` and `--file` instead.
+- Breaking: `--contract` and `--files` have been removed. Use `--done-when` and `--file` instead.
 
 ## [0.2.0] - 2026-08-30
 
