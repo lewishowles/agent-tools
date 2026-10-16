@@ -1,6 +1,7 @@
 """Write friction events and resolution records."""
 
 import os
+import re
 
 from .database import Database
 from .schema import utc_timestamp
@@ -28,12 +29,24 @@ def _validate_category(category: str) -> None:
 		)
 
 
-def add_event(database: Database, category: str, detail: str) -> dict[str, object]:
-	"""Store one manual event and return its complete persisted row."""
+# Matches a pattern key: lowercase words of letters and digits joined by hyphens.
+KEY_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def add_event(
+	database: Database, category: str, detail: str, key: str | None = None
+) -> dict[str, object]:
+	"""Store one manual event and return its complete persisted row.
+
+	The key names the repeated mistake and is optional. A key that is not
+	lowercase kebab-case raises ValueError, and nothing is stored.
+	"""
 	_validate_category(category)
 
 	if not detail.strip():
 		raise ValueError("detail must not be empty")
+	if key is not None and KEY_PATTERN.fullmatch(key) is None:
+		raise ValueError("key must be lowercase kebab-case (letters and digits)")
 
 	timestamp = utc_timestamp()
 	cwd = os.getcwd()
@@ -41,15 +54,15 @@ def add_event(database: Database, category: str, detail: str) -> dict[str, objec
 		cursor = connection.execute(
 			"""
 			INSERT INTO events (
-				timestamp_utc, category, cwd, detail, source,
+				timestamp_utc, category, cwd, detail, source, key,
 				tool_name, discriminator, error
-			) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)
+			) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
 			""",
-			(timestamp, category, cwd, detail, "manual"),
+			(timestamp, category, cwd, detail, "manual", key),
 		)
 		row = connection.execute(
 			"""
-			SELECT id, timestamp_utc, category, cwd, detail, source,
+			SELECT id, timestamp_utc, category, cwd, detail, source, key,
 				tool_name, discriminator, error
 			FROM events WHERE id = ?
 			""",

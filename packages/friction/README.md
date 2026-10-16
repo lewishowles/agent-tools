@@ -25,7 +25,7 @@ friction doctor
 
 ```
 Database             /Users/you/.agents/friction.db
-Schema version        2
+Schema version        3
 Database writable     True
 Directory writable    True
 Integrity             ok
@@ -34,7 +34,7 @@ Integrity             ok
 ## Recording friction
 
 ```bash
-friction add rule-ignored "skipped the review gate before committing"
+friction add rule-ignored "skipped the review gate before committing" --key review-gate
 ```
 
 ```
@@ -42,6 +42,8 @@ Logged: rule-ignored — skipped the review gate before committing
 ```
 
 Categories are fixed: `check-fail`, `missing-guidance`, `rule-ignored`, `token-waste`, `tool-error`, `tool-misuse`, `wrong-approach`. `tool-error` is written automatically by the Claude tool-failure hook below; the rest are written by an agent following its own logging instructions. `check-fail` has no automatic writer in this package: it exists so `friction import` can bring in historical rows from a retired check-failure hook.
+
+`--key` is optional. Use a short, lowercase kebab-case name for the repeated mistake, with letters and digits in words separated by single hyphens. Entries without a key remain valid.
 
 ## Reviewing friction
 
@@ -61,11 +63,12 @@ friction list --since 2026-09-01 --until 2026-09-04
 ```
 
 ```
-2026-09-02T14:07:00+00:00  rule-ignored    /Users/you/project-a  skipped the review gate before committing
-2026-09-03T09:41:00+00:00  wrong-approach  /Users/you/project-a  tried a manual retry loop instead of fixing the root cause
+ID  Timestamp                  Category        Key          CWD                   Detail
+1   2026-09-02T14:07:00+00:00  rule-ignored    review-gate  /Users/you/project-a  skipped the review gate before committing
+2   2026-09-03T09:41:00+00:00  wrong-approach               /Users/you/project-a  tried a manual retry loop instead of fixing the root cause
 ```
 
-`friction list` returns individual events, oldest first, rather than the grouped counts `summary` shows. It takes the same `--category`, `--include-check-fails`, and `--include-tool-errors` flags as `summary`, and adds `--since YYYY-MM-DD` and `--until YYYY-MM-DD`, both inclusive of the named day. Unlike `summary`, it also lists events that a resolution has since hidden. Add `--json` to get one object per event with every column: `timestamp_utc`, `category`, `cwd`, `detail`, `source`, `tool_name`, `discriminator`, and `error`.
+`friction list` returns individual events, oldest first, rather than the grouped counts `summary` shows. The text table includes each event's ID and key; an entry without a key has an empty key cell. It takes the same `--category`, `--include-check-fails`, and `--include-tool-errors` flags as `summary`, and adds `--since YYYY-MM-DD` and `--until YYYY-MM-DD`, both inclusive of the named day. Unlike `summary`, it also lists events that a resolution has since hidden. Add `--json` to get one object per event with every column: `id`, `timestamp_utc`, `category`, `cwd`, `detail`, `key` (null when absent), `source`, `tool_name`, `discriminator`, and `error`.
 
 ## Resolving a recurring pattern
 

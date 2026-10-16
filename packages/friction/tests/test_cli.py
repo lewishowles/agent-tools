@@ -5,6 +5,8 @@ import sqlite3
 import stat
 from io import StringIO
 
+import pytest
+
 from friction import cli
 from friction.database import (
 	BUSY_TIMEOUT_SECONDS,
@@ -44,10 +46,67 @@ def test_add_stores_a_manual_event_and_returns_its_json_row(tmp_path, capsys) ->
 	assert response["ok"] is True
 	assert response["data"]["category"] == "rule-ignored"
 	assert response["data"]["detail"] == "skipped the review gate"
+	assert response["data"]["key"] is None
 	assert response["data"]["source"] == "manual"
 
 	with Database(database_path).connection() as connection:
 		assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+
+
+def test_add_stores_a_key_on_a_manual_event(tmp_path, capsys) -> None:
+	database_path = tmp_path / "friction.db"
+
+	exit_code = cli.main(
+		[
+			"add",
+			"rule-ignored",
+			"skipped the review gate",
+			"--key",
+			"review-gate-2",
+			"--database",
+			str(database_path),
+			"--json",
+		]
+	)
+	response = json.loads(capsys.readouterr().out)
+
+	assert exit_code == 0
+	assert response["data"]["key"] == "review-gate-2"
+
+	with Database(database_path).connection() as connection:
+		assert (
+			connection.execute("SELECT key FROM events").fetchone()[0]
+			== "review-gate-2"
+		)
+
+
+@pytest.mark.parametrize(
+	"key", ["Review-gate", "review_gate", "-review", "review--gate", "review-"]
+)
+def test_add_rejects_a_malformed_key_without_creating_a_database(
+	tmp_path, capsys, key
+) -> None:
+	database_path = tmp_path / "friction.db"
+
+	exit_code = cli.main(
+		[
+			"add",
+			"rule-ignored",
+			"skipped the review gate",
+			f"--key={key}",
+			"--database",
+			str(database_path),
+			"--json",
+		]
+	)
+	response = json.loads(capsys.readouterr().out)
+
+	assert exit_code == 1
+	assert response == {
+		"ok": False,
+		"error": {"message": "key must be lowercase kebab-case (letters and digits)"},
+	}
+	assert not database_path.exists()
 
 
 def test_add_rejects_an_unknown_category_without_creating_a_database(
@@ -657,20 +716,24 @@ def test_list_returns_the_raw_event_envelope_in_timestamp_order(
 		"ok": True,
 		"data": [
 			{
+				"id": 2,
 				"timestamp_utc": "2026-09-03T10:00:00+00:00",
 				"category": "wrong-approach",
 				"cwd": "/workspace",
 				"detail": "first event",
+				"key": None,
 				"source": "claude-hook",
 				"tool_name": "Bash",
 				"discriminator": "run checks",
 				"error": "failed",
 			},
 			{
+				"id": 1,
 				"timestamp_utc": "2026-09-03T11:00:00+00:00",
 				"category": "rule-ignored",
 				"cwd": "/workspace",
 				"detail": "second event",
+				"key": None,
 				"source": "manual",
 				"tool_name": None,
 				"discriminator": None,
@@ -862,15 +925,16 @@ def test_list_shows_an_empty_human_result(tmp_path, capsys) -> None:
 	assert "No friction entries." in captured.out
 
 
-def test_list_shows_each_event_on_one_human_row(tmp_path, capsys) -> None:
+def test_list_shows_each_event_on_one_human_row(tmp_path, capsys, monkeypatch) -> None:
 	database_path = tmp_path / "friction.db"
+	monkeypatch.setattr(cli.style, "table", cli.style._plain_table)
 	with Database(database_path).transaction() as connection:
 		connection.execute(
 			"""
 			INSERT INTO events (
-				timestamp_utc, category, cwd, detail, source,
+				timestamp_utc, category, cwd, detail, source, key,
 				tool_name, discriminator, error
-			) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)
+			) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
 			""",
 			(
 				"2026-09-03T09:41:00+00:00",
@@ -878,6 +942,7 @@ def test_list_shows_each_event_on_one_human_row(tmp_path, capsys) -> None:
 				"/workspace",
 				"tried a manual retry loop",
 				"manual",
+				"manual-retry-loop",
 			),
 		)
 
@@ -887,6 +952,11 @@ def test_list_shows_each_event_on_one_human_row(tmp_path, capsys) -> None:
 	assert exit_code == 0
 	assert captured.err == ""
 	assert "2026-09-03T09:41:00+00:00" in captured.out
+	row = next(
+		line for line in captured.out.splitlines() if "manual-retry-loop" in line
+	)
+	assert row.split()[0] == "1"
+	assert row.split()[3] == "manual-retry-loop"
 	assert "wrong-approach" in captured.out
 	assert "tried a manual retry loop" in captured.out
 
@@ -906,7 +976,7 @@ def test_doctor_reports_database_health_and_private_database_permissions(
 		"ok": True,
 		"data": {
 			"database_path": str(database_path),
-			"schema_version": 2,
+			"schema_version": 3,
 			"database_writable": True,
 			"directory_writable": True,
 			"integrity_check": "ok",
@@ -975,6 +1045,52 @@ def test_database_migration_removes_the_redundant_runtime_column(tmp_path) -> No
 
 	assert "runtime" not in columns
 	assert dict(row) == {"category": "rule-ignored", "source": "manual"}
+
+
+def test_database_migration_adds_nullable_keys_to_version_2_events(tmp_path) -> None:
+	database_path = tmp_path / "friction.db"
+	connection = sqlite3.connect(database_path)
+	connection.execute(
+		"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+	)
+	connection.executemany(
+		"INSERT INTO schema_migrations (version, applied_at) VALUES (?, '2026-09-03')",
+		[(1,), (2,)],
+	)
+	connection.execute(
+		"""
+		CREATE TABLE events (
+			id INTEGER PRIMARY KEY,
+			timestamp_utc TEXT NOT NULL,
+			category TEXT NOT NULL,
+			cwd TEXT NOT NULL,
+			detail TEXT NOT NULL,
+			source TEXT NOT NULL,
+			tool_name TEXT,
+			discriminator TEXT,
+			error TEXT
+		)
+		"""
+	)
+	connection.execute(
+		"""
+		INSERT INTO events (id, timestamp_utc, category, cwd, detail, source)
+		VALUES (17, '2026-09-03', 'rule-ignored', '/workspace', 'detail', 'manual')
+		"""
+	)
+	connection.commit()
+	connection.close()
+
+	with Database(database_path).connection() as migrated_connection:
+		row = migrated_connection.execute(
+			"SELECT id, detail, key FROM events"
+		).fetchone()
+		version = migrated_connection.execute(
+			"SELECT MAX(version) FROM schema_migrations"
+		).fetchone()[0]
+
+	assert dict(row) == {"id": 17, "detail": "detail", "key": None}
+	assert version == 3
 
 
 def test_resolve_database_path_uses_the_environment_override(

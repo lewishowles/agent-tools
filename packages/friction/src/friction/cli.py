@@ -82,6 +82,9 @@ def build_parser() -> argparse.ArgumentParser:
 	add_parser = commands.add_parser("add", help="record a manual friction event")
 	add_parser.add_argument("category", choices=sorted(CATEGORIES))
 	add_parser.add_argument("detail")
+	add_parser.add_argument(
+		"--key", metavar="KEY", help="optional lowercase kebab-case pattern key"
+	)
 	_add_output_options(add_parser)
 
 	summary_parser = commands.add_parser(
@@ -217,8 +220,10 @@ def _human_output(
 
 		return style.table(
 			[
+				{"key": "id", "label": "ID"},
 				{"key": "timestamp", "label": "Timestamp"},
 				{"key": "category", "label": "Category"},
+				{"key": "pattern_key", "label": "Key"},
 				{
 					"key": "cwd",
 					"label": "CWD",
@@ -234,8 +239,10 @@ def _human_output(
 			],
 			[
 				{
+					"id": str(item["id"]),
 					"timestamp": str(item["timestamp_utc"]),
 					"category": str(item["category"]),
+					"pattern_key": str(item["key"] or ""),
 					"cwd": str(item["cwd"]),
 					"detail": str(item["detail"]),
 				}
@@ -288,7 +295,7 @@ def _run_command(
 	"""Run the selected command and return its data and command name."""
 	database = Database(getattr(args, "database", None))
 	if args.command == "add":
-		return add_event(database, args.category, args.detail), "add"
+		return add_event(database, args.category, args.detail, args.key), "add"
 
 	if args.command == "summary":
 		return (

@@ -157,10 +157,12 @@ def list_events(
 		rows = connection.execute(
 			f"""
 			SELECT
+				id,
 				timestamp_utc,
 				category,
 				cwd,
 				detail,
+				key,
 				source,
 				tool_name,
 				discriminator,
