@@ -10,7 +10,7 @@ from .errors import DatabaseBusyError
 from .hooks import record_claude_tool_failure
 from .imports import import_files
 from .reads import list_events, summary
-from .writes import CATEGORIES, add_event, add_resolution, database_doctor
+from .writes import CATEGORIES, add_event, add_resolution, apply_keys, database_doctor
 from . import style
 
 
@@ -151,6 +151,14 @@ def build_parser() -> argparse.ArgumentParser:
 	)
 	_add_output_options(import_parser)
 
+	apply_keys_parser = commands.add_parser(
+		"apply-keys", help="set entry keys from a JSON file of entry IDs to keys"
+	)
+	apply_keys_parser.add_argument(
+		"file", metavar="FILE", help="JSON object of entry IDs to keys"
+	)
+	_add_output_options(apply_keys_parser)
+
 	hook_parser = commands.add_parser("hook", help="run an integration hook")
 	hook_commands = hook_parser.add_subparsers(dest="hook_command", required=True)
 	claude_hook_parser = hook_commands.add_parser(
@@ -275,6 +283,9 @@ def _human_output(
 		)
 		return "\n".join(rows)
 
+	if command == "apply-keys":
+		return style.row("Keys changed", str(data["changed"]))
+
 	return "\n".join(
 		(
 			style.row("Database", str(data["database_path"])),
@@ -333,6 +344,8 @@ def _run_command(
 
 	if args.command == "import":
 		return import_files(database, args.paths, dry_run=args.dry_run), "import"
+	if args.command == "apply-keys":
+		return apply_keys(database, args.file), "apply-keys"
 	if args.command == "hook" and args.hook_command == "claude-tool-failure":
 		try:
 			raw_input = sys.stdin.read()

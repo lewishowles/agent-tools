@@ -1,7 +1,9 @@
 """Write friction events and resolution records."""
 
+import json
 import os
 import re
+from pathlib import Path
 
 from .database import Database
 from .schema import utc_timestamp
@@ -79,6 +81,56 @@ def add_event(
 		).fetchone()
 
 	return dict(row)
+
+
+def apply_keys(database: Database, file_path: str) -> dict[str, int]:
+	"""Set or replace event keys from a JSON file of entry IDs to keys.
+
+	The whole file is checked before anything is written. A malformed file,
+	an unknown entry ID or a key that is not lowercase kebab-case raises
+	ValueError listing every problem found, and no event changes. Details are
+	never edited. Returns the number of events whose key actually changed, so
+	applying the same file twice reports zero the second time.
+	"""
+	try:
+		mapping = json.loads(Path(file_path).read_text(encoding="utf-8"))
+	except json.JSONDecodeError as error:
+		raise ValueError(f"invalid JSON mapping: {error.msg}") from error
+
+	if not isinstance(mapping, dict):
+		raise ValueError("mapping must be a JSON object of entry IDs to keys")
+
+	with database.transaction() as connection:
+		key_by_entry_id = {
+			str(row["id"]): row["key"]
+			for row in connection.execute("SELECT id, key FROM events")
+		}
+		problems = []
+		changes = []
+
+		for entry_id, key in mapping.items():
+			if entry_id not in key_by_entry_id:
+				problems.append(f"entry ID {entry_id!r} does not exist")
+
+			if not isinstance(key, str):
+				problems.append(f"entry ID {entry_id!r}: key must be a string")
+				continue
+
+			try:
+				_validate_key(key)
+			except ValueError as error:
+				problems.append(f"entry ID {entry_id!r}: {error}")
+				continue
+
+			if entry_id in key_by_entry_id and key_by_entry_id[entry_id] != key:
+				changes.append((key, int(entry_id)))
+
+		if problems:
+			raise ValueError("invalid key mapping:\n" + "\n".join(problems))
+
+		connection.executemany("UPDATE events SET key = ? WHERE id = ?", changes)
+
+	return {"changed": len(changes)}
 
 
 def add_resolution(

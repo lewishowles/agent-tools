@@ -72,6 +72,30 @@ ID  Timestamp                  Category        Key          CWD                 
 
 `friction list` returns individual events, oldest first, rather than the grouped counts `summary` shows. The text table includes each event's ID and key; an entry without a key has an empty key cell. It takes the same `--category`, `--include-check-fails`, and `--include-tool-errors` flags as `summary`, and adds `--since YYYY-MM-DD` and `--until YYYY-MM-DD`, both inclusive of the named day. Unlike `summary`, it also lists events that a resolution has since hidden. Add `--json` to get one object per event with every column: `id`, `timestamp_utc`, `category`, `cwd`, `detail`, `key` (null when absent), `source`, `tool_name`, `discriminator`, and `error`.
 
+## Adding keys to existing entries
+
+Export the entries, then prepare a JSON object whose property names are entry IDs and whose values are the keys you want to assign:
+
+```bash
+friction list --include-check-fails --include-tool-errors --json > /tmp/friction-entries.json
+```
+
+```json
+{"123": "review-gate", "124": "zsh-status-variable"}
+```
+
+Save the mapping to a file, then apply it:
+
+```bash
+friction apply-keys /tmp/friction-keys.json
+```
+
+```
+Keys changed  2
+```
+
+`apply-keys` sets or replaces keys without changing entry details. It checks the entire file before writing. If the JSON is malformed, an ID is unknown, or a key does not follow the kebab-case rule, it reports every detected problem and leaves all entries unchanged. Re-applying the same mapping reports zero changed keys. Add `--json` to get `{"ok": true, "data": {"changed": 2}}` on success.
+
 ## Resolving a recurring pattern
 
 ```bash

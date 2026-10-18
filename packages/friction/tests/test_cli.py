@@ -123,6 +123,103 @@ def test_add_rejects_an_unknown_category_without_creating_a_database(
 	assert not database_path.exists()
 
 
+def test_apply_keys_changes_existing_keys_and_reapplying_changes_nothing(
+	tmp_path, capsys
+) -> None:
+	database_path = tmp_path / "friction.db"
+	mapping_path = tmp_path / "keys.json"
+	with Database(database_path).transaction() as connection:
+		connection.executemany(
+			"""
+			INSERT INTO events (id, timestamp_utc, category, cwd, detail, source, key)
+			VALUES (?, '2026-09-03T10:00:00+00:00', 'rule-ignored', '/workspace', ?, 'manual', ?)
+			""",
+			[(1, "first detail", None), (2, "second detail", "old-key")],
+		)
+	mapping_path.write_text(json.dumps({"1": "review-gate", "2": "new-key"}))
+	command = [
+		"apply-keys",
+		str(mapping_path),
+		"--database",
+		str(database_path),
+		"--json",
+	]
+
+	assert cli.main(command) == 0
+	assert json.loads(capsys.readouterr().out)["data"] == {"changed": 2}
+	assert cli.main(command) == 0
+	assert json.loads(capsys.readouterr().out)["data"] == {"changed": 0}
+	assert cli.main(command[:-1]) == 0
+	human_output = capsys.readouterr().out
+	assert "Keys changed" in human_output
+	assert human_output.rstrip().endswith("0")
+
+	with Database(database_path).connection() as connection:
+		rows = connection.execute(
+			"SELECT id, detail, key FROM events ORDER BY id"
+		).fetchall()
+
+	assert [tuple(row) for row in rows] == [
+		(1, "first detail", "review-gate"),
+		(2, "second detail", "new-key"),
+	]
+
+
+@pytest.mark.parametrize(
+	("contents", "errors"),
+	[
+		(
+			'{"1": "new-key", "999": "valid-key", "2": "Bad-key", "3": 7}',
+			[
+				"entry ID '999' does not exist",
+				"entry ID '2': key must be lowercase kebab-case",
+				"entry ID '3': key must be a string",
+			],
+		),
+		("{broken", ["invalid JSON mapping"]),
+		("[]", ["mapping must be a JSON object"]),
+	],
+)
+def test_apply_keys_rejects_the_whole_mapping_without_changing_events(
+	tmp_path, capsys, contents, errors
+) -> None:
+	database_path = tmp_path / "friction.db"
+	mapping_path = tmp_path / "keys.json"
+	with Database(database_path).transaction() as connection:
+		connection.executemany(
+			"""
+			INSERT INTO events (id, timestamp_utc, category, cwd, detail, source, key)
+			VALUES (?, '2026-09-03T10:00:00+00:00', 'rule-ignored', '/workspace', ?, 'manual', ?)
+			""",
+			[
+				(1, "first detail", "old-key"),
+				(2, "second detail", None),
+				(3, "third detail", None),
+			],
+		)
+	mapping_path.write_text(contents)
+
+	exit_code = cli.main(
+		["apply-keys", str(mapping_path), "--database", str(database_path), "--json"]
+	)
+	response = json.loads(capsys.readouterr().out)
+
+	assert exit_code == 1
+	for error in errors:
+		assert error in response["error"]["message"]
+
+	with Database(database_path).connection() as connection:
+		rows = connection.execute(
+			"SELECT id, detail, key FROM events ORDER BY id"
+		).fetchall()
+
+	assert [tuple(row) for row in rows] == [
+		(1, "first detail", "old-key"),
+		(2, "second detail", None),
+		(3, "third detail", None),
+	]
+
+
 def test_resolve_creates_no_event_and_returns_its_json_row(tmp_path, capsys) -> None:
 	database_path = tmp_path / "friction.db"
 
