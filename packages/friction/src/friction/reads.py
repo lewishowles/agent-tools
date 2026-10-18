@@ -2,12 +2,54 @@
 
 import sqlite3
 from collections.abc import Sequence
+from difflib import get_close_matches
 
 from .database import Database
 from .tool_errors import classify_tool_error
 
 # Categories that stay hidden unless a caller explicitly includes them.
 AUTOMATED_CATEGORIES = frozenset({"check-fail", "tool-error"})
+
+
+def list_keys(database: Database) -> list[dict[str, object]]:
+	"""List each stored key with its category and entry count, most used first.
+
+	Entries that a resolution hides from the summary still count here.
+	"""
+	with database.connection() as connection:
+		rows = connection.execute(
+			"""
+			SELECT key, category, COUNT(*) AS count
+			FROM events
+			WHERE key IS NOT NULL
+			GROUP BY key, category
+			ORDER BY count DESC, key ASC, category ASC
+			"""
+		).fetchall()
+
+	return [dict(row) for row in rows]
+
+
+def suggest_keys(database: Database, key: str, category: str) -> list[str]:
+	"""Return up to three stored keys that look like a key just logged.
+
+	Call it after the entry is stored. Keys from the same category come first.
+	The list is empty when other entries already use the key, so only a new
+	key gets suggestions.
+	"""
+	rows = list_keys(database)
+	if sum(int(row["count"]) for row in rows if row["key"] == key) != 1:
+		return []
+
+	known_keys = {row["key"] for row in rows if row["key"] != key}
+	same_category_keys = {
+		row["key"] for row in rows if row["category"] == category and row["key"] != key
+	}
+	other_category_keys = known_keys - same_category_keys
+	same_category_matches = get_close_matches(key, same_category_keys, n=3)
+	other_category_matches = get_close_matches(key, other_category_keys, n=3)
+
+	return (same_category_matches + other_category_matches)[:3]
 
 
 def _category_conditions(

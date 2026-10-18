@@ -9,7 +9,7 @@ from .database import Database
 from .errors import DatabaseBusyError
 from .hooks import record_claude_tool_failure
 from .imports import import_files
-from .reads import list_events, summary
+from .reads import list_events, list_keys, suggest_keys, summary
 from .writes import CATEGORIES, add_event, add_resolution, apply_keys, database_doctor
 from . import style
 
@@ -142,6 +142,11 @@ def build_parser() -> argparse.ArgumentParser:
 	)
 	_add_output_options(list_parser)
 
+	keys_parser = commands.add_parser(
+		"keys", help="show stored pattern keys with their entry counts"
+	)
+	_add_output_options(keys_parser)
+
 	import_parser = commands.add_parser(
 		"import", help="import legacy friction TSV files"
 	)
@@ -210,7 +215,11 @@ def _human_output(
 ) -> str:
 	"""Format the human result for one completed command."""
 	if command == "add":
-		return style.span(f"Logged: {data['category']} — {data['detail']}", "success")
+		logged = style.span(f"Logged: {data['category']} — {data['detail']}", "success")
+		if data["suggested_keys"]:
+			return f"{logged}\nSimilar keys: {', '.join(data['suggested_keys'])}"
+
+		return logged
 
 	if command == "resolve":
 		return style.span(
@@ -266,6 +275,26 @@ def _human_output(
 			],
 		)
 
+	if command == "keys":
+		if not data:
+			return style.span("No keys recorded.")
+
+		return style.table(
+			[
+				{"key": "key", "label": "Key"},
+				{"key": "category", "label": "Category"},
+				{"key": "count", "label": "Entries"},
+			],
+			[
+				{
+					"key": str(item["key"]),
+					"category": str(item["category"]),
+					"count": str(item["count"]),
+				}
+				for item in data
+			],
+		)
+
 	if command == "import":
 		rejected_rows = data["rejected_rows"]
 		rows = [
@@ -316,7 +345,13 @@ def _run_command(
 	"""Run the selected command and return its data and command name."""
 	database = Database(getattr(args, "database", None))
 	if args.command == "add":
-		return add_event(database, args.category, args.detail, args.key), "add"
+		data = add_event(database, args.category, args.detail, args.key)
+		data["suggested_keys"] = (
+			suggest_keys(database, args.key, args.category)
+			if args.key is not None
+			else []
+		)
+		return data, "add"
 
 	if args.command == "summary":
 		return (
@@ -341,6 +376,9 @@ def _run_command(
 			),
 			"list",
 		)
+
+	if args.command == "keys":
+		return list_keys(database), "keys"
 
 	if args.command == "import":
 		return import_files(database, args.paths, dry_run=args.dry_run), "import"

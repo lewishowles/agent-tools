@@ -45,6 +45,27 @@ Categories are fixed: `check-fail`, `missing-guidance`, `rule-ignored`, `token-w
 
 `--key` is optional. Use a short, lowercase kebab-case name for the repeated mistake, with letters and digits in words separated by single hyphens. Entries without a key remain valid.
 
+When you add a key that no entry uses yet, `friction` lists up to three existing keys that look similar, so you can see whether the mistake already has a name:
+
+```bash
+friction add rule-ignored "committed without running the review" --key review-gates
+```
+
+```
+Logged: rule-ignored — committed without running the review
+Similar keys: review-gate
+```
+
+Keys from the same category come first, then keys from other categories. The entry is stored with the key you gave either way. In `--json` output, `suggested_keys` is always a list; it is empty when the key is already in use, nothing is close, or no key was given.
+
+To see the keys already in use, run:
+
+```bash
+friction keys
+```
+
+This lists each key and category with its entry count, most used first. Entries that a resolution hides from `friction summary` still count. Add `--json` to get rows with `key`, `category`, and `count`.
+
 ## Reviewing friction
 
 ```bash

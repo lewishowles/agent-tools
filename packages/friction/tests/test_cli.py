@@ -47,10 +47,25 @@ def test_add_stores_a_manual_event_and_returns_its_json_row(tmp_path, capsys) ->
 	assert response["data"]["category"] == "rule-ignored"
 	assert response["data"]["detail"] == "skipped the review gate"
 	assert response["data"]["key"] is None
+	assert response["data"]["suggested_keys"] == []
 	assert response["data"]["source"] == "manual"
 
 	with Database(database_path).connection() as connection:
 		assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+
+	assert (
+		cli.main(
+			[
+				"add",
+				"rule-ignored",
+				"another skipped review gate",
+				"--database",
+				str(database_path),
+			]
+		)
+		== 0
+	)
+	assert "Similar keys:" not in capsys.readouterr().out
 
 
 def test_add_stores_a_key_on_a_manual_event(tmp_path, capsys) -> None:
@@ -78,6 +93,212 @@ def test_add_stores_a_key_on_a_manual_event(tmp_path, capsys) -> None:
 			connection.execute("SELECT key FROM events").fetchone()[0]
 			== "review-gate-2"
 		)
+
+
+def test_add_suggests_close_keys_from_the_same_category_first(tmp_path, capsys) -> None:
+	database_path = tmp_path / "friction.db"
+	with Database(database_path).transaction() as connection:
+		connection.executemany(
+			"""
+			INSERT INTO events (timestamp_utc, category, cwd, detail, source, key)
+			VALUES ('2026-09-03T10:00:00+00:00', ?, '/workspace', 'detail', 'manual', ?)
+			""",
+			[
+				("rule-ignored", "review-date"),
+				("wrong-approach", "review-gates"),
+			],
+		)
+
+	command = [
+		"add",
+		"rule-ignored",
+		"skipped the gate",
+		"--key",
+		"review-gate",
+		"--database",
+		str(database_path),
+	]
+	assert cli.main([*command, "--json"]) == 0
+	response = json.loads(capsys.readouterr().out)
+
+	assert response["data"]["suggested_keys"] == ["review-date", "review-gates"]
+	with Database(database_path).transaction() as connection:
+		connection.execute("DELETE FROM events WHERE key = 'review-gate'")
+
+	assert cli.main(command) == 0
+	output = capsys.readouterr().out
+
+	assert output.splitlines() == [
+		"Logged: rule-ignored — skipped the gate",
+		"Similar keys: review-date, review-gates",
+	]
+
+
+def test_add_limits_suggestions_to_three_with_same_category_first(
+	tmp_path, capsys
+) -> None:
+	database_path = tmp_path / "friction.db"
+	with Database(database_path).transaction() as connection:
+		connection.executemany(
+			"""
+			INSERT INTO events (timestamp_utc, category, cwd, detail, source, key)
+			VALUES ('2026-09-03T10:00:00+00:00', ?, '/workspace', 'detail', 'manual', ?)
+			""",
+			[
+				("rule-ignored", "review-date"),
+				("wrong-approach", "review-gates"),
+				("wrong-approach", "review-gate-2"),
+				("wrong-approach", "review-late"),
+			],
+		)
+
+	assert (
+		cli.main(
+			[
+				"add",
+				"rule-ignored",
+				"skipped the gate",
+				"--key",
+				"review-gate",
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 0
+	)
+	response = json.loads(capsys.readouterr().out)
+
+	assert response["data"]["suggested_keys"] == [
+		"review-date",
+		"review-gates",
+		"review-gate-2",
+	]
+
+
+def test_add_gives_no_suggestions_when_no_key_is_close(tmp_path, capsys) -> None:
+	database_path = tmp_path / "friction.db"
+	with Database(database_path).transaction() as connection:
+		connection.execute(
+			"""
+			INSERT INTO events (timestamp_utc, category, cwd, detail, source, key)
+			VALUES ('2026-09-03T10:00:00+00:00', 'rule-ignored', '/workspace',
+				'detail', 'manual', 'review-gate')
+			"""
+		)
+
+	assert (
+		cli.main(
+			[
+				"add",
+				"rule-ignored",
+				"missed a check",
+				"--key",
+				"shell-quote",
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 0
+	)
+	response = json.loads(capsys.readouterr().out)
+
+	assert response["data"]["suggested_keys"] == []
+
+
+def test_add_reused_key_has_no_suggestions_or_extra_text(tmp_path, capsys) -> None:
+	database_path = tmp_path / "friction.db"
+	with Database(database_path).transaction() as connection:
+		connection.execute(
+			"""
+			INSERT INTO events (timestamp_utc, category, cwd, detail, source, key)
+			VALUES ('2026-09-03T10:00:00+00:00', 'wrong-approach', '/workspace',
+				'detail', 'manual', 'review-gate')
+			"""
+		)
+
+	command = [
+		"add",
+		"rule-ignored",
+		"skipped the gate",
+		"--key",
+		"review-gate",
+		"--database",
+		str(database_path),
+	]
+	assert cli.main([*command, "--json"]) == 0
+	response = json.loads(capsys.readouterr().out)
+
+	assert response["data"]["suggested_keys"] == []
+	assert cli.main(command) == 0
+	assert capsys.readouterr().out.splitlines() == [
+		"Logged: rule-ignored — skipped the gate"
+	]
+
+
+def test_keys_lists_all_categories_and_resolved_entries(tmp_path, capsys) -> None:
+	database_path = tmp_path / "friction.db"
+	with Database(database_path).transaction() as connection:
+		connection.executemany(
+			"""
+			INSERT INTO events (timestamp_utc, category, cwd, detail, source, key)
+			VALUES ('2026-09-03T10:00:00+00:00', ?, '/workspace', 'detail', 'manual', ?)
+			""",
+			[
+				("rule-ignored", "review-gate"),
+				("rule-ignored", "review-gate"),
+				("wrong-approach", "review-gate"),
+				("tool-misuse", "shell-quote"),
+			],
+		)
+		connection.execute(
+			"""
+			INSERT INTO resolutions
+				(category, pattern, resolved_at_utc, reference, target)
+			VALUES ('rule-ignored', 'review-gate', '2026-09-04T10:00:00+00:00',
+				'fix', 'key')
+			"""
+		)
+
+	command = ["keys", "--database", str(database_path)]
+	assert cli.main([*command, "--json"]) == 0
+	response = json.loads(capsys.readouterr().out)
+
+	assert response["data"] == [
+		{"key": "review-gate", "category": "rule-ignored", "count": 2},
+		{"key": "review-gate", "category": "wrong-approach", "count": 1},
+		{"key": "shell-quote", "category": "tool-misuse", "count": 1},
+	]
+	assert cli.main(command) == 0
+	output = capsys.readouterr().out
+
+	assert "Key" in output
+	assert "Category" in output
+	assert "Entries" in output
+	assert output.index("rule-ignored") < output.index("wrong-approach")
+	assert "review-gate" in output
+	assert "shell-quote" in output
+
+
+def test_keys_reports_when_no_entries_have_keys(tmp_path, capsys) -> None:
+	database_path = tmp_path / "friction.db"
+	with Database(database_path).transaction() as connection:
+		connection.execute(
+			"""
+			INSERT INTO events (timestamp_utc, category, cwd, detail, source)
+			VALUES ('2026-09-03T10:00:00+00:00', 'rule-ignored', '/workspace',
+				'detail', 'manual')
+			"""
+		)
+
+	command = ["keys", "--database", str(database_path)]
+	assert cli.main([*command, "--json"]) == 0
+	response = json.loads(capsys.readouterr().out)
+
+	assert response == {"ok": True, "data": []}
+	assert cli.main(command) == 0
+	assert capsys.readouterr().out.strip() == "No keys recorded."
 
 
 @pytest.mark.parametrize(
