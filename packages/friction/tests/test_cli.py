@@ -144,6 +144,7 @@ def test_resolve_creates_no_event_and_returns_its_json_row(tmp_path, capsys) -> 
 	assert exit_code == 0
 	assert captured.err == ""
 	assert response["data"]["reference"] == "fix: require investigation"
+	assert response["data"]["target"] == "detail"
 
 	with Database(database_path).connection() as connection:
 		assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
@@ -304,14 +305,16 @@ def test_summary_hides_events_at_or_before_resolution(tmp_path, capsys) -> None:
 			{
 				"count": 1,
 				"category": "rule-ignored",
-				"cwd": "/workspace",
-				"detail": "skipped review",
+				"key": None,
+				"example": "skipped review",
+				"folders": ["/workspace"],
 			},
 			{
 				"count": 1,
 				"category": "wrong-approach",
-				"cwd": "/workspace",
-				"detail": "skipped investigation",
+				"key": None,
+				"example": "skipped investigation",
+				"folders": ["/workspace"],
 			},
 		],
 	}
@@ -365,8 +368,9 @@ def test_summary_shows_event_logged_after_resolution(
 			{
 				"count": 1,
 				"category": "rule-ignored",
-				"cwd": str(tmp_path),
-				"detail": "skipped review",
+				"key": None,
+				"example": "skipped review",
+				"folders": [str(tmp_path)],
 			}
 		],
 	}
@@ -556,35 +560,35 @@ def test_summary_groups_tool_errors_across_directories_and_keeps_other_rows(
 		"data": [
 			{
 				"count": 2,
+				"category": "rule-ignored",
+				"key": None,
+				"example": "same detail",
+				"folders": ["/one", "/two"],
+			},
+			{
+				"count": 2,
 				"category": "tool-error",
+				"key": None,
 				"command_family": "git",
 				"error_class": "exit 1",
 				"example": "latest git failure",
+				"folders": ["/one", "/two"],
 			},
 			{
 				"count": 1,
 				"category": "check-fail",
-				"cwd": "/one",
-				"detail": "check failed",
-			},
-			{
-				"count": 1,
-				"category": "rule-ignored",
-				"cwd": "/one",
-				"detail": "same detail",
-			},
-			{
-				"count": 1,
-				"category": "rule-ignored",
-				"cwd": "/two",
-				"detail": "same detail",
+				"key": None,
+				"example": "check failed",
+				"folders": ["/one"],
 			},
 			{
 				"count": 1,
 				"category": "tool-error",
+				"key": None,
 				"command_family": "unknown",
 				"error_class": "unknown",
 				"example": "missing fields",
+				"folders": ["/one"],
 			},
 		],
 	}
@@ -601,7 +605,9 @@ def test_summary_groups_tool_errors_across_directories_and_keeps_other_rows(
 		)
 		== 0
 	)
-	assert "1  rule-ignored  /one  same detail" in capsys.readouterr().out
+	human_output = capsys.readouterr().out
+	assert "2  rule-ignored  (latest: same detail)" in human_output
+	assert "  folders: /one, /two" in human_output
 
 	assert (
 		cli.main(
@@ -660,6 +666,193 @@ def test_summary_orders_equal_count_tool_errors_by_family_and_class(
 		("git", "exit 2"),
 		("git", "exit 3"),
 	]
+
+
+def test_summary_groups_keyed_entries_across_folders_and_tool_error_classes(
+	tmp_path, capsys
+) -> None:
+	database_path = tmp_path / "friction.db"
+	with Database(database_path).transaction() as connection:
+		connection.executemany(
+			"""
+			INSERT INTO events (
+				timestamp_utc, category, cwd, detail, source, key,
+				tool_name, discriminator, error
+			) VALUES (?, ?, ?, ?, 'manual', ?, ?, ?, ?)
+			""",
+			[
+				(
+					"2026-09-03T09:00:00+00:00",
+					"rule-ignored",
+					"/b",
+					"first",
+					"review-gate",
+					None,
+					None,
+					None,
+				),
+				(
+					"2026-09-03T10:00:00+00:00",
+					"rule-ignored",
+					"/a",
+					"latest",
+					"review-gate",
+					None,
+					None,
+					None,
+				),
+				(
+					"2026-09-03T11:00:00+00:00",
+					"rule-ignored",
+					"/a",
+					"first",
+					None,
+					None,
+					None,
+					None,
+				),
+				(
+					"2026-09-03T12:00:00+00:00",
+					"tool-error",
+					"/b",
+					"git failed",
+					"retry-tool",
+					"Bash",
+					"git diff",
+					"Exit code 1",
+				),
+				(
+					"2026-09-03T13:00:00+00:00",
+					"tool-error",
+					"/a",
+					"read failed",
+					"retry-tool",
+					"Read",
+					"/a/file",
+					"File missing",
+				),
+			],
+		)
+
+	assert (
+		cli.main(
+			[
+				"summary",
+				"--include-tool-errors",
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 0
+	)
+	rows = json.loads(capsys.readouterr().out)["data"]
+
+	assert rows == [
+		{
+			"count": 2,
+			"category": "rule-ignored",
+			"key": "review-gate",
+			"example": "latest",
+			"folders": ["/a", "/b"],
+		},
+		{
+			"count": 2,
+			"category": "tool-error",
+			"key": "retry-tool",
+			"example": "read failed",
+			"folders": ["/a", "/b"],
+		},
+		{
+			"count": 1,
+			"category": "rule-ignored",
+			"key": None,
+			"example": "first",
+			"folders": ["/a"],
+		},
+	]
+
+	assert (
+		cli.main(["summary", "--include-tool-errors", "--database", str(database_path)])
+		== 0
+	)
+	human_output = capsys.readouterr().out
+	assert (
+		"2  rule-ignored  review-gate  (latest: latest)\n  folders: /a, /b"
+		in human_output
+	)
+	assert (
+		"2  tool-error  retry-tool  (latest: read failed)\n  folders: /a, /b"
+		in human_output
+	)
+
+
+def test_key_and_detail_resolutions_hide_only_their_own_earlier_matches(
+	tmp_path, capsys
+) -> None:
+	database_path = tmp_path / "friction.db"
+	with Database(database_path).transaction() as connection:
+		connection.executemany(
+			"""
+			INSERT INTO events (timestamp_utc, category, cwd, detail, source, key)
+			VALUES (?, 'rule-ignored', ?, ?, 'manual', ?)
+			""",
+			[
+				("2026-09-03T09:00:00+00:00", "/a", "first wording", "review-gate"),
+				("2026-09-03T09:30:00+00:00", "/b", "second wording", "review-gate"),
+				("2026-09-03T09:45:00+00:00", "/c", "review-gate", None),
+				("2026-09-03T10:30:00+00:00", "/d", "later wording", "review-gate"),
+			],
+		)
+		connection.execute(
+			"""
+			INSERT INTO resolutions (category, pattern, resolved_at_utc, reference, target)
+			VALUES ('rule-ignored', 'review-gate', '2026-09-03T10:00:00+00:00', 'fix', 'key')
+			"""
+		)
+
+	assert cli.main(["summary", "--database", str(database_path), "--json"]) == 0
+	rows = json.loads(capsys.readouterr().out)["data"]
+	assert [row["example"] for row in rows] == ["later wording", "review-gate"]
+
+	with Database(database_path).transaction() as connection:
+		connection.execute(
+			"""
+			INSERT INTO resolutions (category, pattern, resolved_at_utc, reference, target)
+			VALUES ('rule-ignored', 'review-gate', '2026-09-03T11:00:00+00:00', 'fix', 'detail')
+			"""
+		)
+
+	assert cli.main(["summary", "--database", str(database_path), "--json"]) == 0
+	rows = json.loads(capsys.readouterr().out)["data"]
+	assert [row["example"] for row in rows] == ["later wording"]
+
+
+def test_resolve_requires_either_a_detail_or_a_valid_key(tmp_path, capsys) -> None:
+	database_path = tmp_path / "friction.db"
+	base = [
+		"resolve",
+		"rule-ignored",
+		"--reference",
+		"fix",
+		"--database",
+		str(database_path),
+		"--json",
+	]
+
+	for extra in ([], ["detail", "--key", "review-gate"]):
+		assert cli.main([*base, *extra]) == 2
+		assert "exactly one" in json.loads(capsys.readouterr().out)["error"]["message"]
+
+	assert cli.main([*base, "--key", "Review-gate"]) == 1
+	assert (
+		"lowercase kebab-case"
+		in json.loads(capsys.readouterr().out)["error"]["message"]
+	)
+	assert not database_path.exists()
+
+	assert cli.main([*base, "--key", "review-gate"]) == 0
+	assert json.loads(capsys.readouterr().out)["data"]["target"] == "key"
 
 
 def test_list_returns_the_raw_event_envelope_in_timestamp_order(
@@ -882,16 +1075,30 @@ def test_list_returns_events_hidden_by_a_resolution(tmp_path, capsys) -> None:
 		)
 		connection.execute(
 			"""
+			INSERT INTO events (timestamp_utc, category, cwd, detail, source, key)
+			VALUES ('2026-09-03T09:30:00+00:00', 'rule-ignored', '/workspace',
+				'key resolved', 'manual', 'review-gate')
+			"""
+		)
+		connection.execute(
+			"""
 			INSERT INTO resolutions (category, pattern, resolved_at_utc, reference)
 			VALUES (?, ?, ?, ?)
 			""",
 			("rule-ignored", "resolved", "2026-09-03T10:00:00+00:00", "fix"),
 		)
+		connection.execute(
+			"""
+			INSERT INTO resolutions (category, pattern, resolved_at_utc, reference, target)
+			VALUES ('rule-ignored', 'review-gate', '2026-09-03T10:00:00+00:00', 'fix', 'key')
+			"""
+		)
 
 	assert cli.main(["list", "--database", str(database_path), "--json"]) == 0
 
 	assert [item["detail"] for item in json.loads(capsys.readouterr().out)["data"]] == [
-		"resolved"
+		"resolved",
+		"key resolved",
 	]
 
 
@@ -976,7 +1183,7 @@ def test_doctor_reports_database_health_and_private_database_permissions(
 		"ok": True,
 		"data": {
 			"database_path": str(database_path),
-			"schema_version": 3,
+			"schema_version": 4,
 			"database_writable": True,
 			"directory_writable": True,
 			"integrity_check": "ok",
@@ -1029,6 +1236,17 @@ def test_database_migration_removes_the_redundant_runtime_column(tmp_path) -> No
 		""",
 		("2026-09-03", "rule-ignored", "/workspace", "detail", "manual", "codex"),
 	)
+	connection.execute(
+		"""
+		CREATE TABLE resolutions (
+			id INTEGER PRIMARY KEY,
+			category TEXT NOT NULL,
+			pattern TEXT NOT NULL,
+			resolved_at_utc TEXT NOT NULL,
+			reference TEXT NOT NULL
+		)
+		"""
+	)
 	connection.commit()
 	connection.close()
 
@@ -1078,6 +1296,17 @@ def test_database_migration_adds_nullable_keys_to_version_2_events(tmp_path) -> 
 		VALUES (17, '2026-09-03', 'rule-ignored', '/workspace', 'detail', 'manual')
 		"""
 	)
+	connection.execute(
+		"""
+		CREATE TABLE resolutions (
+			id INTEGER PRIMARY KEY,
+			category TEXT NOT NULL,
+			pattern TEXT NOT NULL,
+			resolved_at_utc TEXT NOT NULL,
+			reference TEXT NOT NULL
+		)
+		"""
+	)
 	connection.commit()
 	connection.close()
 
@@ -1090,7 +1319,49 @@ def test_database_migration_adds_nullable_keys_to_version_2_events(tmp_path) -> 
 		).fetchone()[0]
 
 	assert dict(row) == {"id": 17, "detail": "detail", "key": None}
-	assert version == 3
+	assert version == 4
+
+
+def test_database_migration_marks_version_3_resolutions_as_detail(tmp_path) -> None:
+	database_path = tmp_path / "friction.db"
+	connection = sqlite3.connect(database_path)
+	connection.execute(
+		"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+	)
+	connection.executemany(
+		"INSERT INTO schema_migrations (version, applied_at) VALUES (?, '2026-09-03')",
+		[(1,), (2,), (3,)],
+	)
+	connection.execute(
+		"""
+		CREATE TABLE resolutions (
+			id INTEGER PRIMARY KEY,
+			category TEXT NOT NULL,
+			pattern TEXT NOT NULL,
+			resolved_at_utc TEXT NOT NULL,
+			reference TEXT NOT NULL
+		)
+		"""
+	)
+	connection.execute(
+		"""
+		INSERT INTO resolutions (category, pattern, resolved_at_utc, reference)
+		VALUES ('rule-ignored', 'review-gate', '2026-09-03', 'fix')
+		"""
+	)
+	connection.commit()
+	connection.close()
+
+	with Database(database_path).connection() as migrated_connection:
+		row = migrated_connection.execute(
+			"SELECT pattern, target FROM resolutions"
+		).fetchone()
+		version = migrated_connection.execute(
+			"SELECT MAX(version) FROM schema_migrations"
+		).fetchone()[0]
+
+	assert dict(row) == {"pattern": "review-gate", "target": "detail"}
+	assert version == 4
 
 
 def test_resolve_database_path_uses_the_environment_override(

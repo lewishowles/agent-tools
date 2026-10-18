@@ -89,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 	summary_parser = commands.add_parser(
 		"summary",
-		help="show active friction grouped by category, directory, and detail",
+		help="show active friction grouped by category and pattern",
 	)
 	summary_parser.add_argument(
 		"--category",
@@ -163,7 +163,15 @@ def build_parser() -> argparse.ArgumentParser:
 		help="record a resolution for a category and pattern",
 	)
 	resolve_parser.add_argument("category", choices=sorted(CATEGORIES))
-	resolve_parser.add_argument("pattern")
+	resolve_parser.add_argument(
+		"pattern",
+		nargs="?",
+		metavar="DETAIL",
+		help="exact detail of an unkeyed pattern",
+	)
+	resolve_parser.add_argument(
+		"--key", metavar="KEY", help="resolve a lowercase kebab-case pattern key"
+	)
 	resolve_parser.add_argument("--reference", required=True, metavar="REF")
 	_add_output_options(resolve_parser)
 
@@ -206,13 +214,13 @@ def _human_output(
 		if not data:
 			return style.span("No active friction entries.")
 
-		return "\n".join(
-			style.row(
-				str(item["count"]),
-				_summary_row_text(item),
-			)
-			for item in data
-		)
+		lines = []
+		for item in data:
+			row = style.row(str(item["count"]), _summary_row_text(item))
+			folders = ", ".join(item["folders"])
+			lines.append(f"{row}\n  folders: {folders}")
+
+		return "\n".join(lines)
 
 	if command == "list":
 		if not data:
@@ -279,14 +287,16 @@ def _human_output(
 
 
 def _summary_row_text(item: dict[str, object]) -> str:
-	"""Return the text after a summary row's count: family, class, and latest example for tool errors; category, directory, and detail otherwise."""
-	if item["category"] == "tool-error":
-		return (
-			f"tool-error  {item['command_family']}  {item['error_class']}  "
-			f"(latest: {item['example']})"
-		)
+	"""Describe one pattern after its count in the human summary."""
+	if item["key"] is not None:
+		identity = item["key"]
+	elif item["category"] == "tool-error":
+		identity = f"{item['command_family']}  {item['error_class']}"
+	else:
+		identity = ""
 
-	return f"{item['category']}  {item['cwd']}  {item['detail']}"
+	parts = [str(item["category"]), str(identity), f"(latest: {item['example']})"]
+	return "  ".join(part for part in parts if part)
 
 
 def _run_command(
@@ -333,8 +343,13 @@ def _run_command(
 		return {}, "hook"
 
 	if args.command == "resolve":
+		if (args.pattern is None) == (args.key is None):
+			raise CliUsageError("provide exactly one of DETAIL or --key KEY")
+
+		pattern = args.key if args.key is not None else args.pattern
+		target = "key" if args.key is not None else "detail"
 		return (
-			add_resolution(database, args.category, args.pattern, args.reference),
+			add_resolution(database, args.category, pattern, args.reference, target),
 			"resolve",
 		)
 

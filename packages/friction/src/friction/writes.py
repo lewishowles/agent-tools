@@ -32,6 +32,15 @@ def _validate_category(category: str) -> None:
 # Matches a pattern key: lowercase words of letters and digits joined by hyphens.
 KEY_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
+# Resolution records match either an exact detail or a pattern key.
+RESOLUTION_TARGETS = frozenset({"detail", "key"})
+
+
+def _validate_key(key: str) -> None:
+	"""Reject a pattern key that is not lowercase kebab-case."""
+	if KEY_PATTERN.fullmatch(key) is None:
+		raise ValueError("key must be lowercase kebab-case (letters and digits)")
+
 
 def add_event(
 	database: Database, category: str, detail: str, key: str | None = None
@@ -45,8 +54,8 @@ def add_event(
 
 	if not detail.strip():
 		raise ValueError("detail must not be empty")
-	if key is not None and KEY_PATTERN.fullmatch(key) is None:
-		raise ValueError("key must be lowercase kebab-case (letters and digits)")
+	if key is not None:
+		_validate_key(key)
 
 	timestamp = utc_timestamp()
 	cwd = os.getcwd()
@@ -77,9 +86,19 @@ def add_resolution(
 	category: str,
 	pattern: str,
 	reference: str,
+	target: str = "detail",
 ) -> dict[str, object]:
-	"""Store one category and pattern resolution without creating an event."""
+	"""Store one resolution for a category and pattern without creating an event.
+
+	The target says whether the pattern is a key or an exact detail. A key
+	resolution hides entries with that key in every folder; a detail resolution
+	hides entries whose detail matches the pattern exactly.
+	"""
 	_validate_category(category)
+	if target not in RESOLUTION_TARGETS:
+		raise ValueError("target must be detail or key")
+	if target == "key":
+		_validate_key(pattern)
 
 	for field_name, value in (("pattern", pattern), ("reference", reference)):
 		if not value.strip():
@@ -89,14 +108,14 @@ def add_resolution(
 	with database.transaction() as connection:
 		cursor = connection.execute(
 			"""
-			INSERT INTO resolutions (category, pattern, resolved_at_utc, reference)
-			VALUES (?, ?, ?, ?)
+			INSERT INTO resolutions (category, pattern, resolved_at_utc, reference, target)
+			VALUES (?, ?, ?, ?, ?)
 			""",
-			(category, pattern, resolved_at_utc, reference),
+			(category, pattern, resolved_at_utc, reference, target),
 		)
 		row = connection.execute(
 			"""
-			SELECT id, category, pattern, resolved_at_utc, reference
+			SELECT id, category, pattern, resolved_at_utc, reference, target
 			FROM resolutions WHERE id = ?
 			""",
 			(cursor.lastrowid,),

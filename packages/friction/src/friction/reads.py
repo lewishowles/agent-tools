@@ -42,9 +42,12 @@ def summary(
 	include_check_fails: bool = False,
 	include_tool_errors: bool = False,
 ) -> list[dict[str, object]]:
-	"""Count active events by group, most frequent first.
+	"""Count active events by pattern, most frequent first.
 
-	Tool errors group by command family and error class across directories, with the most recent entry's detail as the example. Every other category groups by category, directory, and exact detail.
+	Keyed entries group by category and key across folders. Unkeyed tool errors
+	group by command family and error class, and other unkeyed entries group by
+	category and exact detail. Each row's example is the newest detail in the
+	group, and its folders are the distinct working directories, sorted.
 	"""
 	category_conditions, parameters = _category_conditions(
 		categories,
@@ -54,11 +57,13 @@ def summary(
 	conditions = [
 		"""
 		NOT EXISTS (
-			SELECT 1
-			FROM resolutions
+			SELECT 1 FROM resolutions
 			WHERE resolutions.category = events.category
-				AND resolutions.pattern = events.detail
 				AND resolutions.resolved_at_utc >= events.timestamp_utc
+				AND (
+					(resolutions.target = 'key' AND resolutions.pattern = events.key)
+					OR (resolutions.target = 'detail' AND resolutions.pattern = events.detail)
+				)
 		)
 		""",
 		*category_conditions,
@@ -68,63 +73,66 @@ def summary(
 	with database.connection() as connection:
 		rows = connection.execute(
 			f"""
-			SELECT
-				COUNT(*) AS count,
-				category,
-				cwd,
-				detail
+			SELECT category, key, cwd, detail, tool_name, discriminator, error
 			FROM events
-			WHERE {where_clause} AND events.category != 'tool-error'
-			GROUP BY category, cwd, detail
-			""",
-			parameters,
-		).fetchall()
-		tool_rows = connection.execute(
-			f"""
-			SELECT detail, tool_name, discriminator, error
-			FROM events
-			WHERE {where_clause} AND events.category = 'tool-error'
+			WHERE {where_clause}
 			ORDER BY timestamp_utc DESC, id DESC
 			""",
 			parameters,
 		).fetchall()
 
-	results = [dict(row) for row in rows] + _group_tool_errors(tool_rows)
 	return sorted(
-		results,
+		_group_events(rows),
 		key=lambda item: (
 			-item["count"],
 			item["category"],
-			item.get("command_family", item.get("cwd")),
-			item.get("error_class", item.get("detail")),
+			item["key"] or item.get("command_family", item["example"]),
+			item.get("error_class", ""),
 		),
 	)
 
 
-def _group_tool_errors(rows: Sequence[sqlite3.Row]) -> list[dict[str, object]]:
-	"""Count tool-error rows by command family and error class.
+def _group_events(rows: Sequence[sqlite3.Row]) -> list[dict[str, object]]:
+	"""Count rows by pattern and collect each group's folders.
 
 	Expects rows newest first, so each group's example is its most recent detail.
 	"""
-	groups: dict[tuple[str, str], dict[str, object]] = {}
+	groups: dict[tuple[str, str, str, str], dict[str, object]] = {}
 	for row in rows:
-		family, error_class = classify_tool_error(
-			row["tool_name"], row["discriminator"], row["error"]
-		)
+		category = row["category"]
+		pattern_key = row["key"]
+		if pattern_key is not None:
+			identity = (category, "key", pattern_key, "")
+			extra = {}
+		elif category == "tool-error":
+			family, error_class = classify_tool_error(
+				row["tool_name"], row["discriminator"], row["error"]
+			)
+			identity = (category, "tool-error", family, error_class)
+			extra = {"command_family": family, "error_class": error_class}
+		else:
+			identity = (category, "detail", row["detail"], "")
+			extra = {}
 
-		key = (family, error_class)
-		if key not in groups:
-			groups[key] = {
+		if identity not in groups:
+			group: dict[str, object] = {
 				"count": 0,
-				"category": "tool-error",
-				"command_family": family,
-				"error_class": error_class,
+				"category": category,
+				"key": pattern_key,
 				"example": row["detail"],
+				"folders": set(),
+				**extra,
 			}
+			groups[identity] = group
 
-		groups[key]["count"] += 1
+		groups[identity]["count"] += 1
+		groups[identity]["folders"].add(row["cwd"])
 
-	return list(groups.values())
+	results = list(groups.values())
+	for group in results:
+		group["folders"] = sorted(group["folders"])
+
+	return results
 
 
 def list_events(
@@ -135,10 +143,7 @@ def list_events(
 	since: str | None = None,
 	until: str | None = None,
 ) -> list[dict[str, object]]:
-	"""Return matching event rows oldest first.
-
-	Unlike summary, an event stays listed after a resolution hides it.
-	"""
+	"""Return matching event rows oldest first, including resolved events."""
 	conditions, parameters = _category_conditions(
 		categories,
 		include_check_fails,

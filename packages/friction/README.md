@@ -25,7 +25,7 @@ friction doctor
 
 ```
 Database             /Users/you/.agents/friction.db
-Schema version        3
+Schema version        4
 Database writable     True
 Directory writable    True
 Integrity             ok
@@ -52,11 +52,13 @@ friction summary
 ```
 
 ```
-2  rule-ignored    /Users/you/project-a  skipped the review gate before committing
-1  wrong-approach  /Users/you/project-a  tried a manual retry loop instead of fixing the root cause
+2  rule-ignored  review-gate  (latest: skipped the review gate before committing)
+  folders: /Users/you/project-a, /Users/you/project-b
+1  wrong-approach  (latest: tried a manual retry loop instead of fixing the root cause)
+  folders: /Users/you/project-a
 ```
 
-Rows sort by count, highest first. Every category except `tool-error` groups by exact category, working directory, and detail. With `--include-tool-errors`, tool errors group by command family and error class across directories, with the latest matching detail as an example. For Bash, the family is the command's program name after leading directory changes, assignments, and common wrappers; for other tools, it is the tool name. Error classes use the exit code or the first sentence, with numbers shown as `N` and paths as `PATH`. Missing values group under `unknown`. In JSON, each tool-error row has `count`, `category`, `command_family`, `error_class`, and `example`, without `cwd` or `detail`. `check-fail` and `tool-error` are excluded by default (`--include-check-fails`, `--include-tool-errors` bring them back), and `--category <name>` filters to one or more categories (repeat the flag to select several).
+Rows sort by count, highest first. Keyed entries group by category and key across folders, even when their details differ. Unkeyed entries group by category and exact detail. The exception is unkeyed `tool-error` entries, which group by command family and error class. For Bash, the family is the command's program name after leading directory changes, assignments, and common wrappers; for other tools, it is the tool name. Error classes use the exit code or the first sentence, with numbers shown as `N` and paths as `PATH`. Missing values group under `unknown`. Each JSON row has `count`, `category`, `key` (null when absent), `example` (the latest detail), and `folders` (sorted distinct working directories). Unkeyed tool-error rows also have `command_family` and `error_class`. `check-fail` and `tool-error` are excluded by default (`--include-check-fails`, `--include-tool-errors` bring them back), and `--category <name>` filters to one or more categories (repeat the flag to select several).
 
 ```bash
 friction list --since 2026-09-01 --until 2026-09-04
@@ -73,14 +75,14 @@ ID  Timestamp                  Category        Key          CWD                 
 ## Resolving a recurring pattern
 
 ```bash
-friction resolve rule-ignored "skipped the review gate before committing" --reference "src/rules/global-rules.md#L42"
+friction resolve rule-ignored --key review-gate --reference "src/rules/global-rules.md#L42"
 ```
 
 ```
-Resolved: rule-ignored — skipped the review gate before committing
+Resolved: rule-ignored — review-gate
 ```
 
-This records a resolution without adding a new event. `friction summary` hides events with that exact category and detail at or before the resolution timestamp. Later recurrences appear again, so reviewers can see whether the resolution held.
+This records a resolution without adding a new event. Pass either `--key KEY` to hide entries with that category and key across folders, or an exact detail as the second argument to hide entries with that category and detail. For an unkeyed row outside `tool-error`, use its `example` as the detail. A key resolution matches entries by key only, so an unkeyed entry whose detail equals the key text stays in the summary. `friction summary` hides matching entries logged at or before the resolution timestamp; `friction list` still shows them for review and key mapping. Later recurrences appear in the summary again, so reviewers can see whether the resolution held. JSON resolution output includes `target` as `key` or `detail`.
 
 ## Migrating an old TSV log
 

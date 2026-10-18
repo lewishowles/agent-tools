@@ -7,7 +7,7 @@ import sqlite3
 # Applies one schema version to an open database connection.
 Migration = Callable[[sqlite3.Connection], None]
 # Records the schema version created by this package release.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 # Defines the newest schema version this package can open.
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION
 
@@ -105,11 +105,23 @@ def _add_event_key(connection: sqlite3.Connection) -> None:
 	connection.execute("ALTER TABLE events ADD COLUMN key TEXT")
 
 
+def _add_resolution_target(connection: sqlite3.Connection) -> None:
+	"""Record whether each resolution names a key or a detail.
+
+	Resolutions stored before this version all named an exact detail.
+	"""
+	connection.execute(
+		"ALTER TABLE resolutions ADD COLUMN target TEXT NOT NULL DEFAULT 'detail' "
+		"CHECK (target IN ('detail', 'key'))"
+	)
+
+
 # Maps each version to the migration that creates it.
 MIGRATIONS: dict[int, Migration] = {
 	1: _create_schema,
 	2: _drop_runtime,
 	3: _add_event_key,
+	4: _add_resolution_target,
 }
 
 
