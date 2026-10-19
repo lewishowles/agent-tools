@@ -9,6 +9,7 @@ from cli_style import (
     empty_state,
     quote_block,
     row_group,
+    span,
     status,
 )
 
@@ -40,6 +41,11 @@ def render_empty_state(*, title: str, detail: str = "") -> str:
         detail=detail,
         **_RENDER_OPTIONS,
     )
+
+
+def render_span(value: str, *, tone: str) -> str:
+    """Return the text in the given cli-style tone, or plain when colour is off."""
+    return span(value, tone=tone, weight="normal", **_RENDER_OPTIONS)
 
 
 def render_row_group(

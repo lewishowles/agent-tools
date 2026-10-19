@@ -62,6 +62,7 @@ from agent_run.output import (
     render_error_status,
     render_quote_block,
     render_row_group,
+    render_span,
     render_success,
     render_success_status,
     render_warning_status,
@@ -1889,26 +1890,14 @@ def _perform_run(
             if command is None:
                 command = find_command(connection, repository, name)
 
-            # A manual-only command stops here, before file targets are resolved
-            # or a log is opened, so nothing runs and no run record is saved.
-            if command.manual:
-                manual_cwd = repository.root / command.working_directory
-
-                if _can_run_manual_command():
-                    return _run_manual_command(
-                        argv=command.argv, cwd=manual_cwd, name=command.name
-                    )
-
-                return _manual_run_outcome(
-                    argv=command.argv, cwd=manual_cwd, name=command.name
+            # A manual command saves no run record, so it takes no run lock.
+            if not command.manual:
+                run_lock = acquire_run_lock(
+                    database_path,
+                    repository.id,
+                    command.name,
+                    run_id=run_id,
                 )
-
-            run_lock = acquire_run_lock(
-                database_path,
-                repository.id,
-                command.name,
-                run_id=run_id,
-            )
 
             relative_working_directory = normalise_working_directory(
                 repository, command.working_directory
@@ -1932,6 +1921,20 @@ def _perform_run(
                 )
 
             command_arguments = command.argv + resolved_file_paths
+
+            # A manual command stops here, after its file targets are added but
+            # before a log is opened, so it runs in the user's terminal instead.
+            if command.manual:
+                manual_cwd = repository.root / relative_working_directory
+
+                if _can_run_manual_command():
+                    return _run_manual_command(
+                        argv=command_arguments, cwd=manual_cwd, name=command.name
+                    )
+
+                return _manual_run_outcome(
+                    argv=command_arguments, cwd=manual_cwd, name=command.name
+                )
 
         if timeout_seconds is None:
             timeout_seconds = DEFAULT_TIMEOUT_SECONDS
@@ -2210,7 +2213,7 @@ def _run_manual_command(
     The command shares the terminal's input and output, so nothing is captured,
     logged or saved to run history. This serves manual-only named commands and
     direct Playwright or Cypress commands, which have no name. Anything other
-    than "y" declines: the command does not run and the exit status is 1.
+    than Enter or "y" declines: the command does not run and the exit status is 1.
     Ctrl-C at the prompt, or a command ended by a signal, counts as an
     interrupt with exit status 128 plus the signal number, so a set of named
     runs stops there.
@@ -2222,12 +2225,21 @@ def _run_manual_command(
         "manual": True,
     }
 
-    print(f"Working folder: {cwd}", file=sys.stderr)
-    print(f"Command: {shlex.join(argv)}", file=sys.stderr)
-    print("Run this? [y/N] ", end="", file=sys.stderr, flush=True)
+    print(render_span(f"Working folder: {cwd}", tone="muted"), file=sys.stderr)
+    print(
+        f"{render_span('Command:', tone='muted')} "
+        f"{render_span(shlex.join(argv), tone='text')}",
+        file=sys.stderr,
+    )
+    print(
+        f"{render_span('Run this?', tone='text')} {render_span('[Y/n]', tone='info')} ",
+        end="",
+        file=sys.stderr,
+        flush=True,
+    )
 
     try:
-        answer = sys.stdin.readline().strip().lower()
+        answer = sys.stdin.readline()
     except KeyboardInterrupt:
         print("\nCommand interrupted.", file=sys.stderr)
         data["exit_status"] = 130
@@ -2241,7 +2253,9 @@ def _run_manual_command(
             message="Command interrupted.",
         )
 
-    if answer != "y":
+    # An empty read means end of input (Ctrl-D), which declines. Pressing Enter
+    # reads a newline, which strips to "" and runs the command.
+    if answer == "" or answer.strip().lower() not in ("", "y"):
         print("Not run.", file=sys.stderr)
         data["declined"] = True
 

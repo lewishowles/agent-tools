@@ -170,7 +170,9 @@ names. With `--json`, one JSON document lists every run and its result.
 
 A command marked `--manual` still appears in `list`. When you run it in your
 own terminal, agent-run shows its working folder and command, then asks
-`Run this? [y/N]`. Only `y` runs it. The command uses your terminal directly,
+`Run this? [Y/n]`. Press Enter or `y` to run it; any other answer declines.
+When the command has the `file-list` capability, the files you pass with
+`--file` or `--glob` are added to it. The command uses your terminal directly,
 returns its own exit status (or 128 plus the signal number if a signal stops
 it), and creates no run record or log. With `--json`, one result follows the
 command's output with its name, folder, arguments, `exit_status`, and

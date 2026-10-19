@@ -1252,15 +1252,14 @@ def test_cli_multiple_runs_refuse_per_command_options(
     assert "several named commands" in result["error"]["message"]
 
 
-def test_cli_manual_named_run_reports_command_without_executing_or_resolving_targets(
+def test_cli_manual_named_run_reports_resolved_targets_without_executing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A manual command prints the command to run and stops before it runs or
-    resolves file targets.
-    """
+    """An agent refusal includes resolved targets, and a missing file is a usage error."""
     root = _initialise_repository(tmp_path / "repository")
+    (root / "check.py").write_text("pass")
     monkeypatch.chdir(root)
     database_path = tmp_path / "agent-run.db"
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
@@ -1282,7 +1281,7 @@ def test_cli_manual_named_run_reports_command_without_executing_or_resolving_tar
     )
     capsys.readouterr()
 
-    text_exit_code = main(["run", "browser", "--file", "missing.py"])
+    text_exit_code = main(["run", "browser", "--file", "check.py"])
     text_output = capsys.readouterr()
 
     assert text_exit_code == 1
@@ -1290,19 +1289,30 @@ def test_cli_manual_named_run_reports_command_without_executing_or_resolving_tar
     assert "manual-only" in text_output.err
     assert str(root) in text_output.err
     assert sys.executable in text_output.err
+    assert "check.py" in text_output.err
 
-    json_exit_code = main(["run", "browser", "--file", "missing.py", "--json"])
+    json_exit_code = main(["run", "browser", "--file", "check.py", "--json"])
     json_output = capsys.readouterr()
     result = json.loads(json_output.out)
 
     assert json_exit_code == 1
     assert result["ok"] is False
     assert result["error"]["code"] == "manual"
-    assert result["error"]["data"] == {"argv": command, "cwd": str(root)}
+    assert result["error"]["data"] == {
+        "argv": command + ["check.py"],
+        "cwd": str(root),
+    }
     assert "manual-only" in result["error"]["message"]
     assert f"cd {shlex.quote(str(root))}" in result["error"]["message"]
     assert sys.executable in result["error"]["message"]
+    assert "check.py" in result["error"]["message"]
     assert json_output.err == ""
+
+    missing_exit_code = main(["run", "browser", "--file", "missing.py", "--json"])
+    missing_result = json.loads(capsys.readouterr().out)
+
+    assert missing_exit_code == 2
+    assert missing_result["error"]["code"] == "usage"
 
     connection = connect_database(database_path)
     try:
@@ -1357,7 +1367,10 @@ def test_cli_manual_run_requires_both_terminal_streams(
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "manual"
 
 
-@pytest.mark.parametrize("answer, expected_exit", [("y\n", 7), ("\n", 1)])
+@pytest.mark.parametrize(
+    "answer, expected_exit",
+    [("y\n", 7), ("\n", 7), ("n\n", 1), ("maybe\n", 1), ("", 1)],
+)
 def test_cli_human_manual_run_confirms_or_declines_without_history(
     answer: str,
     expected_exit: int,
@@ -1381,8 +1394,8 @@ def test_cli_human_manual_run_confirms_or_declines_without_history(
 
     assert exit_code == expected_exit
     assert "Working folder:" in captured.err
-    assert "Run this? [y/N]" in captured.err
-    assert ("child output" in captured.out.splitlines()[:-1]) == (answer == "y\n")
+    assert "Run this? [Y/n]" in captured.err
+    assert ("child output" in captured.out.splitlines()[:-1]) == (expected_exit == 7)
     data = result["error"]["data"] if expected_exit else result["data"]
     assert data["manual"] is True
     assert data["name"] == "manual"
@@ -1390,7 +1403,7 @@ def test_cli_human_manual_run_confirms_or_declines_without_history(
     assert data["argv"] == command
     assert "run_id" not in data
     assert "log_path" not in data
-    if answer == "y\n":
+    if expected_exit == 7:
         assert result["ok"] is False
         assert result["error"]["code"] == "check-failed"
         assert data["exit_status"] == 7
@@ -1405,6 +1418,70 @@ def test_cli_human_manual_run_confirms_or_declines_without_history(
         assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
     finally:
         connection.close()
+
+
+def test_cli_human_manual_run_passes_resolved_file_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """A confirmed manual run shows and passes the resolved file path."""
+    root = _initialise_repository(tmp_path / "repository")
+    (root / "check.py").write_text("pass")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    monkeypatch.setenv("NO_COLOR", "1")
+    command = [sys.executable, "-c", "import sys; print(sys.argv[1:])"]
+    assert (
+        main(["add", "manual", "--manual", "--capability", "file-list", "--", *command])
+        == 0
+    )
+    capfd.readouterr()
+    _enable_human_terminal(monkeypatch, "\n")
+
+    exit_code = main(["run", "manual", "--file", "check.py", "--json"])
+    captured = capfd.readouterr()
+    result = json.loads(captured.out.splitlines()[-1])
+
+    assert exit_code == 0
+    assert captured.err == (
+        f"Working folder: {root}\n"
+        f"Command: {shlex.join(command + ['check.py'])}\n"
+        "Run this? [Y/n] "
+    )
+    assert "['check.py']" in captured.out
+    assert result["data"]["argv"] == command + ["check.py"]
+
+
+def test_cli_human_manual_prompt_uses_cli_style_tones(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The confirmation prompt uses muted, foreground, and info text tones."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    command = [sys.executable, "-c", "pass"]
+    assert main(["add", "manual", "--manual", "--", *command]) == 0
+    capsys.readouterr()
+    _enable_human_terminal(monkeypatch, "n\n")
+    style_span = Mock(side_effect=lambda value, **_kwargs: value)
+    monkeypatch.setattr("agent_run.output.span", style_span)
+
+    assert main(["run", "manual"]) == 1
+    capsys.readouterr()
+
+    assert [
+        (call.args[0], call.kwargs["tone"]) for call in style_span.call_args_list
+    ] == [
+        (f"Working folder: {root}", "muted"),
+        ("Command:", "muted"),
+        (shlex.join(command), "text"),
+        ("Run this?", "text"),
+        ("[Y/n]", "info"),
+    ]
+    assert all(call.kwargs["weight"] == "normal" for call in style_span.call_args_list)
 
 
 def test_cli_human_multi_run_continues_after_manual_decline(
@@ -1566,7 +1643,7 @@ def test_cli_again_confirms_current_manual_command(
     run_id = json.loads(capfd.readouterr().out)["data"]["run_id"]
     assert main(["edit", "check", "--manual"]) == 0
     capfd.readouterr()
-    _enable_human_terminal(monkeypatch, "y\n")
+    _enable_human_terminal(monkeypatch, "\n")
 
     exit_code = main(["again", run_id, "--json"])
     result = json.loads(capfd.readouterr().out)
@@ -1716,7 +1793,7 @@ def test_cli_human_direct_browser_runner_confirms_without_history(
     result = json.loads(captured.out)
 
     assert exit_code == 0
-    assert "Run this? [y/N]" in captured.err
+    assert "Run this? [Y/n]" in captured.err
     assert result["ok"] is True
     assert result["data"] == {
         "name": None,
