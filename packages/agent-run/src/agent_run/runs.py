@@ -34,7 +34,8 @@ class RunRecord:
         repository_id: ID of the repository the command ran in.
         argv: Argument array that was run.
         working_directory: Directory relative to the repository root.
-        timeout_seconds: Time allowed before the command was stopped.
+        timeout_seconds: Time allowed before the command was stopped, or None
+            when the run had no timeout.
         started_at: UTC start time in ISO 8601 format.
         duration_seconds: Time the command ran for, or ``None`` while running.
         exit_status: Exit status, negative when a signal ended the command, or
@@ -54,7 +55,7 @@ class RunRecord:
     repository_id: str
     argv: tuple[str, ...]
     working_directory: str
-    timeout_seconds: float
+    timeout_seconds: float | None
     started_at: str
     duration_seconds: float | None
     exit_status: int | None
@@ -127,7 +128,7 @@ def start_run(
     repository_id: str,
     argv: Sequence[str],
     working_directory: str,
-    timeout_seconds: float,
+    timeout_seconds: float | None,
     started_at: str,
     log_path: str | Path,
     pid: int,
@@ -178,7 +179,9 @@ def start_run(
             record.repository_id,
             json.dumps(record.argv),
             record.working_directory,
-            record.timeout_seconds,
+            # The timeout column cannot be empty, so a run with no timeout
+            # stores 0, which no real timeout can be.
+            0 if record.timeout_seconds is None else record.timeout_seconds,
             record.started_at,
             record.duration_seconds,
             record.exit_status,
@@ -243,7 +246,9 @@ def _run_from_row(row: sqlite3.Row | tuple[object, ...]) -> RunRecord:
         repository_id=str(repository_id),
         argv=tuple(json.loads(str(argv))),
         working_directory=str(working_directory),
-        timeout_seconds=float(timeout_seconds),
+        timeout_seconds=(
+            None if float(timeout_seconds) == 0 else float(timeout_seconds)
+        ),
         started_at=str(started_at),
         duration_seconds=(
             None if duration_seconds is None else float(duration_seconds)

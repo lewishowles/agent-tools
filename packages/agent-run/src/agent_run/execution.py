@@ -2,8 +2,10 @@
 
 import math
 import os
+import select
 import signal
 import subprocess
+import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -12,6 +14,10 @@ from typing import BinaryIO
 
 # Timeout used when a direct or named run has no configured override.
 DEFAULT_TIMEOUT_SECONDS = 120
+
+# How often a run with live output checks whether its command has exited while
+# waiting for more output, and how long it keeps reading after the exit.
+_LIVE_OUTPUT_POLL_SECONDS = 0.05
 
 
 class TerminateRequested(Exception):
@@ -85,26 +91,32 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
 def run_command(
     argv: Sequence[str],
     cwd: str | Path,
-    timeout: float,
+    timeout: float | None,
     log_path: str | Path,
     *,
     json_mode: bool = False,
+    live_output: bool = False,
 ) -> RunResult:
     """Run an argument-array command in the foreground.
 
     Args:
         argv: Non-empty argument array, including the executable name.
         cwd: Directory in which the command process starts.
-        timeout: Positive number of seconds allowed before termination.
+        timeout: Positive number of seconds allowed before termination, or None
+            to let the command run until it finishes.
         log_path: File that receives combined standard output and standard error.
         json_mode: When true, the command runs with ``NO_COLOR=1`` so tools that
             respect it write plain text for agents to read.
+        live_output: Also write the combined output to the terminal as it
+            arrives. JSON runs write it to standard error so standard output
+            stays valid JSON.
 
     Raises:
-        ValueError: If ``argv`` is empty or ``timeout`` is not a finite positive
-            number.
-        OSError: If the command process cannot be started or its process group
-            cannot be terminated.
+        ValueError: If ``argv`` is empty or a supplied ``timeout`` is not a
+            finite positive number.
+        OSError: If the command process cannot be started, its log cannot be
+            written, or its process group cannot be terminated. A terminal that
+            stops accepting live output only stops the echo.
         KeyboardInterrupt: After the command process group has been cleaned up.
         TerminateRequested: After the command process group has been cleaned up.
     """
@@ -113,7 +125,7 @@ def run_command(
     if not command_arguments:
         raise ValueError("Command arguments must contain at least one argument.")
 
-    if not math.isfinite(timeout) or timeout <= 0:
+    if timeout is not None and (not math.isfinite(timeout) or timeout <= 0):
         raise ValueError("Command timeout must be finite and greater than zero.")
 
     working_directory = Path(cwd).expanduser().resolve()
@@ -137,16 +149,80 @@ def run_command(
                 cwd=working_directory,
                 env={**os.environ, "NO_COLOR": "1"} if json_mode else None,
                 start_new_session=True,
-                stdout=log_file,
+                stdout=subprocess.PIPE if live_output else log_file,
                 stderr=subprocess.STDOUT,
             )
 
             try:
-                process.communicate(timeout=timeout)
+                if live_output:
+                    assert process.stdout is not None
+                    output_stream = (
+                        sys.stderr.buffer if json_mode else sys.stdout.buffer
+                    )
+                    deadline = None if timeout is None else started_at + timeout
+                    # Turned off if the terminal stops accepting output, so the
+                    # run still finishes and keeps its full log.
+                    echo_output = True
+                    # When the command was first seen to have exited, which
+                    # starts the short time left to read its remaining output.
+                    exited_seen_at = None
+
+                    while True:
+                        now = time.monotonic()
+                        finished = process.poll() is not None
+                        if finished:
+                            if exited_seen_at is None:
+                                exited_seen_at = now
+                            elif now - exited_seen_at >= _LIVE_OUTPUT_POLL_SECONDS:
+                                break
+                        elif deadline is not None and now >= deadline:
+                            raise subprocess.TimeoutExpired(command_arguments, timeout)
+
+                        remaining = None if deadline is None else max(0, deadline - now)
+
+                        # Once the command has exited, read without waiting and
+                        # stop after one poll interval, so a background process
+                        # that inherited the output pipe cannot keep the run open.
+                        if finished:
+                            wait_seconds = 0
+                        elif remaining is None:
+                            wait_seconds = _LIVE_OUTPUT_POLL_SECONDS
+                        else:
+                            wait_seconds = min(_LIVE_OUTPUT_POLL_SECONDS, remaining)
+
+                        readable, _, _ = select.select(
+                            [process.stdout], [], [], wait_seconds
+                        )
+                        if not readable:
+                            if finished:
+                                break
+                            continue
+
+                        chunk = os.read(process.stdout.fileno(), 65536)
+                        if not chunk:
+                            break
+
+                        log_file.write(chunk)
+                        log_file.flush()
+
+                        if echo_output:
+                            try:
+                                output_stream.write(chunk)
+                                output_stream.flush()
+                            except OSError:
+                                echo_output = False
+
+                    process.wait(
+                        timeout=None
+                        if deadline is None
+                        else max(0, deadline - time.monotonic())
+                    )
+                else:
+                    process.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
                 timed_out = True
                 _terminate_process_group(process)
-            except (KeyboardInterrupt, TerminateRequested):
+            except (KeyboardInterrupt, TerminateRequested, OSError):
                 _terminate_process_group(process)
                 raise
         finally:

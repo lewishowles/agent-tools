@@ -6,7 +6,6 @@ import os
 import shlex
 import signal
 import sqlite3
-import subprocess
 import sys
 import time
 from collections.abc import Mapping, Sequence
@@ -34,6 +33,7 @@ from agent_run.commands import (
     remove_command,
     rename_command,
     starts_browser_runner,
+    validate_timeout,
 )
 from agent_run.database import connect_database, resolve_database_path
 from agent_run.detectors import (
@@ -130,8 +130,9 @@ class _RunOutcome:
     exit_code: int
     # The run data shown with --json, or details for an error.
     data: dict[str, object] | None = None
-    # Whether the command used the person's terminal without a run record.
-    manual: bool = False
+    # Whether a manual command stopped at its confirmation prompt, so no run
+    # record exists.
+    stopped_at_prompt: bool = False
     # The text shown without --json.
     text: str | None = None
     # The error code from the shared CLI contract, set whenever the run did not pass.
@@ -1765,11 +1766,11 @@ def _execute_multiple_runs(
 def _summary_status(outcome: _RunOutcome) -> str:
     """Return the summary text for one run in a multi-name set.
 
-    A manual command a person ran shows its exit code beside the status,
-    because it has no log to look the code up in. A declined manual command
-    shows only its status.
+    A manual command interrupted at its confirmation prompt shows its exit code
+    beside the status, because it has no run record or log to look the code up
+    in. A declined manual command shows only its status.
     """
-    if outcome.manual and outcome.status != RUN_DECLINED:
+    if outcome.stopped_at_prompt and outcome.status != RUN_DECLINED:
         return f"{outcome.status} (exit {outcome.exit_code})"
 
     return outcome.status
@@ -1802,18 +1803,16 @@ def _execute_run(
         width=width,
     )
 
-    if outcome.manual:
-        # The command already wrote to the terminal, so text mode has nothing to add.
+    if outcome.stopped_at_prompt:
+        # The prompt has already told the person what happened, so only JSON
+        # mode prints a result.
         if json_mode:
-            if outcome.error_code is not None:
-                render_error(
-                    json_mode=True,
-                    code=outcome.error_code,
-                    message=outcome.message,
-                    data=outcome.data,
-                )
-            else:
-                render_success(json_mode=True, data=outcome.data)
+            render_error(
+                json_mode=True,
+                code=outcome.error_code,
+                message=outcome.message,
+                data=outcome.data,
+            )
     elif outcome.error_code is not None:
         render_error(
             json_mode=json_mode,
@@ -1845,8 +1844,9 @@ def _perform_run(
     With a name, run that saved command from its stored working directory, with
     any file targets added; cwd is ignored. Without a name, run
     direct_arguments from cwd. The timeout falls back to the saved command's
-    timeout, then the default. Both run and again use this, so the
-    one-at-a-time lock applies to each, and so does the choice between
+    timeout, then the default. A confirmed manual run skips the default, so
+    without a saved or passed timeout it runs until it finishes. Both run and again use this, so the one-at-a-time lock
+    applies to each, and so does the choice between
     refusing a manual-only or browser-runner command and asking a person at a
     terminal to confirm it.
 
@@ -1863,10 +1863,10 @@ def _perform_run(
     finalising = False
 
     try:
+        timeout_seconds = validate_timeout(timeout)
         repository = identify_repository()
         database_path = resolve_database_path()
         connection = connect_database(database_path)
-        timeout_seconds = timeout
         resolved_file_paths: tuple[str, ...] = ()
         run_id = uuid4().hex
 
@@ -1874,23 +1874,25 @@ def _perform_run(
             relative_working_directory = normalise_working_directory(repository, cwd)
             command_arguments = tuple(direct_arguments)
 
-            if starts_browser_runner(command_arguments):
-                if _can_run_manual_command():
-                    return _run_manual_command(
+            manual_run = starts_browser_runner(command_arguments)
+            if manual_run:
+                if not _can_run_manual_command():
+                    return _manual_run_outcome(
                         argv=command_arguments,
                         cwd=repository.root / relative_working_directory,
-                        name=None,
                     )
 
-                return _manual_run_outcome(
+                prompt_outcome = _run_manual_command(
                     argv=command_arguments,
                     cwd=repository.root / relative_working_directory,
+                    name=None,
                 )
+                if prompt_outcome is not None:
+                    return prompt_outcome
         else:
             if command is None:
                 command = find_command(connection, repository, name)
 
-            # A manual command saves no run record, so it takes no run lock.
             if not command.manual:
                 run_lock = acquire_run_lock(
                     database_path,
@@ -1921,22 +1923,32 @@ def _perform_run(
                 )
 
             command_arguments = command.argv + resolved_file_paths
+            manual_run = command.manual
 
-            # A manual command stops here, after its file targets are added but
-            # before a log is opened, so it runs in the user's terminal instead.
-            if command.manual:
+            if manual_run:
                 manual_cwd = repository.root / relative_working_directory
 
-                if _can_run_manual_command():
-                    return _run_manual_command(
+                if not _can_run_manual_command():
+                    return _manual_run_outcome(
                         argv=command_arguments, cwd=manual_cwd, name=command.name
                     )
 
-                return _manual_run_outcome(
+                prompt_outcome = _run_manual_command(
                     argv=command_arguments, cwd=manual_cwd, name=command.name
                 )
+                if prompt_outcome is not None:
+                    return prompt_outcome
 
-        if timeout_seconds is None:
+                # The lock is taken only after the person says yes, so a prompt
+                # left waiting does not block other runs of this command.
+                run_lock = acquire_run_lock(
+                    database_path,
+                    repository.id,
+                    command.name,
+                    run_id=run_id,
+                )
+
+        if timeout_seconds is None and not manual_run:
             timeout_seconds = DEFAULT_TIMEOUT_SECONDS
 
         run_id, log_path = create_run_log(database_path, run_id=run_id)
@@ -1965,6 +1977,7 @@ def _perform_run(
                 timeout_seconds,
                 log_path,
                 json_mode=json_mode,
+                live_output=manual_run,
             )
         except (KeyboardInterrupt, TerminateRequested) as error:
             interrupted = True
@@ -2071,6 +2084,8 @@ def _perform_run(
             summary = summarise_success(result.argv, log_text)
 
         data = _run_record(result, record, resolved_file_paths)
+        if manual_run:
+            data["manual"] = True
         data["summary"] = summary.lines
         text = _format_run(result, record, summary, width=width)
 
@@ -2080,6 +2095,8 @@ def _perform_run(
         f"{failure_message} run ID: {record.run_id}; log path: {record.log_path}"
     )
     failure_data = _run_record(result, record, resolved_file_paths)
+    if manual_run:
+        failure_data["manual"] = True
 
     if interrupted:
         # An interrupted run stops part-way, so its last lines are shown as
@@ -2207,16 +2224,13 @@ def _manual_run_outcome(
 
 def _run_manual_command(
     *, argv: Sequence[str], cwd: Path, name: str | None
-) -> _RunOutcome:
-    """Ask the person at the terminal to confirm, then run the command.
+) -> _RunOutcome | None:
+    """Ask the person at the terminal to confirm a manual command.
 
-    The command shares the terminal's input and output, so nothing is captured,
-    logged or saved to run history. This serves manual-only named commands and
-    direct Playwright or Cypress commands, which have no name. Anything other
-    than Enter or "y" declines: the command does not run and the exit status is 1.
-    Ctrl-C at the prompt, or a command ended by a signal, counts as an
-    interrupt with exit status 128 plus the signal number, so a set of named
-    runs stops there.
+    Return None after Enter or "y", so the caller runs and records the command.
+    Any other answer declines: nothing runs, no run is saved and the exit
+    status is 1. Ctrl-C at the prompt returns an interrupted result with exit
+    status 130, so a set of named runs stops there.
     """
     data: dict[str, object] = {
         "name": name,
@@ -2248,7 +2262,7 @@ def _run_manual_command(
             status=RUN_INTERRUPTED,
             exit_code=130,
             data=data,
-            manual=True,
+            stopped_at_prompt=True,
             error_code="check-failed",
             message="Command interrupted.",
         )
@@ -2263,49 +2277,12 @@ def _run_manual_command(
             status=RUN_DECLINED,
             exit_code=1,
             data=data,
-            manual=True,
+            stopped_at_prompt=True,
             error_code="check-failed",
             message="Manual command was not run.",
         )
 
-    def ignore_parent_interrupt(_signal_number: int, _frame: object) -> None:
-        """Leave Ctrl-C to the child command so it can clean up first.
-
-        A Python handler is used instead of SIG_IGN because an ignored signal
-        stays ignored in the child, while a handled one goes back to its
-        default there.
-        """
-
-    previous_handler = signal.signal(signal.SIGINT, ignore_parent_interrupt)
-
-    try:
-        returncode = subprocess.run(argv, cwd=cwd, check=False).returncode
-    finally:
-        signal.signal(signal.SIGINT, previous_handler)
-
-    if returncode < 0:
-        exit_code = 128 - returncode
-        status = RUN_INTERRUPTED
-        message = "Command interrupted."
-    elif returncode == 0:
-        exit_code = 0
-        status = RUN_PASSED
-        message = None
-    else:
-        exit_code = returncode
-        status = RUN_FAILED
-        message = f"Command exited with status {exit_code}."
-
-    data["exit_status"] = exit_code
-
-    return _RunOutcome(
-        status=status,
-        exit_code=exit_code,
-        data=data,
-        manual=True,
-        error_code="check-failed" if exit_code else None,
-        message=message,
-    )
+    return None
 
 
 def _uninitialised_repository_error(
@@ -2599,7 +2576,12 @@ def _format_saved_run(record: RunRecord) -> str:
             else "unknown",
         },
         {"label": "working directory", "value": record.working_directory},
-        {"label": "timeout", "value": _format_timeout(record.timeout_seconds)},
+        {
+            "label": "timeout",
+            "value": "none"
+            if record.timeout_seconds is None
+            else _format_timeout(record.timeout_seconds),
+        },
         {"label": "started at", "value": record.started_at},
         {"label": "status", "value": record.status},
     ]

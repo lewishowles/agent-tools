@@ -172,13 +172,19 @@ A command marked `--manual` still appears in `list`. When you run it in your
 own terminal, agent-run shows its working folder and command, then asks
 `Run this? [Y/n]`. Press Enter or `y` to run it; any other answer declines.
 When the command has the `file-list` capability, the files you pass with
-`--file` or `--glob` are added to it. The command uses your terminal directly,
-returns its own exit status (or 128 plus the signal number if a signal stops
-it), and creates no run record or log. With `--json`, one result follows the
-command's output with its name, folder, arguments, `exit_status`, and
-`manual: true`. A failed command uses the usual `error` result. Declining
-prints `Not run.` and exits with status 1; pressing Ctrl-C at the prompt exits
-with status 130. In a run with several names, a declined manual command is
+`--file` or `--glob` are added to it. After confirmation, agent-run saves a
+run record and log, shows the command's output live, then prints the usual
+short summary; use `agent-run log` to read the full output. The output passes
+through a plain pipe rather than a terminal, so tools such as Playwright
+usually print without colour or progress bars. Confirmed manual runs have no default
+timeout; a timeout saved with the command or passed with `--timeout` still
+applies. A confirmed manual run exits like any other recorded run: status 0
+on success or 1 when the command fails. With `--json`, live output goes to
+standard error so the JSON result stays readable on standard output, and the
+result includes the run ID, log path and `manual: true`. A failed command uses
+the usual `error` result, which also includes `manual: true`. Declining saves
+nothing, prints `Not run.` and exits with status 1; pressing Ctrl-C at the
+prompt exits with status 130. In a run with several names, a declined manual command is
 listed as declined and later commands still run. An interrupted command ends
 the set after its summary row.
 

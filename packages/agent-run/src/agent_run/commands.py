@@ -125,7 +125,7 @@ def _validate_name_and_arguments(name: str, argv: Sequence[str]) -> tuple[str, .
     return command_arguments
 
 
-def _validate_timeout(timeout_seconds: float | None) -> float | None:
+def validate_timeout(timeout_seconds: float | None) -> float | None:
     """Validate an optional command timeout and return it unchanged."""
     if timeout_seconds is not None and (
         not math.isfinite(timeout_seconds) or timeout_seconds <= 0
@@ -222,7 +222,7 @@ def add_command(
     """
     command_arguments = _validate_name_and_arguments(name, argv)
 
-    timeout_seconds = _validate_timeout(timeout_seconds)
+    timeout_seconds = validate_timeout(timeout_seconds)
     capability = _validate_capability(capability)
 
     relative_working_directory = normalise_working_directory(repository, cwd)
@@ -323,7 +323,7 @@ def edit_command(
     """
     command = find_command(connection, repository, name)
 
-    timeout_seconds = _validate_timeout(timeout_seconds)
+    timeout_seconds = validate_timeout(timeout_seconds)
 
     if (
         argv is None

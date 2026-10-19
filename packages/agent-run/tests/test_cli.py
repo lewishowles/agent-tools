@@ -6,6 +6,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import time
 from collections.abc import Sequence
 from io import StringIO
 from pathlib import Path
@@ -15,7 +16,7 @@ from uuid import uuid4
 import pytest
 from agent_run.cli import _format_failure_report, _format_run, main
 from agent_run.database import connect_database
-from agent_run.execution import RunResult, TerminateRequested
+from agent_run.execution import RunResult, TerminateRequested, run_command
 from agent_run.failures import Failure, FailureReport
 from agent_run.locking import RunBusyError, acquire_run_lock
 from agent_run.output import render_error, render_success
@@ -1367,18 +1368,14 @@ def test_cli_manual_run_requires_both_terminal_streams(
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "manual"
 
 
-@pytest.mark.parametrize(
-    "answer, expected_exit",
-    [("y\n", 7), ("\n", 7), ("n\n", 1), ("maybe\n", 1), ("", 1)],
-)
-def test_cli_human_manual_run_confirms_or_declines_without_history(
+@pytest.mark.parametrize("answer", ["y\n", "\n", "n\n", "maybe\n", ""])
+def test_cli_human_manual_run_records_only_confirmed_commands(
     answer: str,
-    expected_exit: int,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """A person can confirm or decline a manual command, and neither saves a run."""
+    """A confirmed manual command saves its result; a declined one saves nothing."""
     root = _initialise_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
     database_path = tmp_path / "agent-run.db"
@@ -1390,34 +1387,64 @@ def test_cli_human_manual_run_confirms_or_declines_without_history(
 
     exit_code = main(["run", "manual", "--json"])
     captured = capfd.readouterr()
-    result = json.loads(captured.out.splitlines()[-1])
+    result = json.loads(captured.out)
 
-    assert exit_code == expected_exit
+    assert exit_code == 1
     assert "Working folder:" in captured.err
     assert "Run this? [Y/n]" in captured.err
-    assert ("child output" in captured.out.splitlines()[:-1]) == (expected_exit == 7)
-    data = result["error"]["data"] if expected_exit else result["data"]
+    data = result["error"]["data"]
     assert data["manual"] is True
-    assert data["name"] == "manual"
-    assert data["cwd"] == str(root)
     assert data["argv"] == command
-    assert "run_id" not in data
-    assert "log_path" not in data
-    if expected_exit == 7:
+    if answer in ("y\n", "\n"):
         assert result["ok"] is False
         assert result["error"]["code"] == "check-failed"
         assert data["exit_status"] == 7
+        assert data["working_directory"] == str(root)
+        assert Path(data["log_path"]).read_text() == "child output\n"
+        assert data["run_id"]
+        assert captured.err.endswith("child output\n")
+        assert captured.out.count("\n") == 1
     else:
         assert result["ok"] is False
         assert result["error"]["code"] == "check-failed"
         assert data["declined"] is True
+        assert data["name"] == "manual"
+        assert data["cwd"] == str(root)
+        assert "run_id" not in data
+        assert "log_path" not in data
         assert "Not run." in captured.err
 
     connection = connect_database(database_path)
     try:
-        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == (
+            1 if answer in ("y\n", "\n") else 0
+        )
     finally:
         connection.close()
+
+
+def test_cli_human_manual_json_run_keeps_output_off_stdout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """A confirmed command writes its live output to stderr beside valid JSON."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    command = [sys.executable, "-c", "print('live line')"]
+    assert main(["add", "manual", "--manual", "--", *command]) == 0
+    capfd.readouterr()
+    _enable_human_terminal(monkeypatch, "y\n")
+
+    exit_code = main(["run", "manual", "--json"])
+    captured = capfd.readouterr()
+    result = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert "live line\n" in captured.err
+    assert result["ok"] is True
+    assert Path(result["data"]["log_path"]).read_text() == "live line\n"
 
 
 def test_cli_human_manual_run_passes_resolved_file_targets(
@@ -1441,16 +1468,321 @@ def test_cli_human_manual_run_passes_resolved_file_targets(
 
     exit_code = main(["run", "manual", "--file", "check.py", "--json"])
     captured = capfd.readouterr()
-    result = json.loads(captured.out.splitlines()[-1])
+    result = json.loads(captured.out)
 
     assert exit_code == 0
     assert captured.err == (
         f"Working folder: {root}\n"
         f"Command: {shlex.join(command + ['check.py'])}\n"
-        "Run this? [Y/n] "
+        "Run this? [Y/n] ['check.py']\n"
     )
-    assert "['check.py']" in captured.out
+    assert captured.out.count("\n") == 1
     assert result["data"]["argv"] == command + ["check.py"]
+    assert result["data"]["files"] == ["check.py"]
+    assert result["data"]["summary"] == ["['check.py']"]
+    assert Path(result["data"]["log_path"]).read_text() == "['check.py']\n"
+
+
+def test_cli_human_manual_run_prints_short_summary_after_saving_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A confirmed manual run shows its output live, keeps all of it in its log,
+    then prints the short summary.
+    """
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+    monkeypatch.setenv("NO_COLOR", "1")
+    command = [sys.executable, "-c", "for line in range(30): print(f'line {line}')"]
+    assert main(["add", "manual", "--manual", "--", *command]) == 0
+    capsys.readouterr()
+    _enable_human_terminal(monkeypatch, "\n")
+
+    exit_code = main(["run", "manual"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Command completed" in captured.out
+    assert "Run ID" in captured.out
+    assert "\nLog " in captured.out
+    assert "line 0\n" in captured.out
+    assert "line 29" in captured.out
+
+    connection = connect_database(database_path)
+    try:
+        log_path = Path(connection.execute("SELECT log_path FROM runs").fetchone()[0])
+    finally:
+        connection.close()
+
+    assert log_path.read_text().splitlines() == [f"line {line}" for line in range(30)]
+
+
+def test_cli_human_manual_run_takes_named_run_lock_after_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Another run of this command in progress blocks this run without saving it."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+    command = [sys.executable, "-c", "print('child output')"]
+    assert main(["add", "manual", "--manual", "--", *command]) == 0
+    capsys.readouterr()
+    _enable_human_terminal(monkeypatch, "y\n")
+    repository = identify_repository()
+    active_lock = acquire_run_lock(
+        database_path, repository.id, "manual", run_id=uuid4().hex
+    )
+
+    try:
+        exit_code = main(["run", "manual", "--json"])
+        captured = capsys.readouterr()
+        result = json.loads(captured.out)
+
+        assert exit_code == 1
+        assert "Run this? [Y/n]" in captured.err
+        assert result["error"]["code"] == "busy"
+        assert result["error"]["data"]["run_id"] == active_lock.run_id
+
+        connection = connect_database(database_path)
+        try:
+            assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+        finally:
+            connection.close()
+
+        assert not (database_path.parent / "agent-run-logs").exists()
+    finally:
+        active_lock.release()
+
+
+def test_cli_human_manual_run_records_timeout_as_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A timed out manual command keeps the normal timeout result."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    command = [sys.executable, "-c", "import time; time.sleep(2)"]
+    assert main(["add", "manual", "--manual", "--", *command]) == 0
+    capsys.readouterr()
+    _enable_human_terminal(monkeypatch, "y\n")
+
+    exit_code = main(["run", "manual", "--timeout", "0.1", "--json"])
+    result = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert result["error"]["code"] == "check-failed"
+    assert "Command killed after 0.1 seconds." in result["error"]["message"]
+    assert result["error"]["data"]["timed_out"] is True
+    assert result["error"]["data"]["run_id"]
+
+
+def test_cli_human_manual_run_has_no_default_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """A confirmed manual run finishes without the default timeout."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    monkeypatch.setattr("agent_run.cli.DEFAULT_TIMEOUT_SECONDS", 0.01)
+    command = [sys.executable, "-c", "import time; time.sleep(0.05)"]
+    assert main(["add", "manual", "--manual", "--", *command]) == 0
+    capfd.readouterr()
+    _enable_human_terminal(monkeypatch, "y\n")
+
+    assert main(["run", "manual", "--json"]) == 0
+    result = json.loads(capfd.readouterr().out)
+    run_id = result["data"]["run_id"]
+    assert result["data"]["timed_out"] is False
+
+    assert main(["show", run_id, "--json"]) == 0
+    assert json.loads(capfd.readouterr().out)["data"]["timeout_seconds"] is None
+    assert main(["show", run_id]) == 0
+    assert "timeout            none" in capfd.readouterr().out
+
+
+def test_live_command_output_is_saved_before_the_child_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each output chunk reaches the screen and log while the child is running."""
+    marker = tmp_path / "continue"
+    log_path = tmp_path / "run.log"
+    script = (
+        "import pathlib, sys, time\n"
+        "print('first line', flush=True)\n"
+        "marker = pathlib.Path(sys.argv[1])\n"
+        "while not marker.exists(): time.sleep(0.01)"
+    )
+    output = Mock()
+
+    def confirm_live_output(chunk: bytes) -> None:
+        """Check that each chunk reaches the log before the terminal."""
+        assert chunk == b"first line\n"
+        assert log_path.read_bytes() == chunk
+        marker.touch()
+
+    output.write.side_effect = confirm_live_output
+    monkeypatch.setattr("agent_run.execution.sys", Mock(stdout=Mock(buffer=output)))
+
+    result = run_command(
+        [sys.executable, "-c", script, str(marker)],
+        tmp_path,
+        1,
+        log_path,
+        live_output=True,
+    )
+
+    assert result.exit_status == 0
+    assert result.timed_out is False
+    output.write.assert_called_once_with(b"first line\n")
+    assert log_path.read_bytes() == b"first line\n"
+
+
+def test_live_command_returns_when_a_grandchild_keeps_the_pipe_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A finished command does not wait for an inherited output pipe to close."""
+    log_path = tmp_path / "run.log"
+    output = Mock()
+    monkeypatch.setattr("agent_run.execution.sys", Mock(stdout=Mock(buffer=output)))
+
+    started_at = time.monotonic()
+    result = run_command(
+        ["sh", "-c", "sleep 2 & echo done"],
+        tmp_path,
+        None,
+        log_path,
+        live_output=True,
+    )
+
+    assert time.monotonic() - started_at < 1
+    assert result.exit_status == 0
+    assert result.timed_out is False
+    assert log_path.read_bytes() == b"done\n"
+
+
+def test_live_command_keeps_logging_after_terminal_output_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken terminal stream does not stop the command or truncate its log."""
+    log_path = tmp_path / "run.log"
+    output = Mock()
+    output.write.side_effect = BrokenPipeError("terminal closed")
+    monkeypatch.setattr("agent_run.execution.sys", Mock(stdout=Mock(buffer=output)))
+    script = "import time; print('first line', flush=True); time.sleep(0.1); print('last line')"
+
+    result = run_command(
+        [sys.executable, "-c", script],
+        tmp_path,
+        1,
+        log_path,
+        live_output=True,
+    )
+
+    assert result.exit_status == 0
+    assert result.timed_out is False
+    assert log_path.read_bytes() == b"first line\nlast line\n"
+    output.write.assert_called_once()
+
+
+def test_live_command_stops_draining_a_fast_grandchild_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A background writer cannot hold a completed run open with constant output."""
+    log_path = tmp_path / "run.log"
+    marker_path = tmp_path / "grandchild-started"
+    grandchild = (
+        "import os, pathlib, sys, time\n"
+        "end = time.monotonic() + 2\n"
+        "os.write(1, b'start\\n')\n"
+        "pathlib.Path(sys.argv[1]).touch()\n"
+        "while time.monotonic() < end: os.write(1, b'x' * 4096)"
+    )
+    script = (
+        "import os, subprocess, sys, time\n"
+        "print(f'pid={os.getpid()}', flush=True)\n"
+        "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]])\n"
+        "deadline = time.monotonic() + 1\n"
+        "while not os.path.exists(sys.argv[2]) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.001)\n"
+        "if not os.path.exists(sys.argv[2]): raise SystemExit('grandchild did not start')\n"
+        "print('done', flush=True)"
+    )
+    output = Mock()
+    monkeypatch.setattr("agent_run.execution.sys", Mock(stdout=Mock(buffer=output)))
+
+    started_at = time.monotonic()
+    try:
+        result = run_command(
+            [sys.executable, "-c", script, grandchild, str(marker_path)],
+            tmp_path,
+            None,
+            log_path,
+            live_output=True,
+        )
+    finally:
+        # Stop the background writer even when the run fails, unless the run
+        # failed before the child could log its process group.
+        log_lines = log_path.read_bytes().splitlines() if log_path.exists() else []
+
+        if log_lines:
+            process_group_id = int(log_lines[0].removeprefix(b"pid="))
+
+            # The writer usually dies once the run closes its pipe, and macOS
+            # reports a group that is still exiting as not permitted.
+            try:
+                os.killpg(process_group_id, signal.SIGTERM)
+            except (PermissionError, ProcessLookupError):
+                pass
+
+    # The limit allows up to a second for the grandchild to start, and is still
+    # under the two seconds an uncapped drain would take.
+    assert time.monotonic() - started_at < 1.5
+    assert result.exit_status == 0
+    assert result.timed_out is False
+    assert marker_path.exists()
+    assert b"done\n" in log_path.read_bytes()
+
+
+def test_live_command_times_out_while_output_stays_readable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A command cannot avoid its deadline by continuing to print output."""
+    log_path = tmp_path / "run.log"
+    script = (
+        "import os, time\n"
+        "end = time.monotonic() + 2\n"
+        "while time.monotonic() < end: os.write(1, b'x' * 4096)"
+    )
+    output = Mock()
+    monkeypatch.setattr("agent_run.execution.sys", Mock(stdout=Mock(buffer=output)))
+
+    started_at = time.monotonic()
+    result = run_command(
+        [sys.executable, "-c", script],
+        tmp_path,
+        0.1,
+        log_path,
+        live_output=True,
+    )
+
+    assert time.monotonic() - started_at < 1
+    assert result.timed_out is True
+    assert log_path.stat().st_size > 0
 
 
 def test_cli_human_manual_prompt_uses_cli_style_tones(
@@ -1549,7 +1881,7 @@ def test_cli_manual_prompt_interrupt_exits_without_traceback(
 @pytest.mark.parametrize(
     "answer, expected_exit, expected_row",
     [
-        ("y\n", 7, "failed (exit 7)"),
+        ("y\n", 1, "failed"),
         ("n\n", 1, "declined"),
     ],
 )
@@ -1561,7 +1893,7 @@ def test_cli_human_manual_run_text_summary(
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """A set shows a manual command's exit status or declined state in text."""
+    """A set shows the normal failed status or a declined manual command."""
     root = _initialise_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
@@ -1594,13 +1926,13 @@ def test_cli_human_manual_run_text_summary(
 
 
 @pytest.mark.parametrize("child_signal", [signal.SIGINT, signal.SIGTERM])
-def test_cli_manual_child_signal_stops_a_set_and_restores_parent_handler(
+def test_cli_manual_child_signal_follows_normal_run_result(
     child_signal: signal.Signals,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """A child signal returns 128 plus its number and stops later runs."""
+    """A signalled child fails and the next named command still runs."""
     root = _initialise_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
@@ -1621,10 +1953,11 @@ def test_cli_manual_child_signal_stops_a_set_and_restores_parent_handler(
     exit_code = main(["run", "manual", "later", "--json"])
     result = json.loads(capfd.readouterr().out)
 
-    assert exit_code == 128 + child_signal
+    assert exit_code == 1
     assert signal.getsignal(signal.SIGINT) == previous_handler
-    assert [run["status"] for run in result["data"]["runs"]] == ["interrupted"]
-    assert result["data"]["runs"][0]["data"]["exit_status"] == exit_code
+    assert [run["status"] for run in result["data"]["runs"]] == ["failed", "passed"]
+    assert result["data"]["runs"][0]["data"]["exit_status"] == -child_signal
+    assert result["data"]["runs"][0]["data"]["run_id"]
 
 
 def test_cli_again_confirms_current_manual_command(
@@ -1650,10 +1983,10 @@ def test_cli_again_confirms_current_manual_command(
 
     assert exit_code == 0
     assert result["data"]["manual"] is True
-    assert "run_id" not in result["data"]
+    assert result["data"]["run_id"] != run_id
     connection = connect_database(database_path)
     try:
-        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 2
     finally:
         connection.close()
 
@@ -1757,36 +2090,38 @@ def test_cli_direct_browser_runner_is_manual(
         connection.close()
 
 
-def test_cli_human_direct_browser_runner_confirms_without_history(
+def test_cli_human_direct_browser_runner_records_confirmed_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A person can confirm a direct browser command without saving a run."""
+    """A confirmed direct browser command saves a run and its output."""
     root = _initialise_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
     database_path = tmp_path / "agent-run.db"
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
     _enable_human_terminal(monkeypatch, "y\n")
     command = ["npx", "playwright", "test"]
-    real_run = subprocess.run
-    browser_runs: list[tuple[Sequence[str], Path, bool]] = []
+    browser_runs: list[tuple[str, ...]] = []
 
     def run_without_browser(
         argv: Sequence[str],
+        cwd: Path,
+        timeout: float | None,
+        log_path: Path,
         *,
-        cwd: Path | None = None,
-        check: bool = False,
-        **kwargs: object,
-    ) -> subprocess.CompletedProcess[str]:
-        """Record the browser command while preserving repository Git calls."""
-        if list(argv) == command:
-            browser_runs.append((argv, cwd, check))
-            return subprocess.CompletedProcess(argv, 0)
+        json_mode: bool,
+        live_output: bool,
+    ) -> RunResult:
+        """Capture a browser result without starting the browser."""
+        assert timeout is None
+        assert live_output is True
+        browser_runs.append(tuple(argv))
+        log_path.write_text("browser output\n")
 
-        return real_run(argv, cwd=cwd, check=check, **kwargs)
+        return RunResult(tuple(argv), cwd, 0, False, 0.01, log_path)
 
-    monkeypatch.setattr(subprocess, "run", run_without_browser)
+    monkeypatch.setattr("agent_run.cli.run_command", run_without_browser)
 
     exit_code = main(["run", "--json", "--", *command])
     captured = capsys.readouterr()
@@ -1795,18 +2130,23 @@ def test_cli_human_direct_browser_runner_confirms_without_history(
     assert exit_code == 0
     assert "Run this? [Y/n]" in captured.err
     assert result["ok"] is True
-    assert result["data"] == {
-        "name": None,
-        "cwd": str(root),
-        "argv": command,
-        "manual": True,
-        "exit_status": 0,
-    }
-    assert browser_runs == [(tuple(command), root, False)]
+    assert result["data"]["argv"] == command
+    assert result["data"]["manual"] is True
+    assert result["data"]["exit_status"] == 0
+    assert browser_runs == [tuple(command)]
+    assert Path(result["data"]["log_path"]).read_text() == "browser output\n"
+
+    run_id = result["data"]["run_id"]
+    assert main(["runs", "--json"]) == 0
+    runs_result = json.loads(capsys.readouterr().out)
+    assert runs_result["data"]["runs"][0]["run_id"] == run_id
+    assert main(["log", run_id, "--json"]) == 0
+    log_result = json.loads(capsys.readouterr().out)
+    assert log_result["data"]["log"] == "browser output\n"
 
     connection = connect_database(database_path)
     try:
-        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
     finally:
         connection.close()
 
@@ -2390,16 +2730,22 @@ def test_cli_recognises_coloured_vitest_failures_in_both_modes(
     assert "\x1b" in Path(json_output["error"]["data"]["log_path"]).read_text()
 
 
-def test_cli_run_maps_non_positive_timeout_to_usage(
+@pytest.mark.parametrize("timeout", ["0", "-1"])
+def test_cli_run_rejects_non_positive_timeout_without_saving_a_run(
+    timeout: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A non-positive timeout returns the usage error envelope."""
+    """An invalid timeout reports the usage error before saving a run."""
     root = _initialise_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
+    database_path = tmp_path / "agent-run.db"
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
+    connection = connect_database(database_path)
+    connection.close()
 
-    exit_code = main(["run", "--timeout", "0", "--json", "--", "echo"])
+    exit_code = main(["run", "--timeout", timeout, "--json", "--", "echo"])
 
     captured = capsys.readouterr()
     result = json.loads(captured.out)
@@ -2413,6 +2759,12 @@ def test_cli_run_maps_non_positive_timeout_to_usage(
         },
     }
     assert captured.err == ""
+    connection = connect_database(database_path)
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+    finally:
+        connection.close()
+    assert not (database_path.parent / "agent-run-logs").exists()
 
 
 def test_cli_run_requires_arguments_after_separator(
