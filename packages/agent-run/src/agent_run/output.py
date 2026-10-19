@@ -7,6 +7,7 @@ from typing import TextIO
 
 from cli_style import (
     empty_state,
+    panel,
     quote_block,
     row_group,
     span,
@@ -83,6 +84,21 @@ def render_quote_block(
     )
 
 
+def render_run_panel(
+    *, lines: Sequence[str], title: str, tone: str, width: int | None = None
+) -> str:
+    """Return the lines inside a bordered panel with the title on its top edge.
+
+    The tone sets the border colour, such as "success" or "danger".
+    """
+    return panel(
+        lines=list(lines),
+        title=title,
+        tone=tone,
+        **_render_options(width),
+    )
+
+
 def _render_options(width: int | None) -> dict[str, object]:
     """Return the shared render options, with the terminal width when known.
 
@@ -107,7 +123,7 @@ def render_success_status(*, label: str) -> str:
 def render_error_status(*, label: str) -> str:
     """Return the error marker and label for a command that failed or timed out."""
     return status(
-        type="error",
+        type="failed",
         label=label,
         **_RENDER_OPTIONS,
     )

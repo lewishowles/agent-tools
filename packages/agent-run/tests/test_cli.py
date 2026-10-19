@@ -3,23 +3,26 @@
 import json
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
+from agent_run import output as output_module
 from agent_run.cli import _format_failure_report, _format_run, main
 from agent_run.database import connect_database
 from agent_run.execution import RunResult, TerminateRequested, run_command
 from agent_run.failures import Failure, FailureReport
 from agent_run.locking import RunBusyError, acquire_run_lock
-from agent_run.output import render_error, render_success
+from agent_run.output import render_error, render_error_status, render_success
 from agent_run.readers import SuccessSummary
 from agent_run.repository import create_repository_id, identify_repository
 from agent_run.runs import RunRecord, create_run_log, start_run
@@ -359,19 +362,26 @@ def test_cli_run_passes_terminal_width_to_output_only_for_a_tty(
     monkeypatch.setattr(sys.stdout, "fileno", lambda: 1, raising=False)
     terminal_size = Mock(return_value=os.terminal_size((120, 40)))
     quote_block = Mock(return_value="Last lines of output\n| output")
+    panel = Mock(return_value="panel output")
     monkeypatch.setattr("agent_run.cli.os.get_terminal_size", terminal_size)
     monkeypatch.setattr("agent_run.output.quote_block", quote_block)
+    monkeypatch.setattr("agent_run.output.panel", panel)
 
     exit_code = main(["run", "--", sys.executable, "-c", "print('output')"])
     captured = capsys.readouterr()
 
     assert exit_code == 0
     assert captured.err == ""
-    assert "Last lines of output\n| output" in captured.out
     if is_tty:
-        assert quote_block.call_args.kwargs["width"] == 120
+        assert "panel output" in captured.out
+        assert panel.call_args.kwargs["width"] == 120
+        assert panel.call_args.kwargs["tone"] == "success"
+        assert "output" in panel.call_args.kwargs["lines"]
+        quote_block.assert_not_called()
     else:
+        assert "Last lines of output\n| output" in captured.out
         assert "width" not in quote_block.call_args.kwargs
+        panel.assert_not_called()
 
 
 @pytest.mark.parametrize("raises_error", [False, True])
@@ -392,16 +402,19 @@ def test_cli_run_omits_unusable_terminal_width(
     if raises_error:
         terminal_size.side_effect = OSError("terminal size unavailable")
     quote_block = Mock(return_value="Last lines of output\n| output")
+    panel = Mock(return_value="panel output")
     monkeypatch.setattr("agent_run.cli.os.get_terminal_size", terminal_size)
     monkeypatch.setattr("agent_run.output.quote_block", quote_block)
+    monkeypatch.setattr("agent_run.output.panel", panel)
 
     exit_code = main(["run", "--", sys.executable, "-c", "print('output')"])
     captured = capsys.readouterr()
 
     assert exit_code == 0
     assert captured.err == ""
-    assert "Last lines of output\n| output" in captured.out
-    assert "width" not in quote_block.call_args.kwargs
+    assert "panel output" in captured.out
+    assert panel.call_args.kwargs["width"] == 40
+    quote_block.assert_not_called()
 
 
 def test_cli_run_strips_coloured_output_but_keeps_raw_logs(
@@ -863,9 +876,11 @@ def test_cli_multiple_runs_pass_terminal_width_to_blocks_and_summary(
     monkeypatch.setattr(sys.stdout, "fileno", lambda: 1, raising=False)
     terminal_size = Mock(return_value=os.terminal_size((120, 40)))
     quote_block = Mock(return_value="Last lines of output\n| output")
+    panel = Mock(return_value="panel output")
     row_group = Mock(return_value="rows")
     monkeypatch.setattr("agent_run.cli.os.get_terminal_size", terminal_size)
     monkeypatch.setattr("agent_run.output.quote_block", quote_block)
+    monkeypatch.setattr("agent_run.output.panel", panel)
     monkeypatch.setattr("agent_run.output.row_group", row_group)
 
     exit_code = main(["run", "first", "second"])
@@ -874,14 +889,117 @@ def test_cli_multiple_runs_pass_terminal_width_to_blocks_and_summary(
     assert exit_code == 0
     assert captured.err == ""
     assert "Summary\nrows" in captured.out
-    assert len(quote_block.call_args_list) == 2
-    assert all(call.kwargs["width"] == 120 for call in quote_block.call_args_list)
+    quote_block.assert_not_called()
+    assert len(panel.call_args_list) == 2
+    assert all(call.kwargs["width"] == 120 for call in panel.call_args_list)
+    assert [call.kwargs["title"] for call in panel.call_args_list] == [
+        "first",
+        "second",
+    ]
     assert len(row_group.call_args_list) == 3
-    assert all(call.kwargs["width"] == 120 for call in row_group.call_args_list)
+    assert [call.kwargs["width"] for call in row_group.call_args_list] == [
+        115,
+        115,
+        120,
+    ]
     assert [row["label"] for row in row_group.call_args_list[-1].kwargs["rows"]] == [
         "first",
         "second",
     ]
+    assert [row["value"] for row in row_group.call_args_list[-1].kwargs["rows"]] == [
+        "✓ passed",
+        "✓ passed",
+    ]
+    assert all(
+        row["valueColour"] == "success"
+        for row in row_group.call_args_list[-1].kwargs["rows"]
+    )
+
+
+def test_cli_terminal_panels_and_summary_show_failed_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A failed result has a red panel and a marked red summary value."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    for name, code in (("first", 0), ("second", 7)):
+        assert (
+            main(
+                [
+                    "add",
+                    name,
+                    "--",
+                    sys.executable,
+                    "-c",
+                    f"print('output'); raise SystemExit({code})",
+                ]
+            )
+            == 0
+        )
+        capsys.readouterr()
+
+    monkeypatch.setattr("agent_run.output._RENDER_OPTIONS", {"plain": True})
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "fileno", lambda: 1, raising=False)
+    monkeypatch.setattr(
+        "agent_run.cli.os.get_terminal_size",
+        lambda descriptor: os.terminal_size((120, 40)),
+    )
+    panel = Mock(return_value="panel output")
+    row_group = Mock(
+        return_value="Exit code  0\nDuration 0.1s\nRun ID run-1\nLog /tmp/run.log"
+    )
+    monkeypatch.setattr("agent_run.output.panel", panel)
+    monkeypatch.setattr("agent_run.output.row_group", row_group)
+
+    assert main(["run", "first", "second"]) == 1
+    capsys.readouterr()
+
+    assert [call.kwargs["tone"] for call in panel.call_args_list] == [
+        "success",
+        "danger",
+    ]
+    assert [call.kwargs["title"] for call in panel.call_args_list] == [
+        "first",
+        "second",
+    ]
+    for call in panel.call_args_list:
+        lines = call.kwargs["lines"]
+        assert call.kwargs["width"] == 120
+        assert any(line.startswith("Exit code") for line in lines)
+        assert any(line.startswith("Duration") for line in lines)
+        assert any(line.startswith("Run ID") for line in lines)
+        assert any(line.startswith("Log") for line in lines)
+        assert "output" in lines
+        assert not any(line.startswith("| ") for line in lines)
+
+    assert row_group.call_args_list[-1].kwargs["rows"] == [
+        {
+            "label": "first",
+            "value": "✓ passed",
+            "wrap": False,
+            "valueColour": "success",
+        },
+        {
+            "label": "second",
+            "value": "✗ failed",
+            "wrap": False,
+            "valueColour": "danger",
+        },
+    ]
+
+
+def test_cli_failure_status_uses_failed_style(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The failure marker uses cli-style's failed status type."""
+    status = Mock(return_value="✗ failed")
+    monkeypatch.setattr("agent_run.output.status", status)
+
+    assert render_error_status(label="Command failed") == "✗ failed"
+    assert status.call_args.kwargs["type"] == "failed"
 
 
 def test_cli_multiple_runs_json_reports_success(
@@ -1507,7 +1625,7 @@ def test_cli_human_manual_run_prints_short_summary_after_saving_log(
     assert exit_code == 0
     assert "Command completed" in captured.out
     assert "Run ID" in captured.out
-    assert "\nLog " in captured.out
+    assert "Log " in captured.out
     assert "line 0\n" in captured.out
     assert "line 29" in captured.out
 
@@ -2834,11 +2952,12 @@ def test_cli_run_passes_terminal_width_to_failure_output(
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
     monkeypatch.setattr("agent_run.output._RENDER_OPTIONS", {"plain": True})
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
     monkeypatch.setattr(sys.stdout, "fileno", lambda: 1, raising=False)
     terminal_size = Mock(return_value=os.terminal_size((120, 40)))
-    quote_block = Mock(return_value="Last lines of output\n| failed")
+    panel = Mock(return_value="panel output")
     monkeypatch.setattr("agent_run.cli.os.get_terminal_size", terminal_size)
-    monkeypatch.setattr("agent_run.output.quote_block", quote_block)
+    monkeypatch.setattr("agent_run.output.panel", panel)
 
     exit_code = main(
         ["run", "--", sys.executable, "-c", "print('failed'); raise SystemExit(9)"]
@@ -2847,9 +2966,38 @@ def test_cli_run_passes_terminal_width_to_failure_output(
 
     assert exit_code == 1
     assert captured.out == ""
-    assert "Last lines of output\n| failed" in captured.err
-    assert quote_block.call_args.kwargs["width"] == 120
+    assert "panel output" in captured.err
+    assert panel.call_args.kwargs["width"] == 120
+    assert panel.call_args.kwargs["tone"] == "danger"
+    assert "failed" in panel.call_args.kwargs["lines"]
     assert "log path:" not in captured.err
+
+
+def test_cli_failure_uses_the_output_stream_for_terminal_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A failed run written to a pipe keeps the plain layout."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    monkeypatch.setattr("agent_run.output._RENDER_OPTIONS", {"plain": True})
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
+    monkeypatch.setattr(sys.stdout, "fileno", lambda: 1, raising=False)
+    monkeypatch.setattr(
+        "agent_run.cli.os.get_terminal_size",
+        lambda descriptor: os.terminal_size((120, 40)),
+    )
+    panel = Mock(return_value="panel output")
+    monkeypatch.setattr("agent_run.output.panel", panel)
+
+    assert main(["run", "--", sys.executable, "-c", "raise SystemExit(9)"]) == 1
+    captured = capsys.readouterr()
+
+    assert "Last lines of output\n| Failure output was not recognised." in captured.err
+    panel.assert_not_called()
 
 
 def test_cli_run_text_timeout_uses_the_run_block(
@@ -3745,6 +3893,100 @@ def test_success_block_keeps_command_and_log_on_single_lines(
         "| first line\n"
         "| second line\n\n"
     )
+
+
+def test_terminal_run_panel_keeps_every_line_at_the_terminal_width(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real renderer keeps a narrow result panel at the requested width."""
+    if shutil.which("cli-style") is None:
+        pytest.skip("cli-style renderer is unavailable")
+
+    monkeypatch.setattr(
+        "agent_run.output._RENDER_OPTIONS",
+        {"plain": True, "raise_on_missing": True},
+    )
+    row_group = Mock(wraps=output_module.row_group)
+    monkeypatch.setattr("agent_run.output.row_group", row_group)
+    log_path = Path("/tmp") / ("long-log-directory-" * 3) / "run.log"
+    result = RunResult(
+        argv=("echo", "ready"),
+        working_directory=Path("/tmp"),
+        exit_status=0,
+        timed_out=False,
+        duration_seconds=0.123,
+        log_path=log_path,
+    )
+    record = RunRecord(
+        run_id="run-1",
+        repository_id="repo-1",
+        argv=result.argv,
+        working_directory=".",
+        timeout_seconds=5,
+        started_at="2026-10-03T12:00:00+00:00",
+        duration_seconds=result.duration_seconds,
+        exit_status=0,
+        timed_out=False,
+        log_path=result.log_path,
+        command_name="check",
+    )
+
+    rendered = _format_run(
+        result,
+        record,
+        SuccessSummary(lines=["ready"], recognised=False),
+        width=50,
+        terminal=True,
+    )
+
+    assert all(len(line) == 50 for line in rendered.splitlines())
+    assert any("check" in line for line in rendered.splitlines())
+    assert len(str(log_path)) > 45
+    assert row_group.call_args.kwargs["width"] == 45
+
+
+def test_terminal_panel_shortens_only_log_paths_inside_home(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The panel shortens home paths while pipes and sibling paths stay full."""
+    monkeypatch.setattr("agent_run.output._RENDER_OPTIONS", {"plain": True})
+    home_log_path = Path.home() / ".agents" / "agent-run-logs" / "run.log"
+    result = RunResult(
+        argv=("echo", "ready"),
+        working_directory=Path("/tmp"),
+        exit_status=0,
+        timed_out=False,
+        duration_seconds=0.123,
+        log_path=home_log_path,
+    )
+    record = RunRecord(
+        run_id="run-1",
+        repository_id="repo-1",
+        argv=result.argv,
+        working_directory=".",
+        timeout_seconds=5,
+        started_at="2026-10-03T12:00:00+00:00",
+        duration_seconds=0.123,
+        exit_status=0,
+        timed_out=False,
+        log_path=home_log_path,
+        command_name="check",
+    )
+    summary = SuccessSummary(lines=["ready"], recognised=False)
+
+    panel = _format_run(result, record, summary, width=120, terminal=True)
+    piped = _format_run(result, record, summary, width=120, terminal=False)
+    sibling_log_path = Path(f"{Path.home()}x") / "run.log"
+    sibling_record = replace(record, log_path=sibling_log_path)
+    sibling_panel = _format_run(
+        result, sibling_record, summary, width=120, terminal=True
+    )
+
+    assert "~/.agents/agent-run-logs/run.log" in panel
+    assert str(home_log_path) not in panel
+    assert str(home_log_path) in piped
+    assert str(sibling_log_path) in sibling_panel
+    assert "~/" not in sibling_panel
 
 
 def test_failure_text_drops_the_repeated_source_location() -> None:

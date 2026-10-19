@@ -62,6 +62,7 @@ from agent_run.output import (
     render_error_status,
     render_quote_block,
     render_row_group,
+    render_run_panel,
     render_span,
     render_success,
     render_success_status,
@@ -112,6 +113,13 @@ RUN_TIMED_OUT = "timed out"
 RUN_INTERRUPTED = "interrupted"
 RUN_NOT_STARTED = "not started"
 RUN_DECLINED = "declined"
+
+# The width cli-style gives a panel when the terminal width is unknown.
+_PANEL_FALLBACK_WIDTH = 40
+
+# The columns a cli-style panel takes for its border and padding, so the text
+# inside it must be this much narrower than the panel.
+_PANEL_INSET = 5
 
 # Environment variables that Claude Code, Codex and other agent shells set. A
 # manual-only command is refused whenever one of them has a value, even at a
@@ -1719,6 +1727,7 @@ def _execute_multiple_runs(
             timeout=timeout,
             command=command,
             width=width,
+            failure_to_stdout=True,
         )
         run = {
             "name": command.name,
@@ -1754,10 +1763,23 @@ def _execute_multiple_runs(
             json.dumps({"ok": all(run["ok"] for run in runs), "data": {"runs": runs}})
         )
     else:
-        rows = [
-            {"label": run["name"], "value": _summary_status(outcome), "wrap": False}
-            for run, outcome in zip(runs, outcomes, strict=True)
-        ]
+        rows = []
+        for run, outcome in zip(runs, outcomes, strict=True):
+            row = {
+                "label": run["name"],
+                "value": _summary_status(outcome),
+                "wrap": False,
+            }
+            if outcome.status == RUN_PASSED:
+                row["valueColour"] = "success"
+                if sys.stdout.isatty():
+                    row["value"] = f"✓ {row['value']}"
+            elif outcome.status in {RUN_FAILED, RUN_TIMED_OUT}:
+                row["valueColour"] = "danger"
+                if sys.stdout.isatty():
+                    row["value"] = f"✗ {row['value']}"
+
+            rows.append(row)
         print("\n\n".join([*blocks, f"Summary\n{render_row_group(rows, width=width)}"]))
 
     return exit_code
@@ -1838,6 +1860,7 @@ def _perform_run(
     globs: Sequence[str] = (),
     command: Command | None = None,
     width: int | None = None,
+    failure_to_stdout: bool = False,
 ) -> _RunOutcome:
     """Run and record one command, returning its result without printing it.
 
@@ -1852,7 +1875,9 @@ def _perform_run(
 
     A caller that has already looked up the saved command can pass it as
     command to skip a second lookup. The result text wraps to width columns,
-    or to cli-style's fallback when width is None.
+    or to cli-style's fallback when width is None. A failed or interrupted
+    run's text is shaped for standard error, where run prints it, unless
+    failure_to_stdout says the caller prints it to standard output instead.
     """
     connection: sqlite3.Connection | None = None
     log_path: Path | None = None
@@ -2087,7 +2112,9 @@ def _perform_run(
         if manual_run:
             data["manual"] = True
         data["summary"] = summary.lines
-        text = _format_run(result, record, summary, width=width)
+        text = _format_run(
+            result, record, summary, width=width, terminal=sys.stdout.isatty()
+        )
 
         return _RunOutcome(status=RUN_PASSED, exit_code=0, data=data, text=text)
 
@@ -2098,6 +2125,9 @@ def _perform_run(
     if manual_run:
         failure_data["manual"] = True
 
+    failure_stream = sys.stdout if failure_to_stdout else sys.stderr
+    failure_terminal = failure_stream.isatty()
+
     if interrupted:
         # An interrupted run stops part-way, so its last lines are shown as
         # they are rather than read for a failure.
@@ -2106,15 +2136,18 @@ def _perform_run(
         else:
             lines = summarise_output(log_text)
 
-        output = render_quote_block(
-            lines=lines, title="Last lines of output", width=width
+        output = _format_output_excerpt(
+            lines=lines,
+            title="Last lines of output",
+            width=width,
+            terminal=failure_terminal,
         )
         signal_name = "Ctrl+C" if interrupt_signal == signal.SIGINT else "SIGTERM"
         status_line = render_warning_status(
             label=f"Command interrupted ({signal_name})"
         )
         failure_text = _format_run_block(
-            result, record, status_line, output, width=width
+            result, record, status_line, output, width=width, terminal=failure_terminal
         )
     else:
         # The block's status line says only what happened, with no full stop, like
@@ -2136,7 +2169,12 @@ def _perform_run(
 
         failure_data["failure"] = _failure_report_record(failure_report)
         failure_text = _format_failed_run(
-            result, record, status_message, failure_report, width=width
+            result,
+            record,
+            status_message,
+            failure_report,
+            width=width,
+            terminal=failure_terminal,
         )
 
     if interrupted:
@@ -2808,18 +2846,20 @@ def _format_run(
     summary: SuccessSummary,
     *,
     width: int | None = None,
+    terminal: bool = False,
 ) -> str:
     """Format one human-readable result block for a completed command.
 
     The block wraps to width columns, or to cli-style's fallback when width is
-    None.
+    None. With terminal set the block is a panel.
     """
     # The summary lines come from the command's output, except when the command
     # printed nothing or its log could not be read, when agent-run says so.
-    output = render_quote_block(
+    output = _format_output_excerpt(
         lines=summary.lines,
         title="Summary" if summary.recognised else "Last lines of output",
         width=width,
+        terminal=terminal,
     )
 
     return _format_run_block(
@@ -2828,6 +2868,7 @@ def _format_run(
         render_success_status(label="Command completed"),
         output,
         width=width,
+        terminal=terminal,
     )
 
 
@@ -2838,13 +2879,14 @@ def _format_failed_run(
     report: FailureReport,
     *,
     width: int | None = None,
+    terminal: bool = False,
 ) -> str:
     """Format one human-readable result block for a failed or timed-out command.
 
     The output block holds the failure report. A recognised failure appears under
     "First failure"; otherwise the last lines of output appear as they do for a
     completed command. The block wraps to width columns, or to cli-style's
-    fallback when width is None.
+    fallback when width is None. With terminal set the block is a panel.
     """
     if report.recognised and report.first is not None:
         title = "First failure"
@@ -2855,10 +2897,28 @@ def _format_failed_run(
             list(report.tail) if report.tail else ["Failure output was not recognised."]
         )
 
-    output = render_quote_block(lines=lines, title=title, width=width)
+    output = _format_output_excerpt(
+        lines=lines, title=title, width=width, terminal=terminal
+    )
     status_line = render_error_status(label=message)
 
-    return _format_run_block(result, record, status_line, output, width=width)
+    return _format_run_block(
+        result, record, status_line, output, width=width, terminal=terminal
+    )
+
+
+def _format_output_excerpt(
+    *, lines: Sequence[str], title: str, width: int | None, terminal: bool
+) -> str:
+    """Return the output excerpt under its title.
+
+    In a terminal the lines stay plain, because the run panel already draws a
+    border around them. When output is piped, they get the marked quote block.
+    """
+    if terminal:
+        return "\n".join([title, *lines])
+
+    return render_quote_block(lines=lines, title=title, width=width)
 
 
 def _format_run_block(
@@ -2868,30 +2928,65 @@ def _format_run_block(
     output: str,
     *,
     width: int | None = None,
+    terminal: bool = False,
 ) -> str:
-    """Join the status line, command, run facts and marked output into one block.
+    """Join the status line, command, run facts and output into one result.
 
-    Completed, failed, timed-out and interrupted runs all print this layout.
-    The facts and output wrap to width columns, or to cli-style's fallback when
-    width is None.
+    Completed, failed, timed-out and interrupted runs all print this layout. In
+    a terminal the result sits in a panel titled with the command name, with a
+    green border when the command passed and a red one otherwise. When output
+    is piped, the parts print as plain blocks separated by blank lines. The
+    facts wrap to width columns, or to cli-style's fallback when width is None;
+    inside a panel they wrap to the panel's inner width, and a log path in the
+    home folder starts with ~.
     """
+    # The panel breaks long lines with its border, so a shorter log path is more
+    # likely to fit on one line and copy cleanly. Piped output keeps the full
+    # path.
+    log_path = str(record.log_path)
+    if terminal:
+        try:
+            relative_log_path = record.log_path.relative_to(Path.home())
+        except ValueError:
+            pass
+        else:
+            log_path = f"~/{relative_log_path}"
+
     # The facts agent-run reports about the run, in display order.
     facts = (
         ("Exit code", result.exit_status),
         ("Duration", f"{result.duration_seconds:.3f}s"),
         ("Run ID", record.run_id),
-        ("Log", str(record.log_path)),
+        ("Log", log_path),
     )
 
-    # The facts as aligned rows. Wrapping is off so that a long log path stays
-    # on one line and can be copied whole.
+    panel_width = width if width is not None else _PANEL_FALLBACK_WIDTH
+    details_width = max(1, panel_width - _PANEL_INSET) if terminal else width
+
+    # The facts stay aligned; paths may wrap in a panel but stay whole in a pipe.
     details = render_row_group(
         [
             {"label": label, "value": value, "labelColour": "muted", "wrap": False}
             for label, value in facts
         ],
-        width=width,
+        width=details_width,
     )
+
+    if terminal:
+        return render_run_panel(
+            lines=[
+                status_line,
+                "",
+                f"$ {shlex.join(result.argv)}",
+                "",
+                *details.splitlines(),
+                "",
+                *output.splitlines(),
+            ],
+            title=record.command_name or shlex.join(result.argv),
+            tone="success" if result.exit_status == 0 else "danger",
+            width=panel_width,
+        )
 
     # Blank lines go above the block, between each of the status line, command,
     # facts and output, and below the block.
