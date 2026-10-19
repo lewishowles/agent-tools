@@ -2054,22 +2054,40 @@ def _run_release_move(
 
 
 def _run_task_move(args: argparse.Namespace, database: Database) -> tuple[object, str]:
-	"""Run task move after validating relative and release target flags."""
+	"""Run task move after validating relative and release target flags.
+
+	Human output names the new release when the move changed it.
+	"""
 	if args.release_id is None:
 		if (args.before is None) == (args.after is None):
 			raise CliUsageError("task move requires exactly one of --before or --after")
 	elif args.before is not None and args.after is not None:
 		raise CliUsageError("task move accepts at most one of --before or --after")
 
-	return (
-		WriteStore(database).task_move(
-			args.task_id,
-			release_id=args.release_id,
-			before_task_id=args.before,
-			after_task_id=args.after,
-		),
-		"task move",
+	# The task before the move, read only for human output so the message can
+	# say when its release changed. JSON output already includes release_id. A
+	# failed read is ignored so that the move itself reports the error.
+	previous_task = None
+	if not args.json:
+		with suppress(ProgressError):
+			previous_task = ReadStore(database).task_get(args.task_id)
+
+	task = WriteStore(database).task_move(
+		args.task_id,
+		release_id=args.release_id,
+		before_task_id=args.before,
+		after_task_id=args.after,
 	)
+	if previous_task is not None and previous_task["release_id"] != task["release_id"]:
+		release_id = task["release_id"]
+		release_title = (
+			ReadStore(database).release_get(release_id)["title"]
+			if release_id is not None
+			else "Unassigned"
+		)
+		task = {**task, "moved_to_release": release_title}
+
+	return task, "task move"
 
 
 def _run_task_edit(args: argparse.Namespace, database: Database) -> tuple[object, str]:

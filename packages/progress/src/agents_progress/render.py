@@ -183,6 +183,8 @@ def render(command: str, data: object) -> str:
 
 		if action == "move":
 			detail += f" to position {data.get('position')}"
+			if data.get("moved_to_release"):
+				detail += f" in {data['moved_to_release']}"
 		return render_status("success", f"{verb} {record_type}:", detail) + "\n"
 	if command in {"task complete", "chunk complete"} and isinstance(data, dict):
 		# Completion prints one success line, not every record field; handled here

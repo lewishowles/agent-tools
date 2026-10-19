@@ -352,7 +352,7 @@ missing-argument error instead of a prompt.
 
 ### `progress task move`
 
-Move a task within its current release or unassigned queue:
+Move a task before or after another task:
 
 ```text
 progress task move <task_id> --before <task_id> [--json] [--database <path>]
@@ -360,9 +360,9 @@ progress task move <task_id> --after <task_id> [--json] [--database <path>]
 ```
 
 Exactly one of `--before` or `--after` is required when `--release` is not
-used. The move changes task positions atomically, moving the selected task
-before or after the target and renumbering that task's queue from 1 without
-gaps.
+used. The moved task joins the target task's release or unassigned queue at the
+chosen position. Each affected queue is renumbered from 1 without gaps. If the
+move changes the release, the human confirmation names the new release.
 
 Reassign a task to a release or the unassigned queue with the same command:
 

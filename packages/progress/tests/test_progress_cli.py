@@ -2442,6 +2442,99 @@ def test_task_move_to_another_release_updates_only_the_moved_task(
 	)
 
 
+def test_task_move_names_the_new_release_only_when_it_changes(
+	complete_records, capsys
+) -> None:
+	"""The human output names the release only when a move changes it."""
+	database_path, task, _chunk = complete_records
+	database = Database(database_path)
+	writer = WriteStore(database)
+	release = writer.release_add(
+		"new-release", "New release", overview="Work in a new release."
+	)
+	target = writer.task_add(
+		"target",
+		"Target",
+		overview="Target work.",
+		done_when=["Finish it."],
+		release_id=release["id"],
+	)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"move",
+				task["id"],
+				"--before",
+				target["id"],
+				"--database",
+				str(database_path),
+			]
+		)
+		== 0
+	)
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert (
+		f"Moved task: {task['title']} ({task['id']}) to position 1 in New release"
+		in plain_output
+	)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"move",
+				task["id"],
+				"--after",
+				target["id"],
+				"--database",
+				str(database_path),
+			]
+		)
+		== 0
+	)
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert f"Moved task: {task['title']} ({task['id']}) to position 2" in plain_output
+	assert "in New release" not in plain_output
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"move",
+				task["id"],
+				"--release",
+				"",
+				"--database",
+				str(database_path),
+			]
+		)
+		== 0
+	)
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert " in Unassigned" in plain_output
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"move",
+				task["id"],
+				"--release",
+				release["id"],
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 0
+	)
+	json_task = json.loads(capsys.readouterr().out)["data"]
+	assert json_task["release_id"] == release["id"]
+	assert "moved_to_release" not in json_task
+
+
 def test_chunk_start_updates_its_parent_task(complete_records, capsys) -> None:
 	"""Starting a pending chunk changes its parent task's update time."""
 	database_path, task, _chunk = complete_records

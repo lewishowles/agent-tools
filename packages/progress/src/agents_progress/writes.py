@@ -919,7 +919,10 @@ class WriteStore(_StoreBase):
 		path: str | Path | None = None,
 		release_id: str | None = None,
 	) -> dict[str, object]:
-		"""Move a task within its queue or reassign it to another queue."""
+		"""Move a task within its queue or reassign it to another queue.
+
+		A task placed before or after a task in another queue joins that queue.
+		"""
 		validate_object_id(task_id, TASK_PREFIX)
 		release_reassignment = release_id is not None
 		if release_reassignment:
@@ -952,29 +955,36 @@ class WriteStore(_StoreBase):
 			if task is None:
 				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
 
-			if release_reassignment:
-				if release_id is not None:
-					release = connection.execute(
-						"SELECT 1 FROM releases WHERE id = ? AND project_id = ?",
-						(release_id, project.id),
-					).fetchone()
-					if release is None:
-						raise NotFoundError(
-							f"release {release_id} was not found", {"id": release_id}
-						)
+			if release_reassignment and release_id is not None:
+				release = connection.execute(
+					"SELECT 1 FROM releases WHERE id = ? AND project_id = ?",
+					(release_id, project.id),
+				).fetchone()
+				if release is None:
+					raise NotFoundError(
+						f"release {release_id} was not found", {"id": release_id}
+					)
 
-				if target_task_id is not None:
-					target = _task_row(connection, target_task_id, project.id)
-					if target is None:
-						raise NotFoundError(
-							f"task {target_task_id} was not found",
-							{"id": target_task_id},
-						)
-					if target["release_id"] != release_id:
-						raise InvalidTransitionError(
-							"target task must belong to the target release or unassigned queue",
-							{"task_id": task_id, "target_task_id": target_task_id},
-						)
+			target = None
+			if target_task_id is not None:
+				target = _task_row(connection, target_task_id, project.id)
+				if target is None:
+					raise NotFoundError(
+						f"task {target_task_id} was not found", {"id": target_task_id}
+					)
+				if (
+					not release_reassignment
+					and task["release_id"] != target["release_id"]
+				):
+					release_id = target["release_id"]
+					release_reassignment = True
+
+			if release_reassignment:
+				if target is not None and target["release_id"] != release_id:
+					raise InvalidTransitionError(
+						"target task must belong to the target release or unassigned queue",
+						{"task_id": task_id, "target_task_id": target_task_id},
+					)
 
 				if release_id is None:
 					queue_filter = "release_id IS NULL"
@@ -1009,18 +1019,6 @@ class WriteStore(_StoreBase):
 				_renumber_task_queue(connection, project.id, task["release_id"])
 
 				return _task_dict(connection, task_id, project.id)
-
-			target = _task_row(connection, target_task_id, project.id)
-			if target is None:
-				raise NotFoundError(
-					f"task {target_task_id} was not found", {"id": target_task_id}
-				)
-
-			if task["release_id"] != target["release_id"]:
-				raise InvalidTransitionError(
-					"tasks must belong to the same release or unassigned queue",
-					{"task_id": task_id, "target_task_id": target_task_id},
-				)
 
 			_reorder_task_queue(
 				connection,

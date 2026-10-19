@@ -624,23 +624,55 @@ def test_task_move_renumbers_a_queue_with_position_zero(
 	)
 
 
-def test_task_move_rejects_tasks_from_different_releases(tmp_path: Path) -> None:
+@pytest.mark.parametrize("before_target", [False, True])
+@pytest.mark.parametrize("target_unassigned", [False, True])
+def test_task_move_joins_the_target_queue_and_renumbers_the_source(
+	tmp_path: Path, before_target: bool, target_unassigned: bool
+) -> None:
 	store = _seed_store(tmp_path)
 	first_release = store.release_add(
 		"first-release", "First release", overview="First release overview"
 	)
-	second_release = store.release_add(
-		"second-release", "Second release", overview="Second release overview"
+	source_first = _add_task(
+		store, "source-first", "Source first", release_id=first_release["id"]
 	)
-	first_task = _add_task(
-		store, "first-task", "First task", release_id=first_release["id"]
+	moved = _add_task(store, "moved", "Moved", release_id=first_release["id"])
+	source_last = _add_task(
+		store, "source-last", "Source last", release_id=first_release["id"]
 	)
-	second_task = _add_task(
-		store, "second-task", "Second task", release_id=second_release["id"]
-	)
+	target_release_id = None
+	if not target_unassigned:
+		second_release = store.release_add(
+			"second-release", "Second release", overview="Second release overview"
+		)
+		target_release_id = second_release["id"]
+	target = _add_task(store, "target", "Target", release_id=target_release_id)
 
-	with pytest.raises(InvalidTransitionError, match="same release"):
-		store.task_move(first_task["id"], before_task_id=second_task["id"])
+	result = store.task_move(
+		moved["id"],
+		before_task_id=target["id"] if before_target else None,
+		after_task_id=None if before_target else target["id"],
+	)
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list()[
+		"items"
+	]
+
+	assert result["release_id"] == target_release_id
+	assert result["position"] == (1 if before_target else 2)
+	assert [
+		(item["id"], item["position"])
+		for item in items
+		if item["release_id"] == first_release["id"]
+	] == [(source_first["id"], 1), (source_last["id"], 2)]
+	assert [
+		(item["id"], item["position"])
+		for item in items
+		if item["release_id"] == target_release_id
+	] == (
+		[(moved["id"], 1), (target["id"], 2)]
+		if before_target
+		else [(target["id"], 1), (moved["id"], 2)]
+	)
 
 
 def test_task_move_rehomes_and_unassigns_tasks_in_queue_order(
