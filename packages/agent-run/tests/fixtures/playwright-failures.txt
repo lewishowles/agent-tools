@@ -1,0 +1,81 @@
+
+Running 18 tests using 1 worker
+
+  ✓   1 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:29:2 › pill-badge › renders a pill badge (627ms)
+  ✓   2 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:39:3 › pill-badge › scales the default badge spacing with its text (112ms)
+  ✓   3 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:39:3 › pill-badge › scales the text-base badge spacing with its text (105ms)
+  ✓   4 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: grey (74ms)
+  ✓   5 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: red (80ms)
+  ✓   6 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: orange (77ms)
+  ✓   7 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: yellow (80ms)
+  ✓   8 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: green (73ms)
+  ✓   9 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: teal (76ms)
+  ✓  10 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: blue (142ms)
+  ✓  11 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: indigo (78ms)
+  ✓  12 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: purple (79ms)
+  ✓  13 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: pink (84ms)
+  ✘  14 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: primary (5.2s)
+  ✘  15 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: danger (5.9s)
+  ✓  16 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: warning (705ms)
+  ✓  17 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: success (210ms)
+  ✓  18 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: info (104ms)
+
+
+  1) [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: primary 
+
+    Error: expect(locator).toHaveClass(expected) failed
+
+    Locator: getByTestId('pill-badge')
+    Expected pattern: /bg-primary-subtle-three/
+    Received string:  "inline-flex items-center gap-[0.35em] rounded-md px-[0.65em] py-[0.15em] text-xs font-medium ring-1 ring-inset bg-primary-subtle text-primary ring-primary-200 dark:bg-primary-500/50 dark:text-primary-200 dark:ring-0"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toHaveClass" with timeout 5000ms
+      - waiting for getByTestId('pill-badge')
+        14 × locator resolved to <span data-test="pill-badge" data-component="pill-badge" class="inline-flex items-center gap-[0.35em] rounded-md px-[0.65em] py-[0.15em] text-xs font-medium ring-1 ring-inset bg-primary-subtle text-primary ring-primary-200 dark:bg-primary-500/50 dark:text-primary-200 dark:ring-0">…</span>
+           - unexpected value "inline-flex items-center gap-[0.35em] rounded-md px-[0.65em] py-[0.15em] text-xs font-medium ring-1 ring-inset bg-primary-subtle text-primary ring-primary-200 dark:bg-primary-500/50 dark:text-primary-200 dark:ring-0"
+
+
+      68 |
+      69 | 			for (const className of colour.classes) {
+    > 70 | 				await expect(page.getByTestId("pill-badge")).toHaveClass(new RegExp(className));
+         | 				                                             ^
+      71 | 			}
+      72 | 		});
+      73 | 	}
+        at /Users/lewis/Dev/Repositories/Packages/components/src/components/messaging/pill-badge/pill-badge.pw.js:70:50
+
+    Error Context: test-results/messaging-pill-badge-pill--13548-dge-supports-colour-primary-chromium/error-context.md
+
+  2) [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: danger 
+
+    Error: expect(locator).toHaveClass(expected) failed
+
+    Locator: getByTestId('pill-badge')
+    Expected pattern: /bg-danger-subtle-three/
+    Received string:  "inline-flex items-center gap-[0.35em] rounded-md px-[0.65em] py-[0.15em] text-xs font-medium ring-1 ring-inset bg-danger-subtle text-danger ring-danger-200 dark:bg-danger-500/50 dark:text-danger-200 dark:ring-0"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toHaveClass" with timeout 5000ms
+      - waiting for getByTestId('pill-badge')
+        14 × locator resolved to <span data-test="pill-badge" data-component="pill-badge" class="inline-flex items-center gap-[0.35em] rounded-md px-[0.65em] py-[0.15em] text-xs font-medium ring-1 ring-inset bg-danger-subtle text-danger ring-danger-200 dark:bg-danger-500/50 dark:text-danger-200 dark:ring-0">…</span>
+           - unexpected value "inline-flex items-center gap-[0.35em] rounded-md px-[0.65em] py-[0.15em] text-xs font-medium ring-1 ring-inset bg-danger-subtle text-danger ring-danger-200 dark:bg-danger-500/50 dark:text-danger-200 dark:ring-0"
+
+
+      68 |
+      69 | 			for (const className of colour.classes) {
+    > 70 | 				await expect(page.getByTestId("pill-badge")).toHaveClass(new RegExp(className));
+         | 				                                             ^
+      71 | 			}
+      72 | 		});
+      73 | 	}
+        at /Users/lewis/Dev/Repositories/Packages/components/src/components/messaging/pill-badge/pill-badge.pw.js:70:50
+
+    Error Context: test-results/messaging-pill-badge-pill--d67cc-adge-supports-colour-danger-chromium/error-context.md
+
+  2 failed
+    [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: primary 
+    [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: danger 
+  16 passed (21.6s)

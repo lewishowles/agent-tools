@@ -1,0 +1,23 @@
+
+Running 18 tests using 1 worker
+
+  ✓   1 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:29:2 › pill-badge › renders a pill badge (3.0s)
+  ✓   2 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:39:3 › pill-badge › scales the default badge spacing with its text (384ms)
+  ✓   3 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:39:3 › pill-badge › scales the text-base badge spacing with its text (98ms)
+  ✓   4 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: grey (88ms)
+  ✓   5 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: red (72ms)
+  ✓   6 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: orange (77ms)
+  ✓   7 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: yellow (95ms)
+  ✓   8 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: green (72ms)
+  ✓   9 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: teal (261ms)
+  ✓  10 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: blue (92ms)
+  ✓  11 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: indigo (80ms)
+  ✓  12 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: purple (62ms)
+  ✓  13 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: pink (79ms)
+  ✓  14 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: primary (89ms)
+  ✓  15 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: danger (96ms)
+  ✓  16 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: warning (73ms)
+  ✓  17 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: success (65ms)
+  ✓  18 [chromium] › src/components/messaging/pill-badge/pill-badge.pw.js:66:3 › pill-badge › supports colour: info (84ms)
+
+  18 passed (14.0s)

@@ -223,21 +223,24 @@ and tracked files deleted from disk are excluded. Each pattern's matches are
 sorted, all targets must be regular files inside the repository, and targets
 are reported relative to the command's working directory.
 
-A successful pytest, Ruff, Vitest, `vp check`, or xcodebuild run shows its final
-passing totals or confirmation in one or two lines. Other commands, and reader
-output without a recognised success line, show the last eight non-blank lines.
+A successful pytest, Ruff, Vitest, Playwright, `vp check`, or xcodebuild run
+shows its final passing totals or confirmation in one or two lines. Other
+commands, and reader output without a recognised success line, show the last
+eight non-blank lines.
 JSON output returns the same lines as `summary` in `data`.
 With `--json`, the child command receives `NO_COLOR=1`. JSON summaries and
 failure reports contain plain text even if the command still prints colour.
 Text summaries and failure excerpts are plain too. The saved log keeps the
 command's original output.
 
-Failures from pytest, ruff, Vitest, and xcodebuild include the first failure's
-source location, title, and bounded detail. Up to 20 further failures are shown
-as one-line entries, with a count for anything hidden by the limit. The first
-failure detail is limited to 20 lines, keeping the code frame and error message
-when a traceback is longer. The Vitest reader supports `vitest [run|--run]`,
-`npx vitest`, `npm exec vitest`, `pnpm exec vitest`, and `vp test`.
+Failures from pytest, ruff, Vitest, Playwright, and xcodebuild include the
+first failure's source location, title, and bounded detail. Up to 20 further
+failures are shown as one-line entries, with a count for anything hidden by the
+limit. The first failure detail is limited to 20 lines, keeping the code frame
+and error message when a traceback is longer. The Vitest reader supports
+`vitest [run|--run]`, `npx vitest`, `npm exec vitest`, `pnpm exec vitest`, and
+`vp test`. The Playwright reader supports `playwright test` directly or through
+`npx`, `bunx`, `npm exec`, `pnpm`, and `yarn`.
 
 When the command is not recognised, or its output cannot be parsed, the final
 15 log lines are shown instead. The complete combined output remains in the

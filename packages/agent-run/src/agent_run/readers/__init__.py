@@ -14,6 +14,7 @@ from agent_run.failures import (
     strip_ansi,
     summarise_output,
 )
+from agent_run.readers.playwright import PlaywrightReader
 from agent_run.readers.pytest import PytestReader
 from agent_run.readers.ruff import RuffReader
 from agent_run.readers.vitest import VitestReader
@@ -22,6 +23,7 @@ from agent_run.readers.xcodebuild import XcodebuildReader
 
 # Readers are tried in this order, and the first that matches a command reads its log.
 FAILURE_READERS: tuple[FailureReader, ...] = (
+    PlaywrightReader(),
     PytestReader(),
     RuffReader(),
     VitestReader(),
