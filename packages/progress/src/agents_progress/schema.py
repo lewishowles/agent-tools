@@ -11,7 +11,7 @@ from .errors import DatabaseBusyError, MigrationFailedError, StaleSchemaError
 Migration = Callable[[sqlite3.Connection], None]
 
 # the schema version this package writes when creating a database from empty
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 # the newest schema version this package knows how to migrate to
 LATEST_SCHEMA_VERSION = SCHEMA_VERSION
 
@@ -662,6 +662,58 @@ def _migrate_to_version_16(connection: sqlite3.Connection) -> None:
 	connection.execute("ALTER TABLE task_worktrees ADD COLUMN base_branch TEXT")
 
 
+def _migrate_to_version_17(connection: sqlite3.Connection) -> None:
+	"""Allow a task slug to be reused after its earlier task is done.
+
+	SQLite cannot drop a table constraint in place, so the tasks table is rebuilt without
+	UNIQUE (project_id, slug). An index keeps the slug unique among unfinished tasks.
+	"""
+	connection.execute(
+		"""
+		CREATE TABLE tasks_new (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			slug TEXT NOT NULL,
+			release_id TEXT,
+			title TEXT NOT NULL,
+			overview TEXT NOT NULL,
+			verification TEXT NOT NULL,
+			split_rationale TEXT,
+			status TEXT NOT NULL CHECK (
+				status IN ('ready', 'in-progress', 'waiting', 'blocked', 'needs-decision', 'done')
+			),
+			status_reason TEXT,
+			position INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
+			started_at TEXT,
+			completed_at TEXT,
+			updated_at TEXT NOT NULL,
+			FOREIGN KEY (project_id) REFERENCES projects (id),
+			FOREIGN KEY (release_id) REFERENCES releases (id)
+		)
+		"""
+	)
+	connection.execute(
+		"""
+		INSERT INTO tasks_new (
+			id, project_id, slug, release_id, title, overview, verification,
+			split_rationale, status, status_reason, position, created_at,
+			started_at, completed_at, updated_at
+		)
+		SELECT id, project_id, slug, release_id, title, overview, verification,
+			split_rationale, status, status_reason, position, created_at,
+			started_at, completed_at, updated_at
+		FROM tasks
+		"""
+	)
+	connection.execute("DROP TABLE tasks")
+	connection.execute("ALTER TABLE tasks_new RENAME TO tasks")
+	connection.execute(
+		"CREATE UNIQUE INDEX tasks_one_unfinished_slug_per_project "
+		"ON tasks (project_id, slug) WHERE status != 'done'"
+	)
+
+
 # maps each supported schema version to the migration that produces it
 MIGRATIONS: dict[int, Migration] = {
 	1: _create_schema,
@@ -680,6 +732,7 @@ MIGRATIONS: dict[int, Migration] = {
 	14: _migrate_to_version_14,
 	15: _migrate_to_version_15,
 	16: _migrate_to_version_16,
+	17: _migrate_to_version_17,
 }
 
 

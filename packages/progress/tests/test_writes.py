@@ -11,6 +11,7 @@ from agents_progress import database as database_module, schema as schema_module
 from agents_progress.cli import _render_human_output
 from agents_progress.database import Database
 from agents_progress.errors import (
+	AlreadyExistsError,
 	DatabaseBusyError,
 	InvalidDependencyError,
 	InvalidTransitionError,
@@ -209,6 +210,32 @@ def test_task_add_rejects_scalar_task_values(tmp_path: Path, field: str) -> None
 	tasks = ReadStore(store.database, _ProjectStore(store.database)).task_list()
 
 	assert tasks["items"] == []
+
+
+def test_task_add_reuses_a_finished_slug_and_reports_an_unfinished_owner(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "repeat", "First task")
+
+	with pytest.raises(AlreadyExistsError, match=first["id"]):
+		_add_task(store, "repeat", "Blocked duplicate")
+
+	store.task_complete(first["id"])
+	second = _add_task(store, "repeat", "Second task")
+	assert second["id"] != first["id"]
+
+	with pytest.raises(AlreadyExistsError, match=second["id"]):
+		_add_task(store, "repeat", "Another duplicate")
+
+	assert store.task_start("repeat")["id"] == second["id"]
+	assert store.task_complete("repeat")["id"] == second["id"]
+	assert (
+		ReadStore(store.database, _ProjectStore(store.database)).task_get("repeat")[
+			"id"
+		]
+		== second["id"]
+	)
 
 
 @pytest.mark.parametrize(

@@ -834,8 +834,106 @@ def test_version_sixteen_migration_leaves_old_worktree_bases_unknown(tmp_path) -
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 16
+			== schema.SCHEMA_VERSION
 		)
+
+
+def test_version_seventeen_migration_keeps_tasks_and_every_task_link(tmp_path) -> None:
+	database_path = tmp_path / "progress.db"
+	project_id = generate_object_id(PROJECT_PREFIX)
+	first_id = generate_object_id(TASK_PREFIX)
+	second_id = generate_object_id(TASK_PREFIX)
+	chunk_id = generate_object_id(CHUNK_PREFIX)
+	note_id = generate_object_id(NOTE_PREFIX)
+	with sqlite3.connect(database_path) as connection:
+		for version in range(1, 17):
+			schema.MIGRATIONS[version](connection)
+
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.execute(
+			"INSERT INTO schema_migrations VALUES (16, '2026-01-01T00:00:00+00:00')"
+		)
+		_insert_project(connection, project_id)
+		_insert_current_task(connection, project_id, first_id, "repeat", "done")
+		_insert_current_task(connection, project_id, second_id, "dependent")
+		connection.execute(
+			"UPDATE projects SET default_task_id = ? WHERE id = ?",
+			(first_id, project_id),
+		)
+		connection.execute(
+			"INSERT INTO task_dependencies VALUES (?, ?)", (second_id, first_id)
+		)
+		connection.execute(
+			"INSERT INTO chunks (id, task_id, position, title, description, status) "
+			"VALUES (?, ?, 1, 'Chunk', 'Description', 'pending')",
+			(chunk_id, first_id),
+		)
+		connection.execute(
+			"INSERT INTO notes (id, project_id, task_id, type, body, created_at) "
+			"VALUES (?, ?, ?, 'discovery', 'Note', '2026-01-01T00:00:00+00:00')",
+			(note_id, project_id, first_id),
+		)
+		connection.execute(
+			"INSERT INTO task_contract_steps VALUES (?, 1, 'Check')", (first_id,)
+		)
+		connection.execute(
+			"INSERT INTO task_files VALUES (?, 1, 'file.py')", (first_id,)
+		)
+		connection.execute(
+			"INSERT INTO task_context (task_id, updated_at) VALUES (?, '2026-01-01T00:00:00+00:00')",
+			(first_id,),
+		)
+		connection.execute(
+			"INSERT INTO task_worktrees (task_id, project_id, path, branch, common_dir, created_at) "
+			"VALUES (?, ?, '/tmp/task', 'task', '/tmp/repository', '2026-01-01T00:00:00+00:00')",
+			(first_id, project_id),
+		)
+
+	with Database(database_path).connection() as connection:
+		assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+		assert {row[0] for row in connection.execute("SELECT id FROM tasks")} == {
+			first_id,
+			second_id,
+		}
+
+		for table, column in (
+			("projects", "default_task_id"),
+			("task_dependencies", "depends_on_task_id"),
+			("chunks", "task_id"),
+			("notes", "task_id"),
+			("task_contract_steps", "task_id"),
+			("task_files", "task_id"),
+			("task_context", "task_id"),
+			("task_worktrees", "task_id"),
+		):
+			assert (
+				connection.execute(f"SELECT {column} FROM {table}").fetchone()[0]
+				== first_id
+			)
+
+		assert (
+			connection.execute("SELECT task_id FROM task_dependencies").fetchone()[0]
+			== second_id
+		)
+
+		assert (
+			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
+				0
+			]
+			== 17
+		)
+
+		_insert_current_task(
+			connection, project_id, generate_object_id(TASK_PREFIX), "repeat"
+		)
+
+		with pytest.raises(sqlite3.IntegrityError):
+			_insert_current_task(
+				connection, project_id, generate_object_id(TASK_PREFIX), "repeat"
+			)
 
 
 def test_failed_version_six_migration_leaves_version_five_intact(

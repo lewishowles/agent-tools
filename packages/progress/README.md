@@ -324,7 +324,7 @@ Create a task:
 progress task add --slug <slug> --title <title> --overview <overview> --done-when <done_when> [--done-when <done_when> ...] [--file <file> ...] [--split-rationale <split_rationale>] [--verification <verification>] [--release <release_id> | --release-id <release_id>] [--depends-on <task_id> | --dependency <task_id>] [--position <position>] [--json] [--database <path>]
 ```
 
-- `--slug <slug>`: stable slug stored on the task
+- `--slug <slug>`: short task name. You can reuse it after earlier tasks with that slug are done, but only one unfinished task in a project can use it. Commands given a slug select the unfinished task, or the most recently completed one if all are done. Use a task ID to select an older completed task.
 - `--title <title>`: display title
 - `--overview <overview>`: non-empty task summary
 - `--done-when <done_when>`: one non-empty check that shows the task is done; repeat for each check

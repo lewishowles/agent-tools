@@ -135,6 +135,10 @@ def resolve_identifier(
 
 	Return the matched ID, or return the raw value unchanged when no slug matches so the
 	caller's not-found check handles it. Raise ValueError for an unsupported prefix.
+
+	A task slug can be reused once its earlier tasks are done, so a task slug picks the
+	unfinished task first, then the most recently completed one, then the highest ID.
+	Release slugs are unique, so they always match at most one release.
 	"""
 	table = _IDENTIFIER_TABLES.get(expected_prefix)
 	if table is None:
@@ -144,10 +148,17 @@ def resolve_identifier(
 	if is_valid_object_id(value, expected_prefix):
 		return value
 
-	row = connection.execute(
-		f"SELECT id FROM {table} WHERE project_id = ? AND slug = ?",
-		(project_id, value),
-	).fetchone()
+	if expected_prefix == TASK_PREFIX:
+		row = connection.execute(
+			"SELECT id FROM tasks WHERE project_id = ? AND slug = ? "
+			"ORDER BY (status != 'done') DESC, completed_at DESC, id DESC LIMIT 1",
+			(project_id, value),
+		).fetchone()
+	else:
+		row = connection.execute(
+			f"SELECT id FROM {table} WHERE project_id = ? AND slug = ?",
+			(project_id, value),
+		).fetchone()
 
 	return value if row is None else row["id"]
 

@@ -512,9 +512,23 @@ class WriteStore(_StoreBase):
 					),
 				)
 			except sqlite3.IntegrityError as error:
+				# the unfinished task that already uses this slug, which blocks reuse
+				unfinished_task = connection.execute(
+					"SELECT id FROM tasks WHERE project_id = ? AND slug = ? AND status != 'done'",
+					(project.id, slug),
+				).fetchone()
+
+				# any other integrity failure is not a slug clash, so it is re-raised unchanged
+				if unfinished_task is None:
+					raise
+
 				raise AlreadyExistsError(
-					f"task slug {slug!r} already exists in project {project.id}",
-					{"slug": slug, "project_id": project.id},
+					f"task slug {slug!r} belongs to unfinished task {unfinished_task['id']}",
+					{
+						"slug": slug,
+						"project_id": project.id,
+						"task_id": unfinished_task["id"],
+					},
 				) from error
 
 			for dependency_id in dependency_ids:

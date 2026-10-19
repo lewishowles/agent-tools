@@ -1272,6 +1272,42 @@ def test_resolve_identifier_tries_id_then_project_slug(
 	assert resolved_id == expected_id
 
 
+def test_task_slug_prefers_unfinished_then_latest_completion_then_highest_id(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE tasks SET status = 'done', completed_at = '2026-01-02T00:00:00+00:00' "
+			"WHERE id = ?",
+			(TASK_A,),
+		)
+		connection.execute(
+			"UPDATE tasks SET slug = 'first', status = 'done', "
+			"completed_at = '2026-01-03T00:00:00+00:00' WHERE id = ?",
+			(TASK_B,),
+		)
+
+	assert store.task_get("first")["id"] == TASK_B
+	assert store.task_get(TASK_A)["id"] == TASK_A
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE tasks SET completed_at = '2026-01-03T00:00:00+00:00' WHERE id = ?",
+			(TASK_A,),
+		)
+
+	assert store.task_get("first")["id"] == TASK_B
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE tasks SET status = 'ready', completed_at = NULL WHERE id = ?",
+			(TASK_A,),
+		)
+
+	assert store.task_get("first")["id"] == TASK_A
+
+
 def test_resolve_identifier_rejects_a_wrong_object_type(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 
