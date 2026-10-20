@@ -5,6 +5,7 @@ requires-python = ">=3.11"
 [manifest]
 members = [
     "agent-board",
+    "agent-quota",
     "agent-run",
     "agents-progress",
     "doc-paths",
@@ -24,6 +25,11 @@ dev = [
 name = "agent-board"
 version = "0.1.0"
 source = { editable = "packages/agent-board" }
+
+[[package]]
+name = "agent-quota"
+version = "0.1.0"
+source = { editable = "packages/agent-quota" }
 
 [[package]]
 name = "agent-run"
