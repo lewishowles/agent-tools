@@ -1006,6 +1006,27 @@ def test_workers_in_nested_directory_share_the_team() -> None:
     ]
 
 
+def test_worktree_members_use_the_main_checkout_folder() -> None:
+    """A managed worktree shows the repository and task label separately."""
+    agents = [
+        agent(
+            "Agents-quick-library-update",
+            "orchestrator",
+            directory="/home/user/.agents/worktrees/prj_one/tsk_one",
+        ),
+        agent(
+            "Agents-quick-library-update",
+            "scout",
+            directory="/home/user/.agents/worktrees/prj_one/tsk_one/src",
+        ),
+    ]
+
+    for member in agents:
+        member["main_checkout"] = "/work/Agents"
+
+    assert board_content(agents)[1] == "● needs you  Agents · quick-library-update"
+
+
 def test_longest_matching_folder_names_the_repo() -> None:
     """A short matching subfolder cannot replace the repository name."""
     agents = [

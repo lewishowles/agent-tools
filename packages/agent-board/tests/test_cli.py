@@ -25,6 +25,42 @@ def test_missing_hcom_returns_one_without_hiding_cursor(monkeypatch) -> None:
     )
 
 
+def test_checkout_lookup_is_cached_and_tolerates_non_git_directories(
+    monkeypatch,
+) -> None:
+    """Shared directories use one lookup; failed or empty directories are ignored."""
+    commands = []
+
+    def listed_git(command, **kwargs):
+        """Resolve one worktree and reject a directory without Git metadata."""
+        commands.append(command)
+
+        if command[2] == "/worktree/task":
+            return subprocess.CompletedProcess(command, 0, "/work/Agents/.git\n", "")
+
+        return subprocess.CompletedProcess(command, 128, "", "not a repository")
+
+    monkeypatch.setattr(cli.subprocess, "run", listed_git)
+    agents = [
+        {"directory": "/worktree/task"},
+        {"directory": "/worktree/task"},
+        {"directory": "/other"},
+        {"directory": ""},
+    ]
+    cache = {}
+
+    cli._set_main_checkouts(agents, cache)
+    cli._set_main_checkouts(agents, cache)
+
+    assert [agent.get("main_checkout") for agent in agents] == [
+        "/work/Agents",
+        "/work/Agents",
+        None,
+        None,
+    ]
+    assert [command[2] for command in commands] == ["/worktree/task", "/other"]
+
+
 @pytest.mark.parametrize(
     ("terminal", "no_colour", "coloured"),
     [(False, False, False), (True, False, True), (True, True, False)],

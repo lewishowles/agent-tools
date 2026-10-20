@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 from agent_board.board import (
     active_team_members,
@@ -61,6 +62,9 @@ def main() -> int:
     # duration. Stuck phases use the last event or first unread time. This
     # history lasts only until the board restarts.
     phase_since = {}
+    # The main checkout found for each agent directory, kept across refreshes
+    # so Git runs once per directory.
+    checkout_by_directory = {}
     sys.stdout.write(HIDE_CURSOR)
     sys.stdout.flush()
 
@@ -88,6 +92,7 @@ def main() -> int:
                     agents = json.loads(result.stdout)
                     now = time.monotonic()
                     _update_unread_since(agents, unread_since, now)
+                    _set_main_checkouts(agents, checkout_by_directory)
 
                     last_activity, last_activity_checked_at = _poll_activity(
                         agents, last_activity, last_activity_checked_at, now
@@ -135,6 +140,49 @@ def main() -> int:
     finally:
         sys.stdout.write(SHOW_CURSOR + "\n")
         sys.stdout.flush()
+
+
+def _set_main_checkouts(agents: list[dict], cache: dict[str, str | None]) -> None:
+    """Record each agent's main Git checkout, used to name worktree teams.
+
+    Sets `main_checkout` on agents whose directory Git can trace back to a
+    checkout, and leaves other agents unchanged. Results are cached by
+    directory, including failures.
+    """
+    for agent in agents:
+        directory = agent["directory"]
+
+        if not directory:
+            continue
+
+        if directory not in cache:
+            try:
+                result = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        directory,
+                        "rev-parse",
+                        "--path-format=absolute",
+                        "--git-common-dir",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                cache[directory] = None
+            else:
+                common_directory = result.stdout.strip()
+                cache[directory] = (
+                    str(Path(common_directory).parent)
+                    if result.returncode == 0 and Path(common_directory).name == ".git"
+                    else None
+                )
+
+        if cache[directory]:
+            agent["main_checkout"] = cache[directory]
 
 
 def _poll_activity(

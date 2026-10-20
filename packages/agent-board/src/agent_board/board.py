@@ -574,12 +574,13 @@ def _split_tag(tag: str) -> tuple[str, str | None]:
 def _team_label(prefix: str, members: list[tuple[dict, str | None]]) -> tuple[str, str]:
     """Split a team's name into its repository and the rest, such as " · label".
 
-    The repository is the longest folder name, from any member's working
-    directory or its parents, that the tag prefix starts with. Agents often
-    work in a subfolder, and a short subfolder name must not win over the
-    repository. A prefix with no matching folder is shown as it is, so the
-    agent is still listed. The rest is empty when the team is named after its
-    repository alone; the board dims it on rows that are waiting on you.
+    The repository is the longest folder name matching the tag prefix from
+    any member's working directory, its parents, or a worktree's main Git
+    checkout. Agents often work in a subfolder, and a short subfolder name
+    must not win over the repository. A prefix with no matching folder is
+    shown as it is, so the agent is still listed. The rest is empty when the
+    team is named after its repository alone; the board dims it on rows that
+    are waiting on you.
     """
     normalised_prefix = _normalise(prefix)
     repository = ""
@@ -587,7 +588,13 @@ def _team_label(prefix: str, members: list[tuple[dict, str | None]]) -> tuple[st
     for agent, _ in members:
         directory = Path(agent["directory"])
 
-        for candidate in (directory, *directory.parents):
+        checkout = agent.get("main_checkout")
+        candidates = (directory, *directory.parents)
+
+        if checkout:
+            candidates = (*candidates, Path(checkout))
+
+        for candidate in candidates:
             folder_name = _normalise(candidate.name)
 
             matches_prefix = folder_name == normalised_prefix or (
