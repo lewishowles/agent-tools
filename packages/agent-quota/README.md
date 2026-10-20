@@ -36,7 +36,7 @@ For tools that need structured data:
 agent-quota --json
 ```
 
-The result has one account entry per row. `used_percent` is the share spent, and all known times are ISO 8601 UTC strings with a `+00:00` offset. An unreadable account has an `error` in place of `session` and `week`, with `checked_at: null`. This abbreviated example shows one available account and one unavailable account:
+The result has one account entry per row. `used_percent` is the share spent as a whole number, and all known times are ISO 8601 UTC strings with a `+00:00` offset. An unreadable account has an `error` in place of `session` and `week`, with `checked_at: null`. This abbreviated example shows one available account and one unavailable account:
 
 ```json
 {

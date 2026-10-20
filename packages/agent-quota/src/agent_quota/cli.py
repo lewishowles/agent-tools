@@ -25,7 +25,11 @@ def iso_time(timestamp):
 
 
 def account_data(reading):
-    """Turn one probe reading into its JSON entry, with used rather than remaining percentages."""
+    """Turn one probe reading into its JSON entry, with used rather than remaining percentages.
+
+    Used percentages are rounded to whole numbers, as the table shows them, so every
+    provider gives the same number type.
+    """
     result = {
         "provider": reading["provider"],
         "account": reading["account"],
@@ -41,7 +45,7 @@ def account_data(reading):
     for name in ("session", "week"):
         window = reading[name]
         result[name] = {
-            "used_percent": 100 - window["remaining_percent"],
+            "used_percent": int(100 - window["remaining_percent"] + 0.5),
             "resets_at": iso_time(window["resets_at"]) if window["resets_at"] else None,
             "window_seconds": window["window_seconds"],
         }

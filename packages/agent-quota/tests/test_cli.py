@@ -172,3 +172,16 @@ def test_unknown_reset_time_is_null_in_json_and_blank_in_table():
 def test_iso_time_uses_utc_for_fractional_timestamps():
     """Saved check times retain their precision with an explicit UTC offset."""
     assert cli.iso_time(1735689600.5) == "2025-01-01T00:00:00.500000+00:00"
+
+
+def test_used_percent_is_a_whole_number_for_fractional_readings():
+    """A fractional remaining share rounds to the same whole number the table shows."""
+    item = reading("claude", "default")
+    item["session"]["remaining_percent"] = 43.0
+    item["week"]["remaining_percent"] = 42.6
+
+    account = cli.account_data(item)
+
+    assert account["session"]["used_percent"] == 57
+    assert isinstance(account["session"]["used_percent"], int)
+    assert account["week"]["used_percent"] == 57
