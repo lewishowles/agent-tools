@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -5670,6 +5671,8 @@ def test_human_task_clean_separates_kept_task_blocks() -> None:
 		("blocked", "failed"),
 		("needs-decision", "warning"),
 		("done", "success"),
+		("planned", "skipped"),
+		("ready", "skipped"),
 	],
 )
 def test_task_rows_use_distinct_cli_style_results(
@@ -5686,7 +5689,7 @@ def test_task_rows_use_distinct_cli_style_results(
 		lambda value, *args, **kwargs: value,
 	)
 
-	row = render_module._render_task_item(
+	row = render_module._render_queue_item(
 		{"id": "tsk_test", "title": "Task", "status": status}, 1
 	)
 
@@ -5822,11 +5825,20 @@ def test_human_release_list_keeps_trailing_blank_line(
 		def __init__(self, database) -> None:
 			pass
 
-		def release_list(self, limit, offset, *, show_all, include_hidden_count):
+		def release_list(
+			self,
+			limit,
+			offset,
+			*,
+			show_all,
+			include_hidden_count,
+			include_queue_numbers,
+		):
 			assert limit == 1
 			assert offset == 0
 			assert show_all is False
 			assert include_hidden_count is True
+			assert include_queue_numbers is True
 			return data
 
 	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
@@ -5846,11 +5858,13 @@ def test_human_release_list_keeps_trailing_blank_line(
 	)
 
 	output = capsys.readouterr()
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", output.out)
 
 	assert output.err == ""
 	assert output.out.startswith("\n")
 	assert output.out.endswith("\n\n")
 	assert "Releases" in output.out
+	assert re.search(r"(?m)^#\s+Status\s+Title\s+ID$", plain_output)
 	assert "First release" in output.out
 	assert "(rel_test)" not in output.out
 	assert "rel_test" in output.out
@@ -5875,25 +5889,25 @@ def test_release_list_hides_done_releases_without_changing_json_keys(
 
 	monkeypatch.setattr(ProjectStore, "current", lambda self, path=None: project)
 	writer = WriteStore(database)
+	done_release = writer.release_add(
+		"done-release",
+		"Done release",
+		overview="Completed release.",
+		status="done",
+		position=1,
+	)
 	planned_release = writer.release_add(
 		"planned-release",
 		"Planned release",
 		overview="Plan the release.",
 		status="planned",
-		position=1,
+		position=2,
 	)
 	active_release = writer.release_add(
 		"active-release",
 		"Active release",
 		overview="Build the release.",
 		status="active",
-		position=2,
-	)
-	done_release = writer.release_add(
-		"done-release",
-		"Done release",
-		overview="Completed release.",
-		status="done",
 		position=3,
 	)
 	second_done_release = writer.release_add(
@@ -5926,10 +5940,25 @@ def test_release_list_hides_done_releases_without_changing_json_keys(
 		active_release["id"],
 	]
 	assert default_response["has_more"] is False
+	assert all("queue_number" not in item for item in default_response["items"])
 
 	assert cli.main(["release", "list", "--database", str(database_path)]) == 0
 
 	human_output = capsys.readouterr().out
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", human_output)
+	active_line = next(
+		line for line in plain_output.splitlines() if active_release["id"] in line
+	)
+	planned_line = next(
+		line for line in plain_output.splitlines() if planned_release["id"] in line
+	)
+
+	assert re.search(r"(?m)^#\s+Status\s+Title\s+ID$", plain_output)
+	assert re.match(r"^2\s+", active_line)
+	assert re.match(r"^1\s+", planned_line)
+	assert plain_output.index(active_line) < plain_output.index(planned_line)
+	assert "active" in active_line
+	assert "planned" in planned_line
 	assert "2 completed releases hidden. Use --all to show them." in human_output
 
 	assert (
@@ -5951,15 +5980,58 @@ def test_release_list_hides_done_releases_without_changing_json_keys(
 	all_response = json.loads(capsys.readouterr().out)["data"]
 	assert set(all_response) == {"items", "limit", "offset", "has_more"}
 	assert [item["id"] for item in all_response["items"]] == [
+		done_release["id"],
 		planned_release["id"],
 		active_release["id"],
-		done_release["id"],
 		second_done_release["id"],
 	]
 	assert all_response["has_more"] is False
+	assert all("queue_number" not in item for item in all_response["items"])
 
 	assert cli.main(["release", "list", "--all", "--database", str(database_path)]) == 0
-	assert "completed release hidden" not in capsys.readouterr().out
+	all_human_output = render_module._ANSI_ESCAPE_PATTERN.sub(
+		"", capsys.readouterr().out
+	)
+	all_release_lines = [
+		line
+		for line in all_human_output.splitlines()
+		if any(item["id"] in line for item in all_response["items"])
+	]
+
+	assert "completed release hidden" not in all_human_output
+	assert [line.split()[-1] for line in all_release_lines] == [
+		second_done_release["id"],
+		active_release["id"],
+		planned_release["id"],
+		done_release["id"],
+	]
+	assert re.match(r"^2\s+", all_release_lines[1])
+	assert re.match(r"^1\s+", all_release_lines[2])
+	assert not re.match(r"^\s*\d+\s+", all_release_lines[0])
+	assert not re.match(r"^\s*\d+\s+", all_release_lines[3])
+
+	assert (
+		cli.main(
+			[
+				"release",
+				"list",
+				"--all",
+				"--limit",
+				"1",
+				"--offset",
+				"2",
+				"--database",
+				str(database_path),
+			]
+		)
+		== 0
+	)
+	page_output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	active_page_line = next(
+		line for line in page_output.splitlines() if active_release["id"] in line
+	)
+
+	assert re.match(r"^2\s+", active_page_line)
 
 	assert (
 		cli.main(

@@ -1714,6 +1714,7 @@ def _run_command(
 				args.offset,
 				show_all=args.all,
 				include_hidden_count=human_output,
+				include_queue_numbers=human_output,
 			),
 			"release list",
 		),

@@ -973,12 +973,14 @@ class ReadStore(_StoreBase):
 		*,
 		show_all: bool = False,
 		include_hidden_count: bool = False,
+		include_queue_numbers: bool = False,
 	) -> dict[str, object]:
 		"""List the current project's releases in position order, one bounded page at a time.
 
 		Only planned and active releases are listed by default. Pass show_all to include done
 		releases as well. The human output passes include_hidden_count to add hidden_done_count
-		to the result when done releases are hidden and at least one exists.
+		to the result when done releases are hidden and at least one exists. It passes
+		include_queue_numbers to number open releases across the whole project queue.
 		"""
 		limit, offset = validate_page(limit, offset)
 		project = self.current_project(path)
@@ -1010,6 +1012,23 @@ class ReadStore(_StoreBase):
 				).fetchone()[0]
 				if hidden_done_count > 0:
 					response["hidden_done_count"] = hidden_done_count
+
+			# Number every unfinished release by its place in the whole project queue,
+			# with 1 as the next release, so a later page still shows true positions.
+			# Only human output asks for this, which keeps the JSON shape unchanged.
+			if include_queue_numbers:
+				open_release_rows = connection.execute(
+					"SELECT id FROM releases "
+					"WHERE project_id = ? AND status != 'done' ORDER BY position, id",
+					(project.id,),
+				).fetchall()
+				queue_numbers = {
+					row["id"]: number
+					for number, row in enumerate(open_release_rows, start=1)
+				}
+				for item in response["items"]:
+					if item["status"] != "done":
+						item["queue_number"] = queue_numbers[item["id"]]
 
 			return response
 
