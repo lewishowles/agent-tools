@@ -79,10 +79,7 @@ def rgb(red, green, blue, value, colour):
 
 
 def pace_colour(tone):
-    """Pick the bar colour for a tone from 0 (green, well under pace) to 1 (red, well over pace).
-
-    The gradient matches the one agent:usage uses.
-    """
+    """Pick the bar colour for a tone from 0 (green, well under pace) to 1 (red, well over pace)."""
     if tone < 0.5:
         return (90 + tone * 2 * 155, 220 - tone * 2 * 30, 160 - tone * 2 * 90)
 
