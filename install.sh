@@ -7,11 +7,12 @@ set -eo pipefail
 
 # The tools this script can install, in menu order. Each name is also the
 # package folder under packages/.
-TOOL_NAMES=(agent-board agent-run doc-paths friction page-to-markdown progress review-feedback team-send)
+TOOL_NAMES=(agent-board agent-quota agent-run doc-paths friction page-to-markdown progress review-feedback team-send)
 
 # The one-line purpose shown beside each tool, in the same order as TOOL_NAMES.
 TOOL_PURPOSES=(
 	'Show HCOM teams that need your attention'
+	'Show Claude and Codex quota for each account'
 	'Run project commands with bounded output'
 	'Check local paths named in Markdown files'
 	'Record and review agent workflow friction'
