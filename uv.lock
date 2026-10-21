@@ -117,6 +117,12 @@ wheels = [
 name = "page-to-markdown"
 version = "0.1.2"
 source = { editable = "packages/page-to-markdown" }
+dependencies = [
+    { name = "lewishowles-cli-style" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "lewishowles-cli-style", specifier = ">=0.17.1" }]
 
 [[package]]
 name = "pluggy"

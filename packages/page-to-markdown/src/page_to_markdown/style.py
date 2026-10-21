@@ -2,12 +2,17 @@
 
 from collections.abc import Callable
 
-from page_to_markdown._cli_style import CliStyleNotFoundError
-from page_to_markdown._cli_style import hint as render_hint
-from page_to_markdown._cli_style import render as render_generic
-from page_to_markdown._cli_style import row as render_row
-from page_to_markdown._cli_style import span as render_span
-from page_to_markdown._cli_style import status as render_status
+from cli_style import CliStyleNotFoundError
+from cli_style import hint as render_hint
+from cli_style import render as render_generic
+from cli_style import row as render_row
+from cli_style import span as render_span
+from cli_style import status as render_status
+
+# Options sent with every styled call. They make cli-style raise when its
+# binary is missing, so each function below prints page-to-markdown's own plain
+# text instead of the library's generic fallback.
+_RENDER_OPTIONS = {"raise_on_missing": True}
 
 # Match cli-style's plain-text result markers when its binary is unavailable.
 _PLAIN_RESULT_MARKERS = {
@@ -87,7 +92,7 @@ def _plain_hint(message: str) -> str:
 def status(result_type: str, label: str = "", detail: str = "") -> str:
 	"""Render a status line using cli-style or plain text."""
 	return _render_or_plain(
-		lambda: render_status(result_type, label, detail),
+		lambda: render_status(result_type, label, detail, **_RENDER_OPTIONS),
 		lambda: _plain_status(result_type, label, detail),
 	)
 
@@ -95,7 +100,7 @@ def status(result_type: str, label: str = "", detail: str = "") -> str:
 def hint(message: str) -> str:
 	"""Render a hint line using cli-style or plain text."""
 	return _render_or_plain(
-		lambda: render_hint(message),
+		lambda: render_hint(message, **_RENDER_OPTIONS),
 		lambda: _plain_hint(message),
 	)
 
@@ -103,7 +108,7 @@ def hint(message: str) -> str:
 def row(label: str, value: str, result: str = "") -> str:
 	"""Render a labelled row using cli-style or plain text."""
 	return _render_or_plain(
-		lambda: render_row(label, value, result),
+		lambda: render_row(label, value, result, **_RENDER_OPTIONS),
 		lambda: _plain_row(label, value, result),
 	)
 
@@ -111,7 +116,7 @@ def row(label: str, value: str, result: str = "") -> str:
 def row_group(rows: list[dict[str, str]]) -> str:
 	"""Render aligned labelled rows using cli-style or plain text."""
 	return _render_or_plain(
-		lambda: render_generic("row-group", {"rows": rows}),
+		lambda: render_generic("row-group", {"rows": rows}, **_RENDER_OPTIONS),
 		lambda: _plain_row_group(rows),
 	)
 
@@ -119,6 +124,6 @@ def row_group(rows: list[dict[str, str]]) -> str:
 def span(value: str, tone: str = "info") -> str:
 	"""Render an inline span using cli-style or plain text."""
 	return _render_or_plain(
-		lambda: render_span(value, tone),
+		lambda: render_span(value, tone, **_RENDER_OPTIONS),
 		lambda: value,
 	)

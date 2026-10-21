@@ -1,3 +1,8 @@
+from pathlib import Path
+
+import pytest
+
+from page_to_markdown import style
 from page_to_markdown.style import _plain_row_group
 
 
@@ -22,3 +27,21 @@ def test_plain_row_group_aligns_values_for_mixed_result_markers() -> None:
 		"x Finding   needs review\n"
 		"OK Verdict  high-confidence"
 	)
+
+
+def test_renderers_keep_page_to_markdown_plain_text_when_cli_style_is_missing(
+	monkeypatch: pytest.MonkeyPatch,
+	tmp_path: Path,
+) -> None:
+	monkeypatch.setenv("PATH", str(tmp_path))
+
+	rows = [
+		{"label": "Source", "value": "docs.html"},
+		{"label": "Verdict", "value": "high-confidence", "result": "success"},
+	]
+
+	assert style.status("success", "Saved", "draft 1") == "OK Saved draft 1"
+	assert style.hint("Run show") == "i Hint: Run show"
+	assert style.row("Draft", "abc", "success") == "OK Draft  abc"
+	assert style.row_group(rows) == "Source      docs.html\nOK Verdict  high-confidence"
+	assert style.span("saved", "success") == "saved"

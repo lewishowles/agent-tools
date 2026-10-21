@@ -7,10 +7,10 @@ It won't render JavaScript; for JS-rendered pages, pipe rendered HTML in from `w
 ## Requirements
 
 - Python 3.11+
-- No other dependencies
+- The small, dependency-free `lewishowles-cli-style` Python adapter
 - `--copy` needs macOS (uses `pbcopy`)
 
-Styled confidence-report output requires the standalone [`cli-style` binary](https://github.com/lewishowles/cli-style/releases) to be available on `PATH`. When it is not installed, `page-to-markdown` falls back to plain text output, so no additional dependency is required.
+Styled confidence-report output requires the standalone [`cli-style` binary](https://github.com/lewishowles/cli-style/releases) to be available on `PATH`. When it is not installed, `page-to-markdown` falls back to plain text output, so the binary is optional.
 
 ## Getting started
 

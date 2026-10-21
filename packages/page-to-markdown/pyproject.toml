@@ -5,7 +5,7 @@ description = "Convert a URL, file, or piped HTML into compact Markdown."
 authors = [{ name = "Lewis Howles" }]
 license = { text = "MIT" }
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["lewishowles-cli-style>=0.17.1"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -33,9 +33,8 @@ packages = ["src/page_to_markdown"]
 pythonpath = ["src"]
 
 [tool.ruff]
-# The fixtures are exact expected output, so formatting them would break the
-# tests. The CLI style adapter is a vendored copy kept verbatim.
-extend-exclude = ["src/page_to_markdown/_cli_style.py", "fixtures"]
+# The fixtures are exact expected output, so formatting them would break the tests.
+extend-exclude = ["fixtures"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
