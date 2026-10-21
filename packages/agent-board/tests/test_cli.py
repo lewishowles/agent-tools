@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import subprocess
+import termios
 
 import pytest
 from agent_board import cli
@@ -126,8 +127,12 @@ def test_nonzero_hcom_exit_is_shown_on_the_board(
 
 @pytest.mark.parametrize("exit_kind", ["ctrl_c", "sigterm", "error"])
 def test_terminal_screen_is_restored_on_exit(monkeypatch, exit_kind: str) -> None:
-    """Every exit returns to the earlier screen with the cursor visible."""
+    """Every exit restores the screen, the cursor and the earlier input settings."""
     output = io.StringIO()
+    input_stream = io.StringIO()
+    input_fd = 42
+    original_input_settings = [1, 2, 3, 4, 5, 6, []]
+    input_calls = []
     original_handler = signal.getsignal(signal.SIGTERM)
 
     def failed_hcom(*args, **kwargs):
@@ -154,6 +159,18 @@ def test_terminal_screen_is_restored_on_exit(monkeypatch, exit_kind: str) -> Non
     )
     monkeypatch.setattr(cli.sys, "stdout", output)
     monkeypatch.setattr(output, "isatty", lambda: True)
+    monkeypatch.setattr(cli.sys, "stdin", input_stream)
+    monkeypatch.setattr(input_stream, "isatty", lambda: True)
+    monkeypatch.setattr(input_stream, "fileno", lambda: input_fd)
+    monkeypatch.setattr(cli.termios, "tcgetattr", lambda fd: original_input_settings)
+    monkeypatch.setattr(
+        cli.tty, "setcbreak", lambda fd: input_calls.append(("start", fd))
+    )
+    monkeypatch.setattr(
+        cli.termios,
+        "tcsetattr",
+        lambda fd, when, settings: input_calls.append(("restore", fd, when, settings)),
+    )
 
     if exit_kind == "ctrl_c":
         assert cli.main() == 0
@@ -169,6 +186,40 @@ def test_terminal_screen_is_restored_on_exit(monkeypatch, exit_kind: str) -> Non
     assert cli.CLEAR_SCREEN in output.getvalue()
     assert output.getvalue().endswith(cli.SHOW_CURSOR + cli.LEAVE_ALT_SCREEN)
     assert signal.getsignal(signal.SIGTERM) == original_handler
+    assert input_calls == [
+        ("start", input_fd),
+        ("restore", input_fd, termios.TCSAFLUSH, original_input_settings),
+    ]
+
+
+def test_non_terminal_input_is_left_alone(monkeypatch) -> None:
+    """The board leaves input settings alone when input comes from a pipe."""
+    output = io.StringIO()
+    input_stream = io.StringIO()
+
+    def stop_after_refresh(read_fd, seconds):
+        """Close the board after it draws once."""
+        raise KeyboardInterrupt
+
+    def unexpected_input_change(*args):
+        """Fail if the board tries to change piped input settings."""
+        raise AssertionError("changed non-terminal input")
+
+    monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "[]", ""),
+    )
+    monkeypatch.setattr(cli, "_wait_for_resize", stop_after_refresh)
+    monkeypatch.setattr(cli.sys, "stdout", output)
+    monkeypatch.setattr(output, "isatty", lambda: True)
+    monkeypatch.setattr(cli.sys, "stdin", input_stream)
+    monkeypatch.setattr(cli.termios, "tcgetattr", unexpected_input_change)
+    monkeypatch.setattr(cli.tty, "setcbreak", unexpected_input_change)
+
+    assert cli.main() == 0
+    assert output.getvalue().endswith(cli.SHOW_CURSOR + cli.LEAVE_ALT_SCREEN)
 
 
 def test_resize_redraws_latest_reading_without_another_hcom_call(monkeypatch) -> None:

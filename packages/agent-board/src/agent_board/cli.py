@@ -7,7 +7,9 @@ import shutil
 import signal
 import subprocess
 import sys
+import termios
 import time
+import tty
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -55,6 +57,8 @@ def main() -> int:
     In a terminal the board draws on its own screen. However it closes,
     including Ctrl+C, SIGTERM or an unexpected error, the terminal goes back
     to what it showed before, with the cursor visible.
+    Typing and scrolling while the board is open do not show on it, and typed
+    keys are thrown away on close so they do not reach the shell prompt.
     A resize redraws the latest reading straight away without another HCOM call.
     """
     if shutil.which("hcom") is None:
@@ -109,12 +113,21 @@ def main() -> int:
     # started, put back when the board closes.
     original_sigterm_handler = None
     original_sigwinch_handler = None
+    # The terminal that typed keys arrive on, and its settings from before the
+    # board turned off echo, so the settings can be put back when the board
+    # closes. Both stay None when input is not a terminal.
+    input_fd = None
+    original_input_settings = None
     try:
         if terminal:
             resize_read_fd, resize_write_fd = os.pipe()
             os.set_blocking(resize_write_fd, False)
             original_sigterm_handler = signal.signal(signal.SIGTERM, stop_on_sigterm)
             original_sigwinch_handler = signal.signal(signal.SIGWINCH, redraw_on_resize)
+            if sys.stdin.isatty():
+                input_fd = sys.stdin.fileno()
+                original_input_settings = termios.tcgetattr(input_fd)
+                tty.setcbreak(input_fd)
             sys.stdout.write(ENTER_ALT_SCREEN)
 
         sys.stdout.write(HIDE_CURSOR)
@@ -209,14 +222,21 @@ def main() -> int:
                 sys.stdout.write(SHOW_CURSOR + "\n")
             sys.stdout.flush()
         finally:
-            if original_sigterm_handler is not None:
-                signal.signal(signal.SIGTERM, original_sigterm_handler)
-            if original_sigwinch_handler is not None:
-                signal.signal(signal.SIGWINCH, original_sigwinch_handler)
-            if resize_read_fd is not None:
-                os.close(resize_read_fd)
-            if resize_write_fd is not None:
-                os.close(resize_write_fd)
+            try:
+                # TCSAFLUSH also drops keys typed while the board was open.
+                if original_input_settings is not None:
+                    termios.tcsetattr(
+                        input_fd, termios.TCSAFLUSH, original_input_settings
+                    )
+            finally:
+                if original_sigterm_handler is not None:
+                    signal.signal(signal.SIGTERM, original_sigterm_handler)
+                if original_sigwinch_handler is not None:
+                    signal.signal(signal.SIGWINCH, original_sigwinch_handler)
+                if resize_read_fd is not None:
+                    os.close(resize_read_fd)
+                if resize_write_fd is not None:
+                    os.close(resize_write_fd)
 
 
 def _wait_for_resize(read_fd: int | None, timeout: float) -> bool:
