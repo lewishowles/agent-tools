@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 
-from agents_progress._cli_style import (
+from cli_style import (
 	CliStyleNotFoundError,
 	divider as render_divider,
 	hint as render_hint,
@@ -11,6 +11,10 @@ from agents_progress._cli_style import (
 	span as render_span,
 	status as render_status,
 )
+
+# Options for every cli-style call. Without the binary, cli-style would print its own
+# key: value lines, so it raises CliStyleNotFoundError instead and progress prints its own.
+_RENDER_OPTIONS = {"raise_on_missing": True}
 
 # Match cli-style's plain-text result markers when its binary is unavailable.
 _PLAIN_RESULT_MARKERS = {
@@ -123,7 +127,7 @@ def _plain_labelled_line(label: str, message: str) -> str:
 def status(result_type: str, label: str = "", detail: str = "") -> str:
 	"""Render a status line using cli-style or plain text."""
 	return _render_or_plain(
-		lambda: render_status(result_type, label, detail),
+		lambda: render_status(result_type, label, detail, **_RENDER_OPTIONS),
 		lambda: _plain_status(result_type, label, detail),
 	)
 
@@ -131,7 +135,7 @@ def status(result_type: str, label: str = "", detail: str = "") -> str:
 def hint(message: str) -> str:
 	"""Render a hint line using cli-style or plain text."""
 	return _render_or_plain(
-		lambda: render_hint(message),
+		lambda: render_hint(message, **_RENDER_OPTIONS),
 		lambda: _plain_hint(message),
 	)
 
@@ -139,7 +143,9 @@ def hint(message: str) -> str:
 def labelled_line(label: str, message: str) -> str:
 	"""Render a labelled line using cli-style or plain text."""
 	return _render_or_plain(
-		lambda: render_generic("labelled-line", {"label": label, "message": message}),
+		lambda: render_generic(
+			"labelled-line", {"label": label, "message": message}, **_RENDER_OPTIONS
+		),
 		lambda: _plain_labelled_line(label, message),
 	)
 
@@ -159,6 +165,7 @@ def row(
 			result,
 			label_colour=label_colour,
 			value_colour=value_colour,
+			**_RENDER_OPTIONS,
 		),
 		lambda: _plain_row(label, value, result),
 	)
@@ -184,6 +191,7 @@ def divider(
 			divider_width,
 			divider_colour,
 			label_colour,
+			**_RENDER_OPTIONS,
 		),
 		lambda: _plain_divider(label, divider_width),
 	)
@@ -192,7 +200,9 @@ def divider(
 def row_group(rows: list[dict[str, str]]) -> str:
 	"""Render aligned labelled rows using cli-style or plain text; the cli-style path wraps values at 72 columns."""
 	return _render_or_plain(
-		lambda: render_generic("row-group", {"rows": rows, "wrapWidth": 72}),
+		lambda: render_generic(
+			"row-group", {"rows": rows, "wrapWidth": 72}, **_RENDER_OPTIONS
+		),
 		lambda: _plain_row_group(rows),
 	)
 
@@ -200,7 +210,9 @@ def row_group(rows: list[dict[str, str]]) -> str:
 def table(columns: list[dict[str, str]], rows: list[dict[str, str]]) -> str:
 	"""Render column-aligned rows using cli-style or plain text; a row missing a column key renders that cell blank."""
 	return _render_or_plain(
-		lambda: render_generic("table", {"columns": columns, "rows": rows}),
+		lambda: render_generic(
+			"table", {"columns": columns, "rows": rows}, **_RENDER_OPTIONS
+		),
 		lambda: _plain_table(columns, rows),
 	)
 
@@ -208,6 +220,6 @@ def table(columns: list[dict[str, str]], rows: list[dict[str, str]]) -> str:
 def span(value: str, tone: str = "info", weight: str | None = None) -> str:
 	"""Render an inline span using cli-style or plain text."""
 	return _render_or_plain(
-		lambda: render_span(value, tone, weight=weight),
+		lambda: render_span(value, tone, weight=weight, **_RENDER_OPTIONS),
 		lambda: value,
 	)

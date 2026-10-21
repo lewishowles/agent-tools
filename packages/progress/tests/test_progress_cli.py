@@ -3325,38 +3325,65 @@ def test_human_next_colours_status_by_result_type(
 	assert calls[0][1] == expected_tone
 
 
+def test_row_keeps_default_wrap_and_requests_missing_binary_error(monkeypatch) -> None:
+	value = "A row value that the shared renderer can wrap when needed."
+	calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+	def fake_row(*args: object, **kwargs: object) -> str:
+		calls.append((args, kwargs))
+		return "rendered"
+
+	monkeypatch.setattr(style_module, "render_row", fake_row)
+
+	assert style_module.row("Overview", value) == "rendered"
+
+	assert calls == [
+		(
+			("Overview", value, ""),
+			{
+				"label_colour": None,
+				"value_colour": None,
+				"raise_on_missing": True,
+			},
+		)
+	]
+
+
 def test_row_group_requests_72_column_wrap(monkeypatch) -> None:
 	rows = [{"label": "Overview", "value": "A long task overview."}]
-	calls: list[tuple[str, dict[str, object]]] = []
+	calls: list[tuple[str, dict[str, object], dict[str, object]]] = []
 
-	def fake_render(renderer: str, data: dict[str, object]) -> str:
-		calls.append((renderer, data))
+	def fake_render(renderer: str, data: dict[str, object], **kwargs: object) -> str:
+		calls.append((renderer, data, kwargs))
 		return "rendered"
 
 	monkeypatch.setattr(style_module, "render_generic", fake_render)
 
 	assert style_module.row_group(rows) == "rendered"
 
-	assert calls == [("row-group", {"rows": rows, "wrapWidth": 72})]
+	assert calls == [
+		("row-group", {"rows": rows, "wrapWidth": 72}, {"raise_on_missing": True})
+	]
 
 
 def test_divider_passes_border_colour_to_cli_style(monkeypatch) -> None:
-	calls: list[tuple[str, int | None, str | None, str | None]] = []
+	calls: list[tuple[str, int | None, str | None, str | None, dict[str, object]]] = []
 
 	def fake_divider(
 		label: str,
 		divider_width: int | None,
 		divider_colour: str | None,
 		label_colour: str | None,
+		**kwargs: object,
 	) -> str:
-		calls.append((label, divider_width, divider_colour, label_colour))
+		calls.append((label, divider_width, divider_colour, label_colour, kwargs))
 		return "divider"
 
 	monkeypatch.setattr(style_module, "render_divider", fake_divider)
 
 	assert style_module.divider(divider_width=72, divider_colour="border") == "divider"
 
-	assert calls == [("", 72, "border", None)]
+	assert calls == [("", 72, "border", None, {"raise_on_missing": True})]
 
 
 def test_human_task_list_groups_rows_and_renders_hints(
