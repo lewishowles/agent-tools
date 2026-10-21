@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -15,6 +16,14 @@ from agent_board.board import (
     render_board,
     render_error,
 )
+
+# The terminal code that opens a separate screen for the board, so its frames
+# stay out of the user's scrollback.
+ENTER_ALT_SCREEN = "\x1b[?1049h"
+
+# The terminal code that closes the board's screen and brings back what the
+# terminal showed before the board started.
+LEAVE_ALT_SCREEN = "\x1b[?1049l"
 
 # The terminal code that hides the cursor while the board is running.
 HIDE_CURSOR = "\x1b[?25l"
@@ -40,12 +49,18 @@ def main() -> int:
     Returns 1 straight away when `hcom` is not on `PATH`. A failed or
     unreadable listing is shown on the board and tried again at the next
     refresh, so one bad call does not close the pane. Ctrl+C returns 0.
+
+    In a terminal the board draws on its own screen. However it closes,
+    including Ctrl+C, SIGTERM or an unexpected error, the terminal goes back
+    to what it showed before, with the cursor visible.
     """
     if shutil.which("hcom") is None:
         print("agent-board: hcom is not installed or is not on PATH.", file=sys.stderr)
         return 1
 
-    colour = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+    # Whether the board is drawing to a terminal rather than a pipe or file.
+    terminal = sys.stdout.isatty()
+    colour = terminal and "NO_COLOR" not in os.environ
     # When the board first saw each waiting agent with unread messages, so a
     # team can show as stuck once that wait passes the grace period.
     unread_since = {}
@@ -65,10 +80,27 @@ def main() -> int:
     # The main checkout found for each agent directory, kept across refreshes
     # so Git runs once per directory.
     checkout_by_directory = {}
-    sys.stdout.write(HIDE_CURSOR)
-    sys.stdout.flush()
 
+    def stop_on_sigterm(signum, frame):
+        """Close the board when the process is told to stop.
+
+        Exiting this way still restores the terminal, and the exit status is
+        the shell's usual one for a process ended by a signal (143 for
+        SIGTERM).
+        """
+        raise SystemExit(128 + signum)
+
+    # The SIGTERM handler that was in place before the board started, put back
+    # when the board closes.
+    original_sigterm_handler = None
     try:
+        if terminal:
+            original_sigterm_handler = signal.signal(signal.SIGTERM, stop_on_sigterm)
+            sys.stdout.write(ENTER_ALT_SCREEN)
+
+        sys.stdout.write(HIDE_CURSOR)
+        sys.stdout.flush()
+
         while True:
             width = shutil.get_terminal_size().columns
             current_time = time.strftime("%H:%M:%S")
@@ -138,8 +170,15 @@ def main() -> int:
     except KeyboardInterrupt:
         return 0
     finally:
-        sys.stdout.write(SHOW_CURSOR + "\n")
-        sys.stdout.flush()
+        try:
+            if terminal:
+                sys.stdout.write(SHOW_CURSOR + LEAVE_ALT_SCREEN)
+            else:
+                sys.stdout.write(SHOW_CURSOR + "\n")
+            sys.stdout.flush()
+        finally:
+            if original_sigterm_handler is not None:
+                signal.signal(signal.SIGTERM, original_sigterm_handler)
 
 
 def _set_main_checkouts(agents: list[dict], cache: dict[str, str | None]) -> None:

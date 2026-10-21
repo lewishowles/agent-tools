@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import signal
 import subprocess
 
 import pytest
@@ -113,7 +114,57 @@ def test_nonzero_hcom_exit_is_shown_on_the_board(
     else:
         assert "\x1b[" not in board_output
 
-    assert output.getvalue().endswith(cli.SHOW_CURSOR + "\n")
+    if terminal:
+        assert output.getvalue().endswith(cli.SHOW_CURSOR + cli.LEAVE_ALT_SCREEN)
+    else:
+        assert output.getvalue().endswith(cli.SHOW_CURSOR + "\n")
+        assert cli.ENTER_ALT_SCREEN not in output.getvalue()
+        assert cli.LEAVE_ALT_SCREEN not in output.getvalue()
+
+
+@pytest.mark.parametrize("exit_kind", ["ctrl_c", "sigterm", "error"])
+def test_terminal_screen_is_restored_on_exit(monkeypatch, exit_kind: str) -> None:
+    """Every exit returns to the earlier screen with the cursor visible."""
+    output = io.StringIO()
+    original_handler = signal.getsignal(signal.SIGTERM)
+
+    def failed_hcom(*args, **kwargs):
+        """Return one failed listing so the board draws its error frame."""
+        return subprocess.CompletedProcess(args[0], 2, "", "listing failed")
+
+    def stop_after_refresh(seconds):
+        """End the board after one refresh in the way this case tests."""
+        if exit_kind == "ctrl_c":
+            raise KeyboardInterrupt
+
+        if exit_kind == "sigterm":
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+
+        raise RuntimeError("unexpected failure")
+
+    monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
+    monkeypatch.setattr(cli.subprocess, "run", failed_hcom)
+    monkeypatch.setattr(cli.time, "sleep", stop_after_refresh)
+    monkeypatch.setattr(
+        cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
+    )
+    monkeypatch.setattr(cli.sys, "stdout", output)
+    monkeypatch.setattr(output, "isatty", lambda: True)
+
+    if exit_kind == "ctrl_c":
+        assert cli.main() == 0
+    elif exit_kind == "sigterm":
+        with pytest.raises(SystemExit) as stopped:
+            cli.main()
+        assert stopped.value.code == 128 + signal.SIGTERM
+    else:
+        with pytest.raises(RuntimeError, match="unexpected failure"):
+            cli.main()
+
+    assert output.getvalue().startswith(cli.ENTER_ALT_SCREEN + cli.HIDE_CURSOR)
+    assert cli.CLEAR_SCREEN in output.getvalue()
+    assert output.getvalue().endswith(cli.SHOW_CURSOR + cli.LEAVE_ALT_SCREEN)
+    assert signal.getsignal(signal.SIGTERM) == original_handler
 
 
 @pytest.mark.parametrize(
