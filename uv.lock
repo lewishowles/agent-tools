@@ -181,11 +181,15 @@ name = "review-feedback"
 version = "0.1.0"
 source = { editable = "packages/review-feedback" }
 dependencies = [
+    { name = "lewishowles-cli-style" },
     { name = "prompt-toolkit" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "prompt-toolkit", specifier = ">=3.0" }]
+requires-dist = [
+    { name = "lewishowles-cli-style", specifier = ">=0.17.1" },
+    { name = "prompt-toolkit", specifier = ">=3.0" },
+]
 
 [[package]]
 name = "ruff"

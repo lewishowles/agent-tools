@@ -2,13 +2,18 @@
 
 from collections.abc import Callable
 
-from review_feedback._cli_style import (
+from cli_style import (
 	CliStyleNotFoundError,
 	hint as render_hint,
 	render as render_generic,
 	row as render_row,
 	status as render_status,
 )
+
+# Options sent with every cli-style call. They make cli-style raise CliStyleNotFoundError
+# when its binary is missing, so review-feedback prints its own plain text instead of the
+# library's key: value fallback.
+_RENDER_OPTIONS = {"raise_on_missing": True}
 
 
 # Match cli-style's plain-text result markers when its binary is unavailable.
@@ -58,7 +63,7 @@ def _plain_row(label: str, value: str, result: str = "") -> str:
 def status(result_type: str, label: str = "", detail: str = "") -> str:
 	"""Render a status line using cli-style or plain text."""
 	return _render_or_plain(
-		lambda: render_status(result_type, label, detail),
+		lambda: render_status(result_type, label, detail, **_RENDER_OPTIONS),
 		lambda: _plain_status(result_type, label, detail),
 	)
 
@@ -66,7 +71,7 @@ def status(result_type: str, label: str = "", detail: str = "") -> str:
 def hint(message: str) -> str:
 	"""Render a hint line using cli-style or plain text."""
 	return _render_or_plain(
-		lambda: render_hint(message),
+		lambda: render_hint(message, **_RENDER_OPTIONS),
 		lambda: _plain_hint(message),
 	)
 
@@ -74,7 +79,7 @@ def hint(message: str) -> str:
 def row(label: str, value: str, result: str = "") -> str:
 	"""Render a labelled row using cli-style or plain text."""
 	return _render_or_plain(
-		lambda: render_row(label, value, result),
+		lambda: render_row(label, value, result, **_RENDER_OPTIONS),
 		lambda: _plain_row(label, value, result),
 	)
 
@@ -82,7 +87,7 @@ def row(label: str, value: str, result: str = "") -> str:
 def row_group(rows: list[dict[str, str]]) -> str:
 	"""Render labelled rows using cli-style, or unaligned plain text as a fallback."""
 	return _render_or_plain(
-		lambda: render_generic("row-group", {"rows": rows}),
+		lambda: render_generic("row-group", {"rows": rows}, **_RENDER_OPTIONS),
 		lambda: "\n".join(
 			_plain_row(
 				item["label"],

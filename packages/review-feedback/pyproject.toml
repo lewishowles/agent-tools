@@ -5,7 +5,7 @@ description = "Turn worktree selections into review comments and split changes i
 authors = [{ name = "Lewis Howles" }]
 license = { text = "MIT" }
 requires-python = ">=3.11"
-dependencies = ["prompt-toolkit>=3.0"]
+dependencies = ["lewishowles-cli-style>=0.17.1", "prompt-toolkit>=3.0"]
 classifiers = [
 	"Development Status :: 3 - Alpha",
 	"Intended Audience :: Developers",
