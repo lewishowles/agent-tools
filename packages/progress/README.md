@@ -35,7 +35,7 @@ the database and another Git checkout needs to use it.
 The complete command shape is:
 
 ```text
-progress [--json] [--database <path>] {next,summary,show,checkout,worktree,project,release,task,chunk,inbox,discovery,decision,context}
+progress [--json] [--database <path>] {next,summary,show,checkout,worktree,complete,commands,doctor,search,project,release,task,chunk,inbox,discovery,decision,context}
 ```
 
 Throughout this reference, commands use:
