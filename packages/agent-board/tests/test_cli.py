@@ -84,7 +84,9 @@ def test_nonzero_hcom_exit_is_shown_on_the_board(
 
     monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
     monkeypatch.setattr(cli.subprocess, "run", failed_hcom)
-    monkeypatch.setattr(cli.time, "sleep", stop_after_refresh)
+    monkeypatch.setattr(
+        cli, "_wait_for_resize", lambda fd, seconds: stop_after_refresh(seconds)
+    )
     monkeypatch.setattr(cli.time, "strftime", lambda format: "12:34:56")
     monkeypatch.setattr(
         cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
@@ -144,7 +146,9 @@ def test_terminal_screen_is_restored_on_exit(monkeypatch, exit_kind: str) -> Non
 
     monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
     monkeypatch.setattr(cli.subprocess, "run", failed_hcom)
-    monkeypatch.setattr(cli.time, "sleep", stop_after_refresh)
+    monkeypatch.setattr(
+        cli, "_wait_for_resize", lambda fd, seconds: stop_after_refresh(seconds)
+    )
     monkeypatch.setattr(
         cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
     )
@@ -167,10 +171,123 @@ def test_terminal_screen_is_restored_on_exit(monkeypatch, exit_kind: str) -> Non
     assert signal.getsignal(signal.SIGTERM) == original_handler
 
 
+def test_resize_redraws_latest_reading_without_another_hcom_call(monkeypatch) -> None:
+    """A resize redraws at the new width while the next refresh keeps its time."""
+    output = io.StringIO()
+    widths = iter([60, 70])
+    clock = iter([10, 10, 10.5])
+    wait_times = []
+    hcom_calls = []
+    original_handler = signal.getsignal(signal.SIGWINCH)
+
+    def wait_for_resize(read_fd, seconds):
+        """Resize during the first wait, then end the board on the next."""
+        wait_times.append(seconds)
+        if len(wait_times) == 1:
+            signal.getsignal(signal.SIGWINCH)(signal.SIGWINCH, None)
+            return True
+
+        raise KeyboardInterrupt
+
+    def listed_hcom(command, **kwargs):
+        """Return one reading and record whether the resize fetches another."""
+        hcom_calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "[]", "")
+
+    monkeypatch.setattr(cli, "_wait_for_resize", wait_for_resize)
+    monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
+    monkeypatch.setattr(
+        cli.shutil, "get_terminal_size", lambda: os.terminal_size((next(widths), 24))
+    )
+    monkeypatch.setattr(cli.time, "perf_counter", lambda: next(clock))
+    monkeypatch.setattr(cli.subprocess, "run", listed_hcom)
+    monkeypatch.setattr(cli.sys, "stdout", output)
+    monkeypatch.setattr(output, "isatty", lambda: True)
+
+    assert cli.main() == 0
+    frames = output.getvalue().split(cli.CLEAR_SCREEN)[1:]
+    assert len(frames) == 2
+    assert len(frames[0].splitlines()[1]) == 60
+    assert len(frames[1].splitlines()[1]) == 70
+    assert len(hcom_calls) == 1
+    assert wait_times == [2, 1.5]
+    assert signal.getsignal(signal.SIGWINCH) == original_handler
+
+
+def test_resize_render_error_stays_on_the_board(monkeypatch) -> None:
+    """A malformed stored reading becomes an error frame during a resize."""
+    output = io.StringIO()
+    draws = 0
+    waits = 0
+    original_render_board = cli.render_board
+
+    def render_with_late_error(*args, **kwargs):
+        """Read a missing field only when the stored reading is drawn again."""
+        nonlocal draws
+        draws += 1
+        if draws == 2:
+            raise KeyError("status_age_seconds")
+
+        return original_render_board(*args, **kwargs)
+
+    def wait_for_resize(read_fd, seconds):
+        """Request one resize, then close the board after its error frame."""
+        nonlocal waits
+        waits += 1
+        if waits == 1:
+            signal.getsignal(signal.SIGWINCH)(signal.SIGWINCH, None)
+            return True
+
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
+    monkeypatch.setattr(
+        cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
+    )
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "[]", ""),
+    )
+    monkeypatch.setattr(cli, "render_board", render_with_late_error)
+    monkeypatch.setattr(cli, "_wait_for_resize", wait_for_resize)
+    monkeypatch.setattr(cli.sys, "stdout", output)
+    monkeypatch.setattr(output, "isatty", lambda: True)
+
+    assert cli.main() == 0
+    assert draws == 2
+    assert output.getvalue().count(cli.CLEAR_SCREEN) == 2
+    assert "Unexpected hcom listing: missing 'status_age_seconds'" in output.getvalue()
+
+
+def test_resize_wait_drains_the_wakeup_pipe() -> None:
+    """A queued resize wakes one wait and leaves the next wait on its timer."""
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"x")
+        assert cli._wait_for_resize(read_fd, 0) is True
+        assert cli._wait_for_resize(read_fd, 0) is False
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
 @pytest.mark.parametrize(
     ("listing", "expected"),
     [
         ([{"status": "listening", "tag": "Team-scout"}], "missing 'unread_count'"),
+        (
+            [
+                {
+                    "name": "Team-orchestrator",
+                    "tag": "Team-orchestrator",
+                    "directory": "",
+                    "status": "blocked",
+                    "unread_count": 0,
+                }
+            ],
+            "missing 'status_age_seconds'",
+        ),
         (None, "'NoneType' object is not iterable"),
     ],
 )
@@ -190,7 +307,9 @@ def test_unreadable_listing_is_reported_separately(
 
     monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
     monkeypatch.setattr(cli.subprocess, "run", unreadable_hcom)
-    monkeypatch.setattr(cli.time, "sleep", stop_after_refresh)
+    monkeypatch.setattr(
+        cli, "_wait_for_resize", lambda fd, seconds: stop_after_refresh(seconds)
+    )
     monkeypatch.setattr(
         cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
     )
@@ -215,7 +334,9 @@ def test_hcom_disappearing_shows_error_and_restores_cursor(monkeypatch) -> None:
 
     monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
     monkeypatch.setattr(cli.subprocess, "run", missing_hcom)
-    monkeypatch.setattr(cli.time, "sleep", stop_after_refresh)
+    monkeypatch.setattr(
+        cli, "_wait_for_resize", lambda fd, seconds: stop_after_refresh(seconds)
+    )
     monkeypatch.setattr(
         cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
     )
@@ -251,7 +372,9 @@ def test_each_refresh_uses_current_width_and_time(monkeypatch) -> None:
     monkeypatch.setattr(cli.shutil, "get_terminal_size", lambda: next(sizes))
     monkeypatch.setattr(cli.time, "strftime", lambda format: next(times))
     monkeypatch.setattr(cli.subprocess, "run", listed_hcom)
-    monkeypatch.setattr(cli.time, "sleep", stop_after_two_refreshes)
+    monkeypatch.setattr(
+        cli, "_wait_for_resize", lambda fd, seconds: stop_after_two_refreshes(seconds)
+    )
     monkeypatch.setattr(cli.sys, "stdout", output)
 
     assert cli.main() == 0
@@ -312,7 +435,9 @@ def test_refreshes_keep_the_phase_timer_until_the_displayed_status_changes(
     )
     monkeypatch.setattr(cli.subprocess, "run", listed_hcom)
     monkeypatch.setattr(cli.time, "monotonic", lambda: next(times))
-    monkeypatch.setattr(cli.time, "sleep", stop_after_three_refreshes)
+    monkeypatch.setattr(
+        cli, "_wait_for_resize", lambda fd, seconds: stop_after_three_refreshes(seconds)
+    )
     monkeypatch.setattr(
         cli, "_poll_activity", lambda agents, previous, checked, now: ({}, now)
     )
@@ -473,7 +598,9 @@ def test_quiet_team_polls_activity_and_terminal_once(monkeypatch) -> None:
         cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
     )
     monkeypatch.setattr(cli.time, "monotonic", iter([1000, 1002, 1004, 1006]).__next__)
-    monkeypatch.setattr(cli.time, "sleep", stop_after_four_refreshes)
+    monkeypatch.setattr(
+        cli, "_wait_for_resize", lambda fd, seconds: stop_after_four_refreshes(seconds)
+    )
     monkeypatch.setattr(cli.sys, "stdout", output)
 
     assert cli.main() == 0
@@ -567,7 +694,9 @@ def test_new_event_clears_quiet_reason_and_returns_team_to_working(monkeypatch) 
         cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
     )
     monkeypatch.setattr(cli.time, "monotonic", iter([1000, 1002, 1030]).__next__)
-    monkeypatch.setattr(cli.time, "sleep", stop_after_three_refreshes)
+    monkeypatch.setattr(
+        cli, "_wait_for_resize", lambda fd, seconds: stop_after_three_refreshes(seconds)
+    )
     monkeypatch.setattr(cli.sys, "stdout", output)
 
     assert cli.main() == 0

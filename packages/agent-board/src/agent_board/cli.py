@@ -2,12 +2,14 @@
 
 import json
 import os
+import select
 import shutil
 import signal
 import subprocess
 import sys
 import time
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
 from agent_board.board import (
@@ -53,6 +55,7 @@ def main() -> int:
     In a terminal the board draws on its own screen. However it closes,
     including Ctrl+C, SIGTERM or an unexpected error, the terminal goes back
     to what it showed before, with the cursor visible.
+    A resize redraws the latest reading straight away without another HCOM call.
     """
     if shutil.which("hcom") is None:
         print("agent-board: hcom is not installed or is not on PATH.", file=sys.stderr)
@@ -80,6 +83,10 @@ def main() -> int:
     # The main checkout found for each agent directory, kept across refreshes
     # so Git runs once per directory.
     checkout_by_directory = {}
+    # The two ends of a pipe the resize handler writes to. Writing to a pipe
+    # takes no lock, so a resize can never freeze the board mid-wait.
+    resize_read_fd = None
+    resize_write_fd = None
 
     def stop_on_sigterm(signum, frame):
         """Close the board when the process is told to stop.
@@ -90,20 +97,30 @@ def main() -> int:
         """
         raise SystemExit(128 + signum)
 
-    # The SIGTERM handler that was in place before the board started, put back
-    # when the board closes.
+    def redraw_on_resize(signum, frame):
+        """Wake the board when its terminal changes size."""
+        try:
+            os.write(resize_write_fd, b"x")
+        except BlockingIOError:
+            # A full pipe already holds a pending redraw.
+            pass
+
+    # The SIGTERM and SIGWINCH handlers that were in place before the board
+    # started, put back when the board closes.
     original_sigterm_handler = None
+    original_sigwinch_handler = None
     try:
         if terminal:
+            resize_read_fd, resize_write_fd = os.pipe()
+            os.set_blocking(resize_write_fd, False)
             original_sigterm_handler = signal.signal(signal.SIGTERM, stop_on_sigterm)
+            original_sigwinch_handler = signal.signal(signal.SIGWINCH, redraw_on_resize)
             sys.stdout.write(ENTER_ALT_SCREEN)
 
         sys.stdout.write(HIDE_CURSOR)
         sys.stdout.flush()
 
         while True:
-            width = shutil.get_terminal_size().columns
-            current_time = time.strftime("%H:%M:%S")
             error_message = None
 
             try:
@@ -140,10 +157,11 @@ def main() -> int:
                     for name in quiet_names - quiet_reasons.keys():
                         quiet_reasons[name] = _read_terminal_reason(name)
 
-                    lines = render_board(
+                    # The latest reading stays available to draw at a new width
+                    # without asking HCOM again.
+                    draw_board = partial(
+                        render_board,
                         agents,
-                        width=width,
-                        current_time=current_time,
                         colour=colour,
                         unread_since=unread_since,
                         last_activity=last_activity,
@@ -152,21 +170,35 @@ def main() -> int:
                         now=now,
                         phase_since=phase_since,
                     )
-            except KeyError as error:
-                error_message = f"Unexpected hcom listing: missing {error}"
-            except TypeError as error:
-                error_message = f"Unexpected hcom listing: {error}"
+            except (KeyError, TypeError) as error:
+                error_message = _unexpected_listing_message(error)
             except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as error:
                 error_message = f"HCOM error: {error}"
 
             if error_message is not None:
-                lines = render_error(
-                    error_message, width=width, current_time=current_time, colour=colour
-                )
+                draw_board = partial(render_error, error_message, colour=colour)
 
-            sys.stdout.write(CLEAR_SCREEN + "\n".join(lines) + "\n")
-            sys.stdout.flush()
-            time.sleep(2)
+            # The next HCOM reading is due two seconds after this one. A resize
+            # redraws in between without moving it.
+            refresh_at = time.perf_counter() + 2
+            while True:
+                width = shutil.get_terminal_size().columns
+                current_time = time.strftime("%H:%M:%S")
+                try:
+                    lines = draw_board(width=width, current_time=current_time)
+                except (KeyError, TypeError) as error:
+                    draw_board = partial(
+                        render_error, _unexpected_listing_message(error), colour=colour
+                    )
+                    lines = draw_board(width=width, current_time=current_time)
+
+                sys.stdout.write(CLEAR_SCREEN + "\n".join(lines) + "\n")
+                sys.stdout.flush()
+
+                if not _wait_for_resize(
+                    resize_read_fd, max(0, refresh_at - time.perf_counter())
+                ):
+                    break
     except KeyboardInterrupt:
         return 0
     finally:
@@ -179,6 +211,39 @@ def main() -> int:
         finally:
             if original_sigterm_handler is not None:
                 signal.signal(signal.SIGTERM, original_sigterm_handler)
+            if original_sigwinch_handler is not None:
+                signal.signal(signal.SIGWINCH, original_sigwinch_handler)
+            if resize_read_fd is not None:
+                os.close(resize_read_fd)
+            if resize_write_fd is not None:
+                os.close(resize_write_fd)
+
+
+def _wait_for_resize(read_fd: int | None, timeout: float) -> bool:
+    """Wait until the terminal is resized or `timeout` seconds pass.
+
+    Returns True after a resize, with the pipe emptied so the next wait blocks
+    again. With no pipe, as when output is not a terminal, it only waits.
+    """
+    readable, _, _ = select.select(
+        [read_fd] if read_fd is not None else [], [], [], timeout
+    )
+    if readable:
+        os.read(read_fd, 65536)
+        return True
+
+    return False
+
+
+def _unexpected_listing_message(error: KeyError | TypeError) -> str:
+    """Describe an hcom listing the board could not read.
+
+    Names the missing field when the listing lacks one.
+    """
+    if isinstance(error, KeyError):
+        return f"Unexpected hcom listing: missing {error}"
+
+    return f"Unexpected hcom listing: {error}"
 
 
 def _set_main_checkouts(agents: list[dict], cache: dict[str, str | None]) -> None:
