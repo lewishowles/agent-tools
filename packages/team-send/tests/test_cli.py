@@ -39,6 +39,7 @@ def hcom(monkeypatch):
     monkeypatch.setattr(cli.sys, "stdin", io.StringIO("hello teammate\n"))
     monkeypatch.setenv("HCOM_TAG", "agent-tools-implementer")
     monkeypatch.setenv("HCOM_NAME", "agent-tools-implementer-safe")
+    monkeypatch.delenv("HCOM_TEAM_LABEL", raising=False)
     monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
     monkeypatch.setattr(cli.subprocess, "run", run)
     return listing, receipt, calls
@@ -293,6 +294,135 @@ def test_nested_team_tag_replaces_only_role(hcom, monkeypatch, capsys) -> None:
 
     assert cli.main(["scout", "--intent", "request"]) == 0
     assert "agent-tools-blue-scout-nova" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("sender_team", [None, ""])
+def test_named_team_selects_exact_cross_team_tag(
+    hcom, monkeypatch, capsys, sender_team: str | None
+) -> None:
+    """A named team targets its role using the sender's repository tag."""
+    listing, receipt, calls = hcom
+
+    if sender_team is not None:
+        monkeypatch.setenv("HCOM_TEAM_LABEL", sender_team)
+
+    listing[:] = [
+        agent("agent-tools-green-scout-nova", tag="agent-tools-green-scout"),
+        agent("agent-tools-blue-scout-peko", tag="agent-tools-blue-scout"),
+    ]
+    receipt["delivered_to"] = ["nova"]
+
+    assert cli.main(["scout", "--intent", "inform", "--team", "green"]) == 0
+    assert "agent-tools-green-scout-nova" in capsys.readouterr().out
+    assert calls[1][0][2] == "@agent-tools-green-scout-nova"
+
+
+def test_named_team_from_labelled_sender(hcom, monkeypatch, capsys) -> None:
+    """A labelled sender removes its own label before choosing another team."""
+    listing, receipt, calls = hcom
+    monkeypatch.setenv("HCOM_TAG", "agent-tools-blue-implementer")
+    monkeypatch.setenv("HCOM_TEAM_LABEL", "blue")
+    listing[:] = [agent("agent-tools-green-scout-nova", tag="agent-tools-green-scout")]
+    receipt["delivered_to"] = ["nova"]
+
+    assert cli.main(["scout", "--intent", "inform", "--team", "green"]) == 0
+    assert "agent-tools-green-scout-nova" in capsys.readouterr().out
+    assert calls[1][0][2] == "@agent-tools-green-scout-nova"
+
+
+def test_same_role_in_another_team_succeeds(hcom, monkeypatch, capsys) -> None:
+    """A sender can reach their role in another named team."""
+    listing, receipt, calls = hcom
+    monkeypatch.setenv("HCOM_TAG", "agent-tools-blue-reviewer")
+    monkeypatch.setenv("HCOM_TEAM_LABEL", "blue")
+    listing[:] = [
+        agent("agent-tools-green-reviewer-nova", tag="agent-tools-green-reviewer")
+    ]
+    receipt["delivered_to"] = ["nova"]
+
+    assert cli.main(["reviewer", "--intent", "inform", "--team", "green"]) == 0
+    assert "agent-tools-green-reviewer-nova" in capsys.readouterr().out
+    assert calls[1][0][2] == "@agent-tools-green-reviewer-nova"
+
+
+def test_same_role_in_own_named_team_refuses(hcom, monkeypatch, capsys) -> None:
+    """Naming the sender's team cannot send to their own role."""
+    _, _, calls = hcom
+    monkeypatch.setenv("HCOM_TAG", "agent-tools-blue-reviewer")
+    monkeypatch.setenv("HCOM_TEAM_LABEL", "blue")
+
+    assert cli.main(["reviewer", "--intent", "inform", "--team", "blue"]) == 1
+    assert "Cannot send to your own role: reviewer." in capsys.readouterr().err
+    assert calls == []
+
+
+def test_named_team_without_match_refuses(hcom, monkeypatch, capsys) -> None:
+    """A named team with no live role reports the exact target tag."""
+    listing, _, calls = hcom
+    monkeypatch.setenv("HCOM_TEAM_LABEL", "blue")
+    monkeypatch.setenv("HCOM_TAG", "agent-tools-blue-implementer")
+    listing.clear()
+
+    assert cli.main(["scout", "--intent", "request", "--team", "green"]) == 1
+    assert "No live teammate for agent-tools-green-scout." in capsys.readouterr().err
+    assert len(calls) == 1
+
+
+def test_named_team_with_multiple_matches_refuses(hcom, capsys) -> None:
+    """Several live matches for a named team are reported without sending."""
+    listing, _, calls = hcom
+    listing[:] = [
+        agent("agent-tools-green-scout-peko", tag="agent-tools-green-scout"),
+        agent("agent-tools-green-scout-nova", tag="agent-tools-green-scout"),
+    ]
+
+    assert cli.main(["scout", "--intent", "request", "--team", "green"]) == 1
+    error = capsys.readouterr().err
+    assert "Several live teammates for agent-tools-green-scout" in error
+    assert "agent-tools-green-scout-peko" in error
+    assert "agent-tools-green-scout-nova" in error
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("label", ["", "-green", "green-", "Green", "green_team"])
+def test_invalid_named_team_refuses_before_listing(hcom, capsys, label: str) -> None:
+    """An invalid team label cannot lead to an HCOM lookup."""
+    _, _, calls = hcom
+
+    assert cli.main(["scout", "--intent", "request", f"--team={label}"]) == 1
+    assert "Invalid team label" in capsys.readouterr().err
+    assert calls == []
+
+
+def test_sender_team_label_mismatch_refuses_before_listing(
+    hcom, monkeypatch, capsys
+) -> None:
+    """A stale sender label cannot be used to guess the repository tag."""
+    _, _, calls = hcom
+    monkeypatch.setenv("HCOM_TEAM_LABEL", "blue")
+
+    assert cli.main(["scout", "--intent", "request", "--team", "green"]) == 1
+    assert (
+        "HCOM_TAG must have HCOM_TEAM_LABEL just before the role; cannot find the repository tag."
+        in capsys.readouterr().err
+    )
+    assert calls == []
+
+
+def test_sender_team_without_repository_refuses_before_listing(
+    hcom, monkeypatch, capsys
+) -> None:
+    """A sender tag containing only a team label cannot name a repository."""
+    _, _, calls = hcom
+    monkeypatch.setenv("HCOM_TAG", "-blue-implementer")
+    monkeypatch.setenv("HCOM_TEAM_LABEL", "blue")
+
+    assert cli.main(["scout", "--intent", "request", "--team", "green"]) == 1
+    assert (
+        "HCOM_TAG has no repository tag before HCOM_TEAM_LABEL"
+        in capsys.readouterr().err
+    )
+    assert calls == []
 
 
 @pytest.mark.parametrize(

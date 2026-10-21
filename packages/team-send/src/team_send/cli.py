@@ -1,8 +1,9 @@
-"""Send an HCOM message to one live teammate in the sender's team."""
+"""Send an HCOM message to one live teammate in the sender's team or a named team of the same repository."""
 
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -11,6 +12,10 @@ from typing import NoReturn
 # The team roles a sender can hold and send to. The last part of every team tag
 # is one of these.
 ROLES = frozenset({"orchestrator", "scout", "implementer", "reviewer"})
+
+# A team label the zsh launcher accepts: lowercase letters and digits, with
+# hyphens only between them.
+TEAM_LABEL_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
 
 # The HCOM statuses of an agent that can still receive a message. Inactive and
 # unknown agents never count as a match.
@@ -28,6 +33,7 @@ NOT_IN_HCOM_HINT = (
 def main(argv: list[str] | None = None) -> int:
     """Send the piped message to the one live teammate for the requested role and return 0.
 
+    With --team, the teammate comes from that named team in the sender's repository.
     A refusal or failed send prints the reason and returns 1, and a message is never sent twice.
     Invalid arguments exit with status 2, as argparse does.
     """
@@ -36,12 +42,13 @@ def main(argv: list[str] | None = None) -> int:
         json_output="--json" in arguments,
         # Only the exact --json flag switches output to JSON, including for usage errors.
         allow_abbrev=False,
-        description="Send to one live teammate for a role in your HCOM team.",
+        description="Send to one live teammate by role in your HCOM team, or in a named team with --team.",
     )
     parser.add_argument("role", help="orchestrator, scout, implementer, or reviewer")
     parser.add_argument("--intent", required=True, choices=("request", "inform", "ack"))
     parser.add_argument("--reply-to", help="HCOM event ID to reply to")
     parser.add_argument("--thread", help="HCOM thread name")
+    parser.add_argument("--team", help="Send to this named team in the same repository")
     parser.add_argument("--json", action="store_true", help="Print structured output")
     args = parser.parse_args(arguments)
 
@@ -49,6 +56,12 @@ def main(argv: list[str] | None = None) -> int:
         return _refuse(
             f"Unknown role: {args.role}. "
             "Choose orchestrator, scout, implementer, or reviewer.",
+            args.json,
+        )
+
+    if args.team is not None and not TEAM_LABEL_PATTERN.fullmatch(args.team):
+        return _refuse(
+            "Invalid team label. Use lowercase letters, numbers, and internal hyphens.",
             args.json,
         )
 
@@ -66,10 +79,36 @@ def main(argv: list[str] | None = None) -> int:
     if not prefix or sender_role not in ROLES:
         return _refuse("HCOM_TAG must end in a team role.", args.json)
 
-    if args.role == sender_role:
-        return _refuse(f"Cannot send to your own role: {args.role}.", args.json)
+    target_prefix = prefix
 
-    target_tag = f"{prefix}-{args.role}"
+    # Repository and team names can both contain hyphens, so the repository tag
+    # comes from removing the sender's known label rather than from splitting
+    # HCOM_TAG. A sender without a label already has the repository as its prefix.
+    if args.team is not None:
+        sender_team = os.environ.get("HCOM_TEAM_LABEL")
+
+        if sender_team:
+            suffix = f"-{sender_team}"
+
+            if not prefix.endswith(suffix):
+                return _refuse(
+                    "HCOM_TAG must have HCOM_TEAM_LABEL just before the role; cannot find the repository tag.",
+                    args.json,
+                )
+
+            if len(prefix) == len(suffix):
+                return _refuse(
+                    "HCOM_TAG has no repository tag before HCOM_TEAM_LABEL.", args.json
+                )
+
+            target_prefix = prefix[: -len(suffix)]
+
+        target_prefix = f"{target_prefix}-{args.team}"
+
+    target_tag = f"{target_prefix}-{args.role}"
+
+    if target_tag == sender_tag:
+        return _refuse(f"Cannot send to your own role: {args.role}.", args.json)
 
     if args.intent == "ack" and not args.reply_to:
         return _refuse("--intent ack requires --reply-to.", args.json)
