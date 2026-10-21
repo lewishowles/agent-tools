@@ -100,9 +100,12 @@ def test_nonzero_hcom_exit_is_shown_on_the_board(
         monkeypatch.setenv("NO_COLOR", "1")
 
     assert cli.main() == 0
-    board_output = (
-        output.getvalue().split(cli.CLEAR_SCREEN)[1].split(cli.SHOW_CURSOR)[0]
-    )
+    if terminal:
+        board_output = (
+            output.getvalue().split(cli.CLEAR_SCREEN)[1].split(cli.SHOW_CURSOR)[0]
+        )
+    else:
+        board_output = output.getvalue()
     plain_output = ANSI_STYLE_PATTERN.sub("", board_output)
 
     assert "╭─ ✻ agent board " in plain_output
@@ -120,9 +123,40 @@ def test_nonzero_hcom_exit_is_shown_on_the_board(
     if terminal:
         assert output.getvalue().endswith(cli.SHOW_CURSOR + cli.LEAVE_ALT_SCREEN)
     else:
-        assert output.getvalue().endswith(cli.SHOW_CURSOR + "\n")
-        assert cli.ENTER_ALT_SCREEN not in output.getvalue()
-        assert cli.LEAVE_ALT_SCREEN not in output.getvalue()
+        assert "\x1b[" not in output.getvalue()
+        assert output.getvalue().count("HCOM error: listing failed") == 1
+
+
+def test_redirected_output_prints_one_plain_snapshot(monkeypatch) -> None:
+    """A pipe receives one complete board without terminal controls or waiting."""
+    output = io.StringIO()
+    hcom_calls = []
+
+    def listed_hcom(command, **kwargs):
+        """Return one empty listing and record how many readings were made."""
+        hcom_calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "[]", "")
+
+    def unexpected_wait(read_fd, seconds):
+        """Fail if redirected output waits for another reading."""
+        raise AssertionError("waited for another reading")
+
+    monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
+    monkeypatch.setattr(cli.subprocess, "run", listed_hcom)
+    monkeypatch.setattr(cli, "_wait_for_resize", unexpected_wait)
+    monkeypatch.setattr(
+        cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
+    )
+    monkeypatch.setattr(cli.time, "strftime", lambda format: "12:34:56")
+    monkeypatch.setattr(cli.sys, "stdout", output)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    assert cli.main() == 0
+    assert hcom_calls == [["hcom", "list", "--json"]]
+    assert output.getvalue().startswith("\n╭─ ✻ agent board ")
+    assert "12:34:56 ─╮" in output.getvalue()
+    assert output.getvalue().endswith("╯\n")
+    assert "\x1b[" not in output.getvalue()
 
 
 @pytest.mark.parametrize("exit_kind", ["ctrl_c", "sigterm", "error"])
@@ -365,6 +399,7 @@ def test_unreadable_listing_is_reported_separately(
         cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
     )
     monkeypatch.setattr(cli.sys, "stdout", output)
+    monkeypatch.setattr(output, "isatty", lambda: True)
 
     assert cli.main() == 0
     assert f"│  Unexpected hcom listing: {expected}" in output.getvalue()
@@ -392,12 +427,13 @@ def test_hcom_disappearing_shows_error_and_restores_cursor(monkeypatch) -> None:
         cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
     )
     monkeypatch.setattr(cli.sys, "stdout", output)
+    monkeypatch.setattr(output, "isatty", lambda: True)
 
     result = cli.main()
 
     assert result == 0
     assert "│  HCOM error: hcom disappeared" in output.getvalue()
-    assert output.getvalue().endswith(cli.SHOW_CURSOR + "\n")
+    assert output.getvalue().endswith(cli.SHOW_CURSOR + cli.LEAVE_ALT_SCREEN)
 
 
 def test_each_refresh_uses_current_width_and_time(monkeypatch) -> None:
@@ -427,6 +463,7 @@ def test_each_refresh_uses_current_width_and_time(monkeypatch) -> None:
         cli, "_wait_for_resize", lambda fd, seconds: stop_after_two_refreshes(seconds)
     )
     monkeypatch.setattr(cli.sys, "stdout", output)
+    monkeypatch.setattr(output, "isatty", lambda: True)
 
     assert cli.main() == 0
     assert output.getvalue().count(cli.CLEAR_SCREEN) == 2
@@ -493,6 +530,7 @@ def test_refreshes_keep_the_phase_timer_until_the_displayed_status_changes(
         cli, "_poll_activity", lambda agents, previous, checked, now: ({}, now)
     )
     monkeypatch.setattr(cli.sys, "stdout", output)
+    monkeypatch.setattr(output, "isatty", lambda: True)
 
     assert cli.main() == 0
     frames = output.getvalue().split(cli.CLEAR_SCREEN)[1:]
@@ -653,6 +691,7 @@ def test_quiet_team_polls_activity_and_terminal_once(monkeypatch) -> None:
         cli, "_wait_for_resize", lambda fd, seconds: stop_after_four_refreshes(seconds)
     )
     monkeypatch.setattr(cli.sys, "stdout", output)
+    monkeypatch.setattr(output, "isatty", lambda: True)
 
     assert cli.main() == 0
     assert event_polls == [["Team-orchestrator", "Team-scout"]]
@@ -749,6 +788,7 @@ def test_new_event_clears_quiet_reason_and_returns_team_to_working(monkeypatch) 
         cli, "_wait_for_resize", lambda fd, seconds: stop_after_three_refreshes(seconds)
     )
     monkeypatch.setattr(cli.sys, "stdout", output)
+    monkeypatch.setattr(output, "isatty", lambda: True)
 
     assert cli.main() == 0
     frames = output.getvalue().split(cli.CLEAR_SCREEN)[1:]

@@ -28,4 +28,4 @@ Install it from this workspace:
 uv tool install --from packages/agent-board agent-board
 ```
 
-Run `agent-board` beside your HCOM teams. It opens on a separate terminal screen; press Ctrl+C to close it and return to the screen you had before. The board needs `hcom` on `PATH`.
+Run `agent-board` beside your HCOM teams. It opens on a separate terminal screen; press Ctrl+C to close it and return to the screen you had before. When you pipe or redirect its output, it prints one plain snapshot and exits. The board needs `hcom` on `PATH`.

@@ -60,6 +60,7 @@ def main() -> int:
     Typing and scrolling while the board is open do not show on it, and typed
     keys are thrown away on close so they do not reach the shell prompt.
     A resize redraws the latest reading straight away without another HCOM call.
+    When output is redirected, the board prints one plain reading and exits 0.
     """
     if shutil.which("hcom") is None:
         print("agent-board: hcom is not installed or is not on PATH.", file=sys.stderr)
@@ -130,8 +131,8 @@ def main() -> int:
                 tty.setcbreak(input_fd)
             sys.stdout.write(ENTER_ALT_SCREEN)
 
-        sys.stdout.write(HIDE_CURSOR)
-        sys.stdout.flush()
+            sys.stdout.write(HIDE_CURSOR)
+            sys.stdout.flush()
 
         while True:
             error_message = None
@@ -205,6 +206,11 @@ def main() -> int:
                     )
                     lines = draw_board(width=width, current_time=current_time)
 
+                if not terminal:
+                    sys.stdout.write("\n".join(lines) + "\n")
+                    sys.stdout.flush()
+                    return 0
+
                 sys.stdout.write(CLEAR_SCREEN + "\n".join(lines) + "\n")
                 sys.stdout.flush()
 
@@ -218,9 +224,7 @@ def main() -> int:
         try:
             if terminal:
                 sys.stdout.write(SHOW_CURSOR + LEAVE_ALT_SCREEN)
-            else:
-                sys.stdout.write(SHOW_CURSOR + "\n")
-            sys.stdout.flush()
+                sys.stdout.flush()
         finally:
             try:
                 # TCSAFLUSH also drops keys typed while the board was open.
@@ -239,15 +243,13 @@ def main() -> int:
                     os.close(resize_write_fd)
 
 
-def _wait_for_resize(read_fd: int | None, timeout: float) -> bool:
+def _wait_for_resize(read_fd: int, timeout: float) -> bool:
     """Wait until the terminal is resized or `timeout` seconds pass.
 
     Returns True after a resize, with the pipe emptied so the next wait blocks
-    again. With no pipe, as when output is not a terminal, it only waits.
+    again.
     """
-    readable, _, _ = select.select(
-        [read_fd] if read_fd is not None else [], [], [], timeout
-    )
+    readable, _, _ = select.select([read_fd], [], [], timeout)
     if readable:
         os.read(read_fd, 65536)
         return True
