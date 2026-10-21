@@ -592,7 +592,7 @@ def account_usage(provider, account):
 
     ttl = CACHE_LIFETIMES[provider]  # How long this provider's readings stay current.
     try:
-        # Shared with the zsh quota script, so the two reuse each other's readings.
+        # Saves each account's reading in a per-user cache so later agent-quota runs reuse it.
         cache_dir = Path(tempfile.gettempdir()) / ("hcom-quota-" + str(os.getuid()))
         cache_dir.mkdir(mode=0o700, exist_ok=True)
 
