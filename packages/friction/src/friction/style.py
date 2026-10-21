@@ -2,11 +2,16 @@
 
 from collections.abc import Callable
 
-from ._cli_style import CliStyleNotFoundError
-from ._cli_style import row as render_row
-from ._cli_style import span as render_span
-from ._cli_style import status as render_status
-from ._cli_style import table as render_table
+from cli_style import CliStyleNotFoundError
+from cli_style import row as render_row
+from cli_style import span as render_span
+from cli_style import status as render_status
+from cli_style import table as render_table
+
+# Options sent with every styled call. They make cli-style raise when its
+# binary is missing, so each function below prints friction's own plain text
+# instead of the library's generic fallback.
+_RENDER_OPTIONS = {"raise_on_missing": True}
 
 
 def _render_or_plain(
@@ -23,7 +28,7 @@ def _render_or_plain(
 def span(value: str, tone: str = "info") -> str:
 	"""Render one inline value through cli-style or return its plain text."""
 	return _render_or_plain(
-		lambda: render_span(value, tone),
+		lambda: render_span(value, tone, **_RENDER_OPTIONS),
 		lambda: value,
 	)
 
@@ -31,7 +36,7 @@ def span(value: str, tone: str = "info") -> str:
 def row(label: str, value: str, result: str = "") -> str:
 	"""Render one labelled value through cli-style or a plain equivalent."""
 	return _render_or_plain(
-		lambda: render_row(label, value, result),
+		lambda: render_row(label, value, result, **_RENDER_OPTIONS),
 		lambda: f"{label}  {value}",
 	)
 
@@ -66,7 +71,7 @@ def _plain_table(
 def table(columns: list[dict[str, object]], rows: list[dict[str, object]]) -> str:
 	"""Render column-aligned rows through cli-style or plain text."""
 	return _render_or_plain(
-		lambda: render_table(columns, rows),
+		lambda: render_table(columns, rows, **_RENDER_OPTIONS),
 		lambda: _plain_table(columns, rows),
 	)
 
@@ -74,6 +79,6 @@ def table(columns: list[dict[str, object]], rows: list[dict[str, object]]) -> st
 def status(result: str, label: str, detail: str) -> str:
 	"""Render one status line through cli-style or a plain equivalent."""
 	return _render_or_plain(
-		lambda: render_status(result, label, detail),
+		lambda: render_status(result, label, detail, **_RENDER_OPTIONS),
 		lambda: f"{label} {detail}".rstrip(),
 	)

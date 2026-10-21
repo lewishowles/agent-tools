@@ -79,6 +79,12 @@ source = { editable = "packages/doc-paths" }
 [[package]]
 name = "friction"
 source = { editable = "packages/friction" }
+dependencies = [
+    { name = "lewishowles-cli-style" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "lewishowles-cli-style", specifier = ">=0.17.1" }]
 
 [[package]]
 name = "iniconfig"

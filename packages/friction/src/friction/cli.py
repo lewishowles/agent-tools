@@ -252,13 +252,13 @@ def _human_output(
 				{
 					"key": "cwd",
 					"label": "CWD",
-					"max_width": 40,
+					"maxWidth": 40,
 					"overflow": "wrap",
 				},
 				{
 					"key": "detail",
 					"label": "Detail",
-					"max_width": 60,
+					"maxWidth": 60,
 					"overflow": "wrap",
 				},
 			],
