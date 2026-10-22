@@ -112,7 +112,6 @@ RUN_FAILED = "failed"
 RUN_TIMED_OUT = "timed out"
 RUN_INTERRUPTED = "interrupted"
 RUN_NOT_STARTED = "not started"
-RUN_DECLINED = "declined"
 
 # The width cli-style gives a panel when the terminal width is unknown.
 _PANEL_FALLBACK_WIDTH = 40
@@ -138,9 +137,6 @@ class _RunOutcome:
     exit_code: int
     # The run data shown with --json, or details for an error.
     data: dict[str, object] | None = None
-    # Whether a manual command stopped at its confirmation prompt, so no run
-    # record exists.
-    stopped_at_prompt: bool = False
     # The text shown without --json.
     text: str | None = None
     # The error code from the shared CLI contract, set whenever the run did not pass.
@@ -1681,8 +1677,8 @@ def _execute_multiple_runs(
 
     Every name is looked up first, so an unknown name refuses the whole set
     before anything runs or a run record is saved. A manual-only name does the
-    same for an agent; a person at a terminal is asked to confirm it when the
-    set reaches it, and declining skips it without stopping the set.
+    same for an agent; for a person at a terminal it runs when the set
+    reaches it.
     Each command's result is shown, followed by one summary row per attempted
     command. A failed or timed-out command does not stop the set; a command
     that cannot start, or an interrupt, ends it and is the last summary row.
@@ -1767,7 +1763,7 @@ def _execute_multiple_runs(
         for run, outcome in zip(runs, outcomes, strict=True):
             row = {
                 "label": run["name"],
-                "value": _summary_status(outcome),
+                "value": outcome.status,
                 "wrap": False,
             }
             if outcome.status == RUN_PASSED:
@@ -1780,22 +1776,15 @@ def _execute_multiple_runs(
                     row["value"] = f"✗ {row['value']}"
 
             rows.append(row)
+
+        # A manual command's live output comes just before this, so a blank
+        # line keeps it apart from the results.
+        if any(outcome.data and outcome.data.get("manual") for outcome in outcomes):
+            print()
+
         print("\n\n".join([*blocks, f"Summary\n{render_row_group(rows, width=width)}"]))
 
     return exit_code
-
-
-def _summary_status(outcome: _RunOutcome) -> str:
-    """Return the summary text for one run in a multi-name set.
-
-    A manual command interrupted at its confirmation prompt shows its exit code
-    beside the status, because it has no run record or log to look the code up
-    in. A declined manual command shows only its status.
-    """
-    if outcome.stopped_at_prompt and outcome.status != RUN_DECLINED:
-        return f"{outcome.status} (exit {outcome.exit_code})"
-
-    return outcome.status
 
 
 def _execute_run(
@@ -1825,17 +1814,12 @@ def _execute_run(
         width=width,
     )
 
-    if outcome.stopped_at_prompt:
-        # The prompt has already told the person what happened, so only JSON
-        # mode prints a result.
-        if json_mode:
-            render_error(
-                json_mode=True,
-                code=outcome.error_code,
-                message=outcome.message,
-                data=outcome.data,
-            )
-    elif outcome.error_code is not None:
+    # A manual run shows its output live, so a blank line keeps that output
+    # apart from the summary.
+    if not json_mode and outcome.data and outcome.data.get("manual"):
+        print()
+
+    if outcome.error_code is not None:
         render_error(
             json_mode=json_mode,
             code=outcome.error_code,
@@ -1867,11 +1851,11 @@ def _perform_run(
     With a name, run that saved command from its stored working directory, with
     any file targets added; cwd is ignored. Without a name, run
     direct_arguments from cwd. The timeout falls back to the saved command's
-    timeout, then the default. A confirmed manual run skips the default, so
-    without a saved or passed timeout it runs until it finishes. Both run and again use this, so the one-at-a-time lock
-    applies to each, and so does the choice between
-    refusing a manual-only or browser-runner command and asking a person at a
-    terminal to confirm it.
+    timeout, then the default. A manual run skips the default, so without a
+    saved or passed timeout it runs until it finishes. Both run and again use
+    this, so the one-at-a-time lock applies to each, and so does the choice
+    between refusing a manual-only or browser-runner command for an agent and
+    running it for a person at a terminal.
 
     A caller that has already looked up the saved command can pass it as
     command to skip a second lookup. The result text wraps to width columns,
@@ -1907,13 +1891,10 @@ def _perform_run(
                         cwd=repository.root / relative_working_directory,
                     )
 
-                prompt_outcome = _run_manual_command(
+                _print_manual_command(
                     argv=command_arguments,
                     cwd=repository.root / relative_working_directory,
-                    name=None,
                 )
-                if prompt_outcome is not None:
-                    return prompt_outcome
         else:
             if command is None:
                 command = find_command(connection, repository, name)
@@ -1958,14 +1939,8 @@ def _perform_run(
                         argv=command_arguments, cwd=manual_cwd, name=command.name
                     )
 
-                prompt_outcome = _run_manual_command(
-                    argv=command_arguments, cwd=manual_cwd, name=command.name
-                )
-                if prompt_outcome is not None:
-                    return prompt_outcome
+                _print_manual_command(argv=command_arguments, cwd=manual_cwd)
 
-                # The lock is taken only after the person says yes, so a prompt
-                # left waiting does not block other runs of this command.
                 run_lock = acquire_run_lock(
                     database_path,
                     repository.id,
@@ -2260,67 +2235,16 @@ def _manual_run_outcome(
     )
 
 
-def _run_manual_command(
-    *, argv: Sequence[str], cwd: Path, name: str | None
-) -> _RunOutcome | None:
-    """Ask the person at the terminal to confirm a manual command.
-
-    Return None after Enter or "y", so the caller runs and records the command.
-    Any other answer declines: nothing runs, no run is saved and the exit
-    status is 1. Ctrl-C at the prompt returns an interrupted result with exit
-    status 130, so a set of named runs stops there.
-    """
-    data: dict[str, object] = {
-        "name": name,
-        "cwd": str(cwd),
-        "argv": list(argv),
-        "manual": True,
-    }
-
+def _print_manual_command(*, argv: Sequence[str], cwd: Path) -> None:
+    """Show the working folder and command before a manual run starts."""
+    print(file=sys.stderr)
     print(render_span(f"Working folder: {cwd}", tone="muted"), file=sys.stderr)
+    print(file=sys.stderr)
     print(
         f"{render_span('Command:', tone='muted')} "
         f"{render_span(shlex.join(argv), tone='text')}",
         file=sys.stderr,
     )
-    print(
-        f"{render_span('Run this?', tone='text')} {render_span('[Y/n]', tone='info')} ",
-        end="",
-        file=sys.stderr,
-        flush=True,
-    )
-
-    try:
-        answer = sys.stdin.readline()
-    except KeyboardInterrupt:
-        print("\nCommand interrupted.", file=sys.stderr)
-        data["exit_status"] = 130
-
-        return _RunOutcome(
-            status=RUN_INTERRUPTED,
-            exit_code=130,
-            data=data,
-            stopped_at_prompt=True,
-            error_code="check-failed",
-            message="Command interrupted.",
-        )
-
-    # An empty read means end of input (Ctrl-D), which declines. Pressing Enter
-    # reads a newline, which strips to "" and runs the command.
-    if answer == "" or answer.strip().lower() not in ("", "y"):
-        print("Not run.", file=sys.stderr)
-        data["declined"] = True
-
-        return _RunOutcome(
-            status=RUN_DECLINED,
-            exit_code=1,
-            data=data,
-            stopped_at_prompt=True,
-            error_code="check-failed",
-            message="Manual command was not run.",
-        )
-
-    return None
 
 
 def _uninitialised_repository_error(
@@ -2374,10 +2298,7 @@ def _is_interactive_terminal() -> bool:
 
 
 def _can_run_manual_command() -> bool:
-    """Return whether a person, not an agent, is at a terminal to confirm.
-
-    Agents get the manual-only refusal instead of the confirmation prompt.
-    """
+    """Return whether a person, not an agent, is at a terminal to run the command."""
     return _is_interactive_terminal() and not any(
         os.environ.get(marker) for marker in _AGENT_SHELL_MARKERS
     )

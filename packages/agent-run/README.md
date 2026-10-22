@@ -60,7 +60,7 @@ timeout used by named runs. If you leave out `--timeout`, named runs use the
 paths appended with `--file` or `--glob`; commands use the `none` capability by
 default. Add `--manual` when only a person should run a command: agents are
 refused and given the command to hand over, and a person running it from their
-own terminal is asked to confirm first.
+own terminal sees it start straight away.
 
 Agent-run also marks commands that start Playwright or Cypress as manual-only.
 This includes commands run through `npx`, `pnpm exec`, `yarn`, `bunx`, or
@@ -169,24 +169,21 @@ applies to each run; `--cwd`, `--file`, and `--glob` cannot be used with several
 names. With `--json`, one JSON document lists every run and its result.
 
 A command marked `--manual` still appears in `list`. When you run it in your
-own terminal, agent-run shows its working folder and command, then asks
-`Run this? [Y/n]`. Press Enter or `y` to run it; any other answer declines.
+own terminal, agent-run shows its working folder and command, then runs it.
 When the command has the `file-list` capability, the files you pass with
-`--file` or `--glob` are added to it. After confirmation, agent-run saves a
-run record and log, shows the command's output live, then prints the usual
-short summary; use `agent-run log` to read the full output. The output passes
-through a plain pipe rather than a terminal, so tools such as Playwright
-usually print without colour or progress bars. Confirmed manual runs have no default
-timeout; a timeout saved with the command or passed with `--timeout` still
-applies. A confirmed manual run exits like any other recorded run: status 0
-on success or 1 when the command fails. With `--json`, live output goes to
-standard error so the JSON result stays readable on standard output, and the
-result includes the run ID, log path and `manual: true`. A failed command uses
-the usual `error` result, which also includes `manual: true`. Declining saves
-nothing, prints `Not run.` and exits with status 1; pressing Ctrl-C at the
-prompt exits with status 130. In a run with several names, a declined manual command is
-listed as declined and later commands still run. An interrupted command ends
-the set after its summary row.
+`--file` or `--glob` are added to it. Agent-run saves a run record and log,
+shows the command's output live, then prints the usual short summary; use
+`agent-run log` to read the full output. Tools that honour `FORCE_COLOR` show
+their usual colours; setting `NO_COLOR` to a non-empty value or passing
+`--json` asks tools for plain output. The saved log keeps the command's
+original output. Manual runs have no default timeout; a timeout saved with the
+command or passed with `--timeout` still applies. A manual run exits like any
+other recorded run: status 0 on success or 1 when the command fails. With
+`--json`, live output goes to standard error so the JSON result stays readable
+on standard output, and the result includes the run ID, log path and
+`manual: true`. A failed command uses the usual `error` result, which also
+includes `manual: true`. An interrupted command ends the set after its summary
+row.
 
 In an agent shell or without both terminal input and output, manual commands
 still refuse to run and print the exact command and working directory for a
@@ -208,7 +205,8 @@ Saved commands use their current arguments, working directory, capability and
 timeout. Recorded file targets are checked again; a timeout supplied only to the
 original `run` is not reused. Direct runs repeat their recorded arguments,
 working directory and timeout. Manual-only commands and browser runners use
-the same terminal confirmation or refusal as `run`. Runs recorded before
+the same rules as `run`: they start straight away in your own terminal and
+are refused in an agent shell. Runs recorded before
 agent-run stored command provenance cannot be repeated with `again`; use
 `run NAME` or `run -- ARGV` instead.
 

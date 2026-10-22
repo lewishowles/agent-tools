@@ -109,7 +109,9 @@ def run_command(
             respect it write plain text for agents to read.
         live_output: Also write the combined output to the terminal as it
             arrives. JSON runs write it to standard error so standard output
-            stays valid JSON.
+            stays valid JSON. Outside JSON mode the command is asked for
+            colour unless NO_COLOR has a non-empty value or FORCE_COLOR is
+            already set.
 
     Raises:
         ValueError: If ``argv`` is empty or a supplied ``timeout`` is not a
@@ -144,10 +146,21 @@ def run_command(
         # The handler applies while the child starts and runs.
         previous_handler = signal.signal(signal.SIGTERM, handle_terminate)
         try:
+            # Passing None leaves the command with agent-run's environment unchanged.
+            child_environment = None
+            if json_mode:
+                child_environment = {**os.environ, "NO_COLOR": "1"}
+            elif (
+                live_output
+                and not os.environ.get("NO_COLOR")
+                and "FORCE_COLOR" not in os.environ
+            ):
+                child_environment = {**os.environ, "FORCE_COLOR": "1"}
+
             process = subprocess.Popen(
                 command_arguments,
                 cwd=working_directory,
-                env={**os.environ, "NO_COLOR": "1"} if json_mode else None,
+                env=child_environment,
                 start_new_session=True,
                 stdout=subprocess.PIPE if live_output else log_file,
                 stderr=subprocess.STDOUT,

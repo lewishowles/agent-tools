@@ -19,7 +19,11 @@ import pytest
 from agent_run import output as output_module
 from agent_run.cli import _format_failure_report, _format_run, main
 from agent_run.database import connect_database
-from agent_run.execution import RunResult, TerminateRequested, run_command
+from agent_run.execution import (
+    RunResult,
+    TerminateRequested,
+    run_command,
+)
 from agent_run.failures import Failure, FailureReport
 from agent_run.locking import RunBusyError, acquire_run_lock
 from agent_run.output import render_error, render_error_status, render_success
@@ -44,14 +48,13 @@ def _initialise_repository(path: Path) -> Path:
     return root
 
 
-def _enable_human_terminal(monkeypatch: pytest.MonkeyPatch, answer: str) -> None:
-    """Pretend a person at a terminal, with no agent markers, types answer at the prompt."""
+def _enable_human_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pretend a person, rather than an agent, runs a command at a terminal."""
     for marker in ("CLAUDECODE", "AI_AGENT", "CODEX_SANDBOX", "CODEX_THREAD_ID"):
         monkeypatch.delenv(marker, raising=False)
 
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
-    monkeypatch.setattr(sys.stdin, "readline", lambda: answer)
 
 
 def test_bare_command_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
@@ -1455,7 +1458,7 @@ def test_cli_manual_run_refuses_agent_shells_with_terminals(
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
     assert main(["add", "manual", "--manual", "--", sys.executable, "-c", "pass"]) == 0
     capsys.readouterr()
-    _enable_human_terminal(monkeypatch, "y\n")
+    _enable_human_terminal(monkeypatch)
     monkeypatch.setenv(marker, "1")
 
     exit_code = main(["run", "manual", "--json"])
@@ -1477,7 +1480,7 @@ def test_cli_manual_run_requires_both_terminal_streams(
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
     assert main(["add", "manual", "--manual", "--", sys.executable, "-c", "pass"]) == 0
     capsys.readouterr()
-    _enable_human_terminal(monkeypatch, "y\n")
+    _enable_human_terminal(monkeypatch)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
 
     exit_code = main(["run", "manual", "--json"])
@@ -1486,14 +1489,12 @@ def test_cli_manual_run_requires_both_terminal_streams(
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "manual"
 
 
-@pytest.mark.parametrize("answer", ["y\n", "\n", "n\n", "maybe\n", ""])
-def test_cli_human_manual_run_records_only_confirmed_commands(
-    answer: str,
+def test_cli_human_manual_run_starts_without_reading_input(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """A confirmed manual command saves its result; a declined one saves nothing."""
+    """A manual command starts and saves its result without reading input."""
     root = _initialise_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
     database_path = tmp_path / "agent-run.db"
@@ -1501,42 +1502,36 @@ def test_cli_human_manual_run_records_only_confirmed_commands(
     command = [sys.executable, "-c", "print('child output'); raise SystemExit(7)"]
     assert main(["add", "manual", "--manual", "--", *command]) == 0
     capfd.readouterr()
-    _enable_human_terminal(monkeypatch, answer)
+    _enable_human_terminal(monkeypatch)
+    # Reading standard input would mean a prompt is still waiting for an answer.
+    monkeypatch.setattr(
+        sys.stdin, "readline", Mock(side_effect=AssertionError("input was read"))
+    )
 
     exit_code = main(["run", "manual", "--json"])
     captured = capfd.readouterr()
     result = json.loads(captured.out)
 
     assert exit_code == 1
-    assert "Working folder:" in captured.err
-    assert "Run this? [Y/n]" in captured.err
+    assert (
+        f"\nWorking folder: {root}\n\nCommand: {shlex.join(command)}\n" in captured.err
+    )
+    assert "Run this?" not in captured.err
     data = result["error"]["data"]
     assert data["manual"] is True
     assert data["argv"] == command
-    if answer in ("y\n", "\n"):
-        assert result["ok"] is False
-        assert result["error"]["code"] == "check-failed"
-        assert data["exit_status"] == 7
-        assert data["working_directory"] == str(root)
-        assert Path(data["log_path"]).read_text() == "child output\n"
-        assert data["run_id"]
-        assert captured.err.endswith("child output\n")
-        assert captured.out.count("\n") == 1
-    else:
-        assert result["ok"] is False
-        assert result["error"]["code"] == "check-failed"
-        assert data["declined"] is True
-        assert data["name"] == "manual"
-        assert data["cwd"] == str(root)
-        assert "run_id" not in data
-        assert "log_path" not in data
-        assert "Not run." in captured.err
+    assert result["ok"] is False
+    assert result["error"]["code"] == "check-failed"
+    assert data["exit_status"] == 7
+    assert data["working_directory"] == str(root)
+    assert Path(data["log_path"]).read_text() == "child output\n"
+    assert data["run_id"]
+    assert captured.err.endswith("child output\n")
+    assert captured.out.count("\n") == 1
 
     connection = connect_database(database_path)
     try:
-        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == (
-            1 if answer in ("y\n", "\n") else 0
-        )
+        assert connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
     finally:
         connection.close()
 
@@ -1546,14 +1541,14 @@ def test_cli_human_manual_json_run_keeps_output_off_stdout(
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """A confirmed command writes its live output to stderr beside valid JSON."""
+    """A manual command writes its live output to stderr beside valid JSON."""
     root = _initialise_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
     command = [sys.executable, "-c", "print('live line')"]
     assert main(["add", "manual", "--manual", "--", *command]) == 0
     capfd.readouterr()
-    _enable_human_terminal(monkeypatch, "y\n")
+    _enable_human_terminal(monkeypatch)
 
     exit_code = main(["run", "manual", "--json"])
     captured = capfd.readouterr()
@@ -1565,12 +1560,89 @@ def test_cli_human_manual_json_run_keeps_output_off_stdout(
     assert Path(result["data"]["log_path"]).read_text() == "live line\n"
 
 
+@pytest.mark.parametrize(
+    "no_color, json_mode, expected_force_color",
+    [
+        (None, False, "1"),
+        ("1", False, "unset"),
+        ("", False, "1"),
+        (None, True, "unset"),
+    ],
+)
+def test_cli_human_manual_run_colours_terminal_only_when_allowed(
+    no_color: str | None,
+    json_mode: bool,
+    expected_force_color: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """Human live runs request colour unless JSON or non-empty NO_COLOR is used."""
+    root = _initialise_repository(tmp_path / "repository")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    if no_color is None:
+        monkeypatch.delenv("NO_COLOR", raising=False)
+    else:
+        monkeypatch.setenv("NO_COLOR", no_color)
+
+    script = (
+        "import os, sys; "
+        "sys.stdout.write(os.getenv('FORCE_COLOR', 'unset') + '\\n'); "
+        "sys.stdout.write('\\x1b[31mred\\x1b[0m\\n')"
+    )
+    assert main(["add", "manual", "--manual", "--", sys.executable, "-c", script]) == 0
+    capfd.readouterr()
+    _enable_human_terminal(monkeypatch)
+
+    command = ["run", "manual", "--json"] if json_mode else ["run", "manual"]
+    assert main(command) == 0
+    captured = capfd.readouterr()
+
+    if json_mode:
+        log_path = Path(json.loads(captured.out)["data"]["log_path"])
+        assert "\x1b[31mred\x1b[0m" in captured.err
+    else:
+        connection = connect_database(tmp_path / "agent-run.db")
+        try:
+            log_path = Path(
+                connection.execute("SELECT log_path FROM runs").fetchone()[0]
+            )
+        finally:
+            connection.close()
+        assert "\x1b[31mred\x1b[0m" in captured.out
+
+    assert log_path.read_text() == f"{expected_force_color}\n\x1b[31mred\x1b[0m\n"
+
+
+def test_live_command_preserves_existing_force_color(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live run keeps the colour preference already in the environment."""
+    log_path = tmp_path / "run.log"
+    monkeypatch.setenv("FORCE_COLOR", "0")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr("agent_run.execution.sys", Mock(stdout=Mock(buffer=Mock())))
+
+    result = run_command(
+        [sys.executable, "-c", "import os; print(os.environ['FORCE_COLOR'])"],
+        tmp_path,
+        1,
+        log_path,
+        live_output=True,
+    )
+
+    assert result.exit_status == 0
+    assert log_path.read_bytes() == b"0\n"
+
+
 def test_cli_human_manual_run_passes_resolved_file_targets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """A confirmed manual run shows and passes the resolved file path."""
+    """A manual run shows and passes the resolved file path."""
     root = _initialise_repository(tmp_path / "repository")
     (root / "check.py").write_text("pass")
     monkeypatch.chdir(root)
@@ -1582,7 +1654,7 @@ def test_cli_human_manual_run_passes_resolved_file_targets(
         == 0
     )
     capfd.readouterr()
-    _enable_human_terminal(monkeypatch, "\n")
+    _enable_human_terminal(monkeypatch)
 
     exit_code = main(["run", "manual", "--file", "check.py", "--json"])
     captured = capfd.readouterr()
@@ -1590,9 +1662,9 @@ def test_cli_human_manual_run_passes_resolved_file_targets(
 
     assert exit_code == 0
     assert captured.err == (
-        f"Working folder: {root}\n"
-        f"Command: {shlex.join(command + ['check.py'])}\n"
-        "Run this? [Y/n] ['check.py']\n"
+        f"\nWorking folder: {root}\n"
+        f"\nCommand: {shlex.join(command + ['check.py'])}\n"
+        "['check.py']\n"
     )
     assert captured.out.count("\n") == 1
     assert result["data"]["argv"] == command + ["check.py"]
@@ -1606,7 +1678,7 @@ def test_cli_human_manual_run_prints_short_summary_after_saving_log(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A confirmed manual run shows its output live, keeps all of it in its log,
+    """A manual run shows its output live, keeps all of it in its log,
     then prints the short summary.
     """
     root = _initialise_repository(tmp_path / "repository")
@@ -1617,7 +1689,7 @@ def test_cli_human_manual_run_prints_short_summary_after_saving_log(
     command = [sys.executable, "-c", "for line in range(30): print(f'line {line}')"]
     assert main(["add", "manual", "--manual", "--", *command]) == 0
     capsys.readouterr()
-    _enable_human_terminal(monkeypatch, "\n")
+    _enable_human_terminal(monkeypatch)
 
     exit_code = main(["run", "manual"])
     captured = capsys.readouterr()
@@ -1627,7 +1699,7 @@ def test_cli_human_manual_run_prints_short_summary_after_saving_log(
     assert "Run ID" in captured.out
     assert "Log " in captured.out
     assert "line 0\n" in captured.out
-    assert "line 29" in captured.out
+    assert "line 29\n\n" in captured.out
 
     connection = connect_database(database_path)
     try:
@@ -1638,7 +1710,7 @@ def test_cli_human_manual_run_prints_short_summary_after_saving_log(
     assert log_path.read_text().splitlines() == [f"line {line}" for line in range(30)]
 
 
-def test_cli_human_manual_run_takes_named_run_lock_after_confirmation(
+def test_cli_human_manual_run_takes_named_run_lock_before_execution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1651,7 +1723,7 @@ def test_cli_human_manual_run_takes_named_run_lock_after_confirmation(
     command = [sys.executable, "-c", "print('child output')"]
     assert main(["add", "manual", "--manual", "--", *command]) == 0
     capsys.readouterr()
-    _enable_human_terminal(monkeypatch, "y\n")
+    _enable_human_terminal(monkeypatch)
     repository = identify_repository()
     active_lock = acquire_run_lock(
         database_path, repository.id, "manual", run_id=uuid4().hex
@@ -1663,7 +1735,7 @@ def test_cli_human_manual_run_takes_named_run_lock_after_confirmation(
         result = json.loads(captured.out)
 
         assert exit_code == 1
-        assert "Run this? [Y/n]" in captured.err
+        assert f"\nWorking folder: {root}\n\nCommand:" in captured.err
         assert result["error"]["code"] == "busy"
         assert result["error"]["data"]["run_id"] == active_lock.run_id
 
@@ -1690,7 +1762,7 @@ def test_cli_human_manual_run_records_timeout_as_timeout(
     command = [sys.executable, "-c", "import time; time.sleep(2)"]
     assert main(["add", "manual", "--manual", "--", *command]) == 0
     capsys.readouterr()
-    _enable_human_terminal(monkeypatch, "y\n")
+    _enable_human_terminal(monkeypatch)
 
     exit_code = main(["run", "manual", "--timeout", "0.1", "--json"])
     result = json.loads(capsys.readouterr().out)
@@ -1707,7 +1779,7 @@ def test_cli_human_manual_run_has_no_default_timeout(
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """A confirmed manual run finishes without the default timeout."""
+    """A manual run finishes without the default timeout."""
     root = _initialise_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
@@ -1715,7 +1787,7 @@ def test_cli_human_manual_run_has_no_default_timeout(
     command = [sys.executable, "-c", "import time; time.sleep(0.05)"]
     assert main(["add", "manual", "--manual", "--", *command]) == 0
     capfd.readouterr()
-    _enable_human_terminal(monkeypatch, "y\n")
+    _enable_human_terminal(monkeypatch)
 
     assert main(["run", "manual", "--json"]) == 0
     result = json.loads(capfd.readouterr().out)
@@ -1903,23 +1975,23 @@ def test_live_command_times_out_while_output_stays_readable(
     assert log_path.stat().st_size > 0
 
 
-def test_cli_human_manual_prompt_uses_cli_style_tones(
+def test_cli_human_manual_header_uses_cli_style_tones(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The confirmation prompt uses muted, foreground, and info text tones."""
+    """The manual command header uses muted and foreground text tones."""
     root = _initialise_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
     command = [sys.executable, "-c", "pass"]
     assert main(["add", "manual", "--manual", "--", *command]) == 0
     capsys.readouterr()
-    _enable_human_terminal(monkeypatch, "n\n")
+    _enable_human_terminal(monkeypatch)
     style_span = Mock(side_effect=lambda value, **_kwargs: value)
     monkeypatch.setattr("agent_run.output.span", style_span)
 
-    assert main(["run", "manual"]) == 1
+    assert main(["run", "manual"]) == 0
     capsys.readouterr()
 
     assert [
@@ -1928,90 +2000,39 @@ def test_cli_human_manual_prompt_uses_cli_style_tones(
         (f"Working folder: {root}", "muted"),
         ("Command:", "muted"),
         (shlex.join(command), "text"),
-        ("Run this?", "text"),
-        ("[Y/n]", "info"),
     ]
     assert all(call.kwargs["weight"] == "normal" for call in style_span.call_args_list)
 
 
-def test_cli_human_multi_run_continues_after_manual_decline(
+def test_cli_human_multi_run_continues_after_manual_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """Declining one manual command in a set still runs the commands after it."""
+    """A manual command in a set runs before the commands after it."""
     root = _initialise_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
     assert main(["add", "manual", "--manual", "--", sys.executable, "-c", "pass"]) == 0
     assert main(["add", "ready", "--", sys.executable, "-c", "print('ready')"]) == 0
     capfd.readouterr()
-    _enable_human_terminal(monkeypatch, "n\n")
+    _enable_human_terminal(monkeypatch)
 
     exit_code = main(["run", "manual", "ready", "--json"])
     result = json.loads(capfd.readouterr().out)
 
-    assert exit_code == 1
-    assert [run["status"] for run in result["data"]["runs"]] == ["declined", "passed"]
+    assert exit_code == 0
+    assert [run["status"] for run in result["data"]["runs"]] == ["passed", "passed"]
     assert result["data"]["runs"][0]["data"]["manual"] is True
-    assert "log_path" not in result["data"]["runs"][0]["data"]
+    assert result["data"]["runs"][0]["data"]["log_path"]
 
 
-@pytest.mark.parametrize("multiple", [False, True])
-def test_cli_manual_prompt_interrupt_exits_without_traceback(
-    multiple: bool,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capfd: pytest.CaptureFixture[str],
-) -> None:
-    """Ctrl-C at confirmation returns 130 and preserves a set's summary."""
-    root = _initialise_repository(tmp_path / "repository")
-    monkeypatch.chdir(root)
-    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
-    assert main(["add", "manual", "--manual", "--", sys.executable, "-c", "pass"]) == 0
-
-    if multiple:
-        assert main(["add", "ready", "--", sys.executable, "-c", "pass"]) == 0
-
-    capfd.readouterr()
-    _enable_human_terminal(monkeypatch, "y\n")
-
-    def interrupt_prompt() -> str:
-        """Simulate Ctrl-C while the confirmation prompt reads input."""
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(sys.stdin, "readline", interrupt_prompt)
-    names = ["ready", "manual"] if multiple else ["manual"]
-
-    exit_code = main(["run", *names])
-    captured = capfd.readouterr()
-
-    assert exit_code == 130
-    assert "Command interrupted." in captured.err
-    assert "Traceback" not in captured.err
-
-    if multiple:
-        assert "Summary" in captured.out
-        assert "ready" in captured.out
-        assert "interrupted (exit 130)" in captured.out
-
-
-@pytest.mark.parametrize(
-    "answer, expected_exit, expected_row",
-    [
-        ("y\n", 1, "failed"),
-        ("n\n", 1, "declined"),
-    ],
-)
 def test_cli_human_manual_run_text_summary(
-    answer: str,
-    expected_exit: int,
-    expected_row: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """A set shows the normal failed status or a declined manual command."""
+    """A set shows the normal failed status for a manual command."""
     root = _initialise_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
@@ -2024,23 +2045,23 @@ def test_cli_human_manual_run_text_summary(
                 "--",
                 sys.executable,
                 "-c",
-                "raise SystemExit(7)",
+                "print('manual'); raise SystemExit(7)",
             ]
         )
         == 0
     )
     assert main(["add", "ready", "--", sys.executable, "-c", "pass"]) == 0
     capfd.readouterr()
-    _enable_human_terminal(monkeypatch, answer)
+    _enable_human_terminal(monkeypatch)
 
     exit_code = main(["run", "manual", "ready"])
     captured = capfd.readouterr()
 
-    assert exit_code == expected_exit
+    assert exit_code == 1
+    assert captured.out.startswith("manual\n\n")
     assert "Summary" in captured.out
-    assert expected_row in captured.out
+    assert "failed" in captured.out
     assert "ready" in captured.out
-    assert ("Not run." in captured.err) == (answer == "n\n")
 
 
 @pytest.mark.parametrize("child_signal", [signal.SIGINT, signal.SIGTERM])
@@ -2065,7 +2086,7 @@ def test_cli_manual_child_signal_follows_normal_run_result(
     assert main(["add", "manual", "--manual", "--", *command]) == 0
     assert main(["add", "later", "--", sys.executable, "-c", "pass"]) == 0
     capfd.readouterr()
-    _enable_human_terminal(monkeypatch, "y\n")
+    _enable_human_terminal(monkeypatch)
     previous_handler = signal.getsignal(signal.SIGINT)
 
     exit_code = main(["run", "manual", "later", "--json"])
@@ -2078,12 +2099,12 @@ def test_cli_manual_child_signal_follows_normal_run_result(
     assert result["data"]["runs"][0]["data"]["run_id"]
 
 
-def test_cli_again_confirms_current_manual_command(
+def test_cli_again_runs_current_manual_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """Again asks before running a command changed to manual after its first run."""
+    """Again runs a command that was marked manual after its first run."""
     root = _initialise_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
     database_path = tmp_path / "agent-run.db"
@@ -2094,7 +2115,7 @@ def test_cli_again_confirms_current_manual_command(
     run_id = json.loads(capfd.readouterr().out)["data"]["run_id"]
     assert main(["edit", "check", "--manual"]) == 0
     capfd.readouterr()
-    _enable_human_terminal(monkeypatch, "\n")
+    _enable_human_terminal(monkeypatch)
 
     exit_code = main(["again", run_id, "--json"])
     result = json.loads(capfd.readouterr().out)
@@ -2208,17 +2229,17 @@ def test_cli_direct_browser_runner_is_manual(
         connection.close()
 
 
-def test_cli_human_direct_browser_runner_records_confirmed_run(
+def test_cli_human_direct_browser_runner_records_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A confirmed direct browser command saves a run and its output."""
+    """A direct browser command run by a person saves a run and its output."""
     root = _initialise_repository(tmp_path / "repository")
     monkeypatch.chdir(root)
     database_path = tmp_path / "agent-run.db"
     monkeypatch.setenv("AGENT_RUN_DATABASE", str(database_path))
-    _enable_human_terminal(monkeypatch, "y\n")
+    _enable_human_terminal(monkeypatch)
     command = ["npx", "playwright", "test"]
     browser_runs: list[tuple[str, ...]] = []
 
@@ -2246,7 +2267,7 @@ def test_cli_human_direct_browser_runner_records_confirmed_run(
     result = json.loads(captured.out)
 
     assert exit_code == 0
-    assert "Run this? [Y/n]" in captured.err
+    assert f"\nWorking folder: {root}\n\nCommand:" in captured.err
     assert result["ok"] is True
     assert result["data"]["argv"] == command
     assert result["data"]["manual"] is True
