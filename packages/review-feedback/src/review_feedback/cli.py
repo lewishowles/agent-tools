@@ -6,8 +6,6 @@ import argparse
 import sys
 from typing import TextIO
 
-from prompt_toolkit import prompt
-
 from review_feedback import style
 from review_feedback.clipboard import (
 	ClipboardError,
@@ -229,6 +227,9 @@ def _prompt_comment() -> str:
 	"""Prompt for one non-empty review comment."""
 	try:
 		if sys.stdin.isatty():
+			# The prompt library takes about 100 ms to load, so load it only when a prompt is shown.
+			from prompt_toolkit import prompt
+
 			comment = prompt("Comment: ")
 		else:
 			comment = input("Comment: ")

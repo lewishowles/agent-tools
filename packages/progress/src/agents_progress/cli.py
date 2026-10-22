@@ -10,9 +10,6 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import TextIO
 
-import questionary
-from prompt_toolkit import prompt
-
 from . import __version__
 from .database import Database
 from .errors import NotFoundError, ProgressError, WrongObjectIdTypeError
@@ -1054,6 +1051,9 @@ def _prompt_value(
 	argument: _PromptArgument, *, repeatable_value: bool = False
 ) -> str | None:
 	"""Ask for one field's value; return None when stdin closes during the prompt."""
+	# The prompt library takes about 100 ms to load, so load it only when a prompt is shown.
+	from prompt_toolkit import prompt
+
 	names = "/".join(argument.names)
 	field_name = _prompt_label(argument)
 	optional_hint = ""
@@ -1138,6 +1138,9 @@ def _prompt_add_arguments(arguments: list[str]) -> list[str]:
 	]
 	if not optional_arguments:
 		return prompted_arguments
+
+	# The prompt library takes about 100 ms to load, so load it only when a prompt is shown.
+	import questionary
 
 	choices = [
 		questionary.Choice(

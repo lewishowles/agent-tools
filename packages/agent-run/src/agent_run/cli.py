@@ -16,8 +16,6 @@ from pathlib import Path
 from typing import NoReturn
 from uuid import uuid4
 
-import questionary
-
 from agent_run.commands import (
     COMMAND_CAPABILITIES,
     DEFAULT_CAPABILITY,
@@ -2351,6 +2349,9 @@ def _prompt_for_candidates(
     """
     if not candidates:
         return ()
+
+    # The prompt library takes about 100 ms to load, so load it only when a prompt is shown.
+    import questionary
 
     choices = []
 

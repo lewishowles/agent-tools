@@ -2,9 +2,11 @@
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+import questionary
 from agent_run import cli, detectors
 from agent_run.cli import main
 from agent_run.commands import add_command, list_commands
@@ -21,6 +23,23 @@ from agent_run.detectors.pyproject import detect_pyproject_checks
 from agent_run.detectors.shell import detect_shell_checks
 from agent_run.detectors.swift import detect_swift_checks
 from agent_run.repository import Repository, create_repository_id, identify_repository
+
+
+def test_cli_import_does_not_load_prompt_libraries() -> None:
+    """Importing the CLI must not load the prompt libraries, which slow every command's start-up."""
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import agent_run.cli\n"
+                "import sys\n"
+                "assert 'questionary' not in sys.modules\n"
+                "assert 'prompt_toolkit' not in sys.modules\n"
+            ),
+        ],
+        check=True,
+    )
 
 
 def _initialise_repository(path: Path) -> Path:
@@ -744,7 +763,7 @@ def test_detect_interactive_add_disables_registered_candidates(
         return Prompt()
 
     monkeypatch.setattr(cli, "_is_interactive_terminal", lambda: True)
-    monkeypatch.setattr(cli.questionary, "checkbox", fake_checkbox)
+    monkeypatch.setattr(questionary, "checkbox", fake_checkbox)
 
     exit_code = main(["detect", "--add"])
 

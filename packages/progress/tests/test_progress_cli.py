@@ -1,10 +1,13 @@
 import json
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
+import prompt_toolkit
 import pytest
+import questionary
 
 import agents_progress.render as render_module
 import agents_progress.style as style_module
@@ -20,6 +23,23 @@ from agents_progress.projects import Project, ProjectStore
 from agents_progress.reads import ReadStore
 from agents_progress.render import _status_result_type
 from agents_progress.writes import WriteStore
+
+
+def test_cli_import_does_not_load_prompt_libraries() -> None:
+	"""Importing the CLI must not load the prompt libraries, which slow every command's start-up."""
+	subprocess.run(
+		[
+			sys.executable,
+			"-c",
+			(
+				"import agents_progress.cli\n"
+				"import sys\n"
+				"assert 'questionary' not in sys.modules\n"
+				"assert 'prompt_toolkit' not in sys.modules\n"
+			),
+		],
+		check=True,
+	)
 
 
 def _stderr_error_message(captured_err: str) -> str:
@@ -1851,9 +1871,9 @@ def test_task_add_prompts_for_required_and_selected_optional_arguments(
 
 	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
 	monkeypatch.setattr(cli, "render", lambda command, data: "")
-	monkeypatch.setattr(cli, "prompt", fake_input)
+	monkeypatch.setattr(prompt_toolkit, "prompt", fake_input)
 	monkeypatch.setattr(
-		cli.questionary,
+		questionary,
 		"checkbox",
 		_fake_checkbox(["--file", "--verification"], choices_seen),
 	)
@@ -1956,8 +1976,8 @@ def test_chunk_add_asks_no_optional_field_when_none_is_ticked(
 
 	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
 	monkeypatch.setattr(cli, "render", lambda command, data: "")
-	monkeypatch.setattr(cli, "prompt", lambda prompt: next(prompt_values))
-	monkeypatch.setattr(cli.questionary, "checkbox", _fake_checkbox([]))
+	monkeypatch.setattr(prompt_toolkit, "prompt", lambda prompt: next(prompt_values))
+	monkeypatch.setattr(questionary, "checkbox", _fake_checkbox([]))
 	monkeypatch.setattr(
 		cli.sys,
 		"stdin",
@@ -1983,7 +2003,7 @@ def test_prompt_value_uses_editable_prompt(monkeypatch) -> None:
 		prompts.append(prompt)
 		return "task-slug"
 
-	monkeypatch.setattr(cli, "prompt", fake_prompt)
+	monkeypatch.setattr(prompt_toolkit, "prompt", fake_prompt)
 
 	assert cli._prompt_value(argument) == "task-slug"
 
@@ -1996,7 +2016,7 @@ def test_prompt_value_reports_eof(monkeypatch) -> None:
 	def raise_eof(prompt: str) -> str:
 		raise EOFError
 
-	monkeypatch.setattr(cli, "prompt", raise_eof)
+	monkeypatch.setattr(prompt_toolkit, "prompt", raise_eof)
 
 	assert cli._prompt_value(argument) is None
 
@@ -2007,7 +2027,7 @@ def test_prompt_value_exits_130_when_cancelled(capsys, monkeypatch) -> None:
 	def raise_keyboard_interrupt(prompt: str) -> str:
 		raise KeyboardInterrupt
 
-	monkeypatch.setattr(cli, "prompt", raise_keyboard_interrupt)
+	monkeypatch.setattr(prompt_toolkit, "prompt", raise_keyboard_interrupt)
 
 	with pytest.raises(SystemExit) as error:
 		cli._prompt_value(argument)
@@ -2019,10 +2039,8 @@ def test_prompt_value_exits_130_when_cancelled(capsys, monkeypatch) -> None:
 def test_checkbox_exits_130_with_one_cancellation_message(capsys, monkeypatch) -> None:
 	"""Cancel the optional-field checkbox without printing a second notice."""
 	values = iter(["tsk_test", "Chunk title", "Description", "Review question"])
-	monkeypatch.setattr(cli, "prompt", lambda label: next(values))
-	monkeypatch.setattr(
-		cli.questionary, "checkbox", _fake_checkbox(KeyboardInterrupt())
-	)
+	monkeypatch.setattr(prompt_toolkit, "prompt", lambda label: next(values))
+	monkeypatch.setattr(questionary, "checkbox", _fake_checkbox(KeyboardInterrupt()))
 
 	with pytest.raises(SystemExit) as error:
 		cli._prompt_add_arguments(["chunk", "add"])
@@ -2054,8 +2072,8 @@ def test_add_prompts_retry_blank_required_answers(
 	expected_flags: list[str],
 ) -> None:
 	values = iter(answers)
-	monkeypatch.setattr(cli, "prompt", lambda label: next(values))
-	monkeypatch.setattr(cli.questionary, "checkbox", _fake_checkbox([]))
+	monkeypatch.setattr(prompt_toolkit, "prompt", lambda label: next(values))
+	monkeypatch.setattr(questionary, "checkbox", _fake_checkbox([]))
 
 	result = cli._prompt_add_arguments(command)
 
@@ -2079,9 +2097,11 @@ def test_add_prompt_skips_checkbox_when_all_optional_flags_are_supplied(
 		"--description",
 		"Description",
 	]
-	monkeypatch.setattr(cli, "prompt", lambda label: "Can a reviewer check this?")
 	monkeypatch.setattr(
-		cli.questionary,
+		prompt_toolkit, "prompt", lambda label: "Can a reviewer check this?"
+	)
+	monkeypatch.setattr(
+		questionary,
 		"checkbox",
 		lambda message, *, choices: pytest.fail("No optional fields remain"),
 	)
@@ -2101,7 +2121,7 @@ def test_add_help_does_not_prompt_for_missing_required_arguments(
 		type("_InteractiveStdin", (), {"isatty": lambda self: True})(),
 	)
 	monkeypatch.setattr(
-		cli,
+		prompt_toolkit,
 		"prompt",
 		lambda prompt: pytest.fail("help must not start the add prompt"),
 	)
@@ -2143,8 +2163,8 @@ def test_add_prompt_skips_arguments_already_supplied(
 
 	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
 	monkeypatch.setattr(cli, "render", lambda command, data: "")
-	monkeypatch.setattr(cli, "prompt", fake_input)
-	monkeypatch.setattr(cli.questionary, "checkbox", _fake_checkbox([]))
+	monkeypatch.setattr(prompt_toolkit, "prompt", fake_input)
+	monkeypatch.setattr(questionary, "checkbox", _fake_checkbox([]))
 	monkeypatch.setattr(
 		cli.sys,
 		"stdin",
@@ -2205,7 +2225,7 @@ def test_json_mode_keeps_missing_add_arguments_non_interactive(
 		type("_InteractiveStdin", (), {"isatty": lambda self: True})(),
 	)
 	monkeypatch.setattr(
-		cli,
+		prompt_toolkit,
 		"prompt",
 		lambda prompt: pytest.fail("JSON mode must not prompt"),
 	)
@@ -2228,7 +2248,7 @@ def test_other_add_commands_do_not_prompt(capsys, monkeypatch) -> None:
 		type("_InteractiveStdin", (), {"isatty": lambda self: True})(),
 	)
 	monkeypatch.setattr(
-		cli,
+		prompt_toolkit,
 		"prompt",
 		lambda prompt: pytest.fail("release add must not prompt"),
 	)

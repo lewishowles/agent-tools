@@ -1,11 +1,30 @@
 import io
 from pathlib import Path
 import subprocess
+import sys
 
+import prompt_toolkit
 import pytest
 
 from review_feedback import cli
 from review_feedback.draft import load_active, resolve_store
+
+
+def test_cli_import_does_not_load_prompt_libraries() -> None:
+	"""Importing the CLI must not load the prompt libraries, which slow every command's start-up."""
+	subprocess.run(
+		[
+			sys.executable,
+			"-c",
+			(
+				"import review_feedback.cli\n"
+				"import sys\n"
+				"assert 'questionary' not in sys.modules\n"
+				"assert 'prompt_toolkit' not in sys.modules\n"
+			),
+		],
+		check=True,
+	)
 
 
 def git(repo: Path, *arguments: str) -> str:
@@ -44,7 +63,7 @@ def add_entry(
 	monkeypatch.chdir(repo)
 	monkeypatch.setattr(cli, "read_clipboard", lambda: selection)
 	monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
-	monkeypatch.setattr(cli, "prompt", lambda _: comment)
+	monkeypatch.setattr(prompt_toolkit, "prompt", lambda _: comment)
 	assert cli.main(["add"]) == 0
 
 
@@ -72,7 +91,7 @@ def test_add_creates_an_entry_for_each_matching_location(
 	monkeypatch.chdir(repo)
 	monkeypatch.setattr(cli, "read_clipboard", lambda: "new selection")
 	monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
-	monkeypatch.setattr(cli, "prompt", lambda _: "Review both lines")
+	monkeypatch.setattr(prompt_toolkit, "prompt", lambda _: "Review both lines")
 
 	assert cli.main(["add"]) == 0
 	output = capsys.readouterr().out
@@ -93,7 +112,7 @@ def test_add_resolves_selection_before_prompting_for_comment(
 	def fail_prompt(_: str) -> str:
 		pytest.fail("comment should not be prompted for an invalid selection")
 
-	monkeypatch.setattr(cli, "prompt", fail_prompt)
+	monkeypatch.setattr(prompt_toolkit, "prompt", fail_prompt)
 
 	assert cli.main(["add"]) == 2
 
@@ -110,7 +129,7 @@ def test_add_rejects_an_empty_comment_without_saving_a_draft(
 	monkeypatch.chdir(repo)
 	monkeypatch.setattr(cli, "read_clipboard", lambda: "new selection")
 	monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
-	monkeypatch.setattr(cli, "prompt", lambda _: "")
+	monkeypatch.setattr(prompt_toolkit, "prompt", lambda _: "")
 
 	assert cli.main(["add"]) == 2
 
@@ -132,7 +151,7 @@ def test_add_reports_an_eof_without_saving_a_draft(
 	def raise_eof(_: str) -> str:
 		raise EOFError
 
-	monkeypatch.setattr(cli, "prompt", raise_eof)
+	monkeypatch.setattr(prompt_toolkit, "prompt", raise_eof)
 
 	assert cli.main(["add"]) == 2
 
@@ -152,7 +171,7 @@ def test_add_preserves_ctrl_c_cancellation_without_saving_a_draft(
 	def raise_keyboard_interrupt(_: str) -> str:
 		raise KeyboardInterrupt
 
-	monkeypatch.setattr(cli, "prompt", raise_keyboard_interrupt)
+	monkeypatch.setattr(prompt_toolkit, "prompt", raise_keyboard_interrupt)
 
 	with pytest.raises(KeyboardInterrupt):
 		cli.main(["add"])
