@@ -221,6 +221,29 @@ Show the project attached to the current Git repository:
 progress project current [--json] [--database <path>]
 ```
 
+### `progress project remove`
+
+Remove a project by ID:
+
+```text
+progress project remove <project_id> [--force] [--json] [--database <path>]
+```
+
+The project's recorded checkout locations are forgotten. Without `--force`,
+the command refuses a project with tasks, releases, notes, inbox notes or a
+project handoff, and lists those records. With `--force`, it removes those
+records and their child records in one transaction, listing deleted records by
+type. It does not ask for confirmation.
+
+A project with a managed task worktree cannot be removed, even with `--force`.
+Run `progress worktree cleanup <task_id>` for each named task first. The command
+never deletes worktree folders. After database removal, it clears the
+`progress.project-id` Git setting in recorded checkout folders that still
+exist and still point to that project. Missing folders and folders now bound to
+another project are left alone. If a folder's setting cannot be cleared, the
+removal still succeeds and lists that folder, which may still point at the
+removed project.
+
 ## Releases
 
 A release groups related tasks and has a title, slug, overview, position, and

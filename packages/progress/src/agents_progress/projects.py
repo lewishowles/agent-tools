@@ -9,6 +9,8 @@ from typing import Protocol
 from .database import Database
 from .errors import (
 	EmptyValueError,
+	GitBindingError,
+	NotAProjectError,
 	NotFoundError,
 	OrphanedProjectError,
 	ProjectBindingRecoveryError,
@@ -187,6 +189,43 @@ class ProjectStore:
 				raise
 
 		return project
+
+	def remove(self, project_id: str, *, force: bool = False) -> dict[str, object]:
+		"""Remove a project, then unbind its recorded checkout folders.
+
+		Raises ``StillReferencedError`` while the project has managed worktrees,
+		or, without ``force``, while it owns any records. Folders that are missing
+		or now bound to another project are left alone. Returns the removed
+		project's ID and name, plus the deleted records by type after a forced
+		removal and any checkout paths whose bindings could not be cleared.
+		"""
+		from .writes import _remove_project  # Local because writes imports projects.
+
+		validate_object_id(project_id, PROJECT_PREFIX)
+		with self.database.transaction() as connection:
+			result, checkout_paths = _remove_project(
+				connection, project_id, force=force
+			)
+
+		# Git config cannot join the SQLite transaction. Clear bindings only after
+		# the database removal commits, and leave missing or rebound folders alone.
+		uncleared_checkouts = []
+		for checkout_path in checkout_paths:
+			if not Path(checkout_path).exists():
+				continue
+			try:
+				repository = self.repository_factory(checkout_path)
+				if repository.get_binding() == project_id:
+					repository.clear_binding()
+			except NotAProjectError:
+				continue
+			except GitBindingError:
+				uncleared_checkouts.append(checkout_path)
+
+		if uncleared_checkouts:
+			result["uncleared_checkouts"] = uncleared_checkouts
+
+		return result
 
 	def current(self, path: str | Path | None = None) -> Project:
 		"""Resolve the project bound to the current Git repository."""

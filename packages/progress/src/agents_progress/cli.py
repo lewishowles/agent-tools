@@ -426,6 +426,14 @@ _COMMAND_SPECS = (
 				"bind an existing project",
 				arguments=(_argument("project_id"),),
 			),
+			_CommandSpec(
+				"remove",
+				"remove a project and its recorded checkouts",
+				arguments=(
+					_argument("project_id"),
+					_argument("--force", action="store_true"),
+				),
+			),
 			_CommandSpec("current", "show the bound project"),
 		),
 		destination="project_command",
@@ -1470,6 +1478,23 @@ def _render_human_output(
 		return f"{data['path']}\n"
 	if command == "worktree cleanup" and isinstance(data, dict):
 		return "\n".join(_worktree_cleanup_lines(data)) + "\n"
+	if command == "project remove" and isinstance(data, dict):
+		lines = [
+			render_status(
+				"success", "Removed project:", f"{data['name']} ({data['id']})"
+			)
+		]
+		for record_type, records in data.get("deleted", {}).items():
+			label = record_type.replace("_", " ").capitalize()
+			lines.append(
+				f"{render_span(label, 'muted', weight='normal')}: {', '.join(records)}"
+			)
+		if uncleared_checkouts := data.get("uncleared_checkouts"):
+			lines.append(
+				"Folders that may still point at the removed project: "
+				+ ", ".join(uncleared_checkouts)
+			)
+		return "\n".join(lines) + "\n"
 	if command in {"task dependency add", "task dependency remove"} and isinstance(
 		data, dict
 	):
@@ -1697,6 +1722,7 @@ def _run_command(
 		("doctor", None): lambda: (ReadStore(database).doctor(), "doctor"),
 		("project", "init"): lambda: (_run_project(args, database), "project init"),
 		("project", "attach"): lambda: (_run_project(args, database), "project attach"),
+		("project", "remove"): lambda: (_run_project(args, database), "project remove"),
 		("project", "current"): lambda: (
 			_run_project(args, database),
 			"project current",
@@ -2170,6 +2196,8 @@ def _run_project(args: argparse.Namespace, database: Database) -> dict[str, obje
 		return data
 	if args.project_command == "attach":
 		return store.attach(args.project_id).to_dict()
+	if args.project_command == "remove":
+		return store.remove(args.project_id, force=args.force)
 	if args.project_command == "current":
 		return store.current().to_dict()
 

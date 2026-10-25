@@ -16,6 +16,7 @@ from agents_progress.database import Database
 from agents_progress.errors import (
 	AlreadyExistsError,
 	DuplicateDependencyError,
+	GitBindingError,
 	NotFoundError,
 	ProgressError,
 )
@@ -358,7 +359,7 @@ def test_version_json_uses_the_standard_envelope(capsys) -> None:
 @pytest.mark.parametrize(
 	("command", "expected_choices"),
 	[
-		("project", "{init,attach,current}"),
+		("project", "{init,attach,remove,current}"),
 		("release", "{add,move,list,get,remove,rename,edit,complete}"),
 		(
 			"task",
@@ -7648,6 +7649,131 @@ def test_project_init_dispatches_to_the_nested_project_command(
 	)
 
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_project_remove_reports_the_removed_project(
+	tmp_path, monkeypatch, capsys, json_output
+) -> None:
+	repository = tmp_path / "repository"
+	repository.mkdir()
+	subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+	monkeypatch.chdir(repository)
+	database_path = tmp_path / "progress.db"
+	project, _ = ProjectStore(Database(database_path)).init("agents", "Agents")
+	args = [
+		"project",
+		"remove",
+		project.id,
+		"--force",
+		"--database",
+		str(database_path),
+	]
+	if json_output:
+		args.append("--json")
+
+	assert cli.main(args) == 0
+	output = capsys.readouterr()
+	assert output.err == ""
+	if json_output:
+		assert json.loads(output.out) == {
+			"ok": True,
+			"data": {"id": project.id, "name": "Agents", "deleted": {}},
+		}
+	else:
+		plain = render_module._ANSI_ESCAPE_PATTERN.sub("", output.out)
+		assert plain.splitlines()[1].endswith(f"Removed project: Agents ({project.id})")
+
+
+def test_project_remove_reports_references_and_unknown_id(
+	tmp_path, monkeypatch, capsys
+) -> None:
+	repository = tmp_path / "repository"
+	repository.mkdir()
+	subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+	monkeypatch.chdir(repository)
+	database_path = tmp_path / "progress.db"
+	project, _ = ProjectStore(Database(database_path)).init("agents", "Agents")
+	task = WriteStore(Database(database_path)).task_add(
+		"first", "First task", "A task", done_when=["Done"]
+	)
+	args = ["project", "remove", project.id, "--database", str(database_path), "--json"]
+	assert cli.main(args) == 1
+	response = json.loads(capsys.readouterr().out)
+	assert response["error"]["code"] == "still-referenced"
+	assert response["error"]["details"]["references"] == {"tasks": [task["id"]]}
+	assert "--force" in response["error"]["message"]
+
+	unknown = "prj_" + "z" * 22
+	assert (
+		cli.main(
+			["project", "remove", unknown, "--database", str(database_path), "--json"]
+		)
+		== 1
+	)
+	assert json.loads(capsys.readouterr().out)["error"]["code"] == "not-found"
+
+
+def test_project_remove_lists_deleted_records_in_human_output(
+	tmp_path, monkeypatch, capsys
+) -> None:
+	repository = tmp_path / "repository"
+	repository.mkdir()
+	subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+	monkeypatch.chdir(repository)
+	database_path = tmp_path / "progress.db"
+	project, _ = ProjectStore(Database(database_path)).init("agents", "Agents")
+	task = WriteStore(Database(database_path)).task_add(
+		"first", "First task", "A task", done_when=["Done"]
+	)
+
+	assert (
+		cli.main(
+			[
+				"project",
+				"remove",
+				project.id,
+				"--force",
+				"--database",
+				str(database_path),
+			]
+		)
+		== 0
+	)
+	output = capsys.readouterr()
+	assert output.err == ""
+	plain = render_module._ANSI_ESCAPE_PATTERN.sub("", output.out)
+	assert plain.startswith(f"\n✓ Removed project: Agents ({project.id})\n")
+	assert f"Tasks: {task['id']}\n" in plain
+
+
+def test_project_remove_names_a_checkout_with_an_uncleared_binding(
+	tmp_path, monkeypatch, capsys
+) -> None:
+	repository = tmp_path / "repository"
+	repository.mkdir()
+	subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+	monkeypatch.chdir(repository)
+	database_path = tmp_path / "progress.db"
+	store = ProjectStore(Database(database_path))
+	project, _ = store.init("agents", "Agents")
+	store.record_checkout()
+
+	def fail_to_clear_binding(self) -> None:
+		raise GitBindingError("cannot clear binding")
+
+	monkeypatch.setattr(GitRepository, "clear_binding", fail_to_clear_binding)
+	assert (
+		cli.main(["project", "remove", project.id, "--database", str(database_path)])
+		== 0
+	)
+	output = capsys.readouterr()
+	assert output.err == ""
+	plain = render_module._ANSI_ESCAPE_PATTERN.sub("", output.out)
+	assert plain.startswith(f"\n✓ Removed project: Agents ({project.id})\n")
+	assert (
+		f"Folders that may still point at the removed project: {repository}\n" in plain
+	)
 
 
 @pytest.mark.parametrize("json_output", [False, True])

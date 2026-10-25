@@ -1954,6 +1954,135 @@ def _normalise_write_ids(
 	return identifiers, True
 
 
+def _remove_project(
+	connection: sqlite3.Connection, project_id: str, *, force: bool
+) -> tuple[dict[str, object], list[str]]:
+	"""Remove one project and forget its recorded checkouts.
+
+	The project is refused while any of its tasks still has a managed worktree,
+	even with ``force``. Without ``force`` the project must own no tasks,
+	releases, notes, inbox notes, or project handoff. With ``force`` those
+	records and their child records are deleted, and the result lists what was
+	deleted by type.
+
+	Returns the project's ID and name, with the forgotten checkout paths kept
+	apart so the caller can clear their Git bindings once the removal commits.
+	"""
+	project = connection.execute(
+		"SELECT id, name FROM projects WHERE id = ?", (project_id,)
+	).fetchone()
+	if project is None:
+		raise NotFoundError(f"project {project_id} was not found", {"id": project_id})
+
+	worktrees = connection.execute(
+		"SELECT task_id FROM task_worktrees WHERE project_id = ? ORDER BY task_id",
+		(project_id,),
+	).fetchall()
+	if worktrees:
+		_raise_if_referenced(
+			"project",
+			project_id,
+			{"worktrees": [row["task_id"] for row in worktrees]},
+			hint="run progress worktree cleanup <task_id> for each task first",
+		)
+
+	# The project's own records by type. Checkout rows never block removal, so
+	# they are left out of the refusal below.
+	queries = {
+		"releases": "SELECT id FROM releases WHERE project_id = ? ORDER BY id",
+		"tasks": "SELECT id FROM tasks WHERE project_id = ? ORDER BY id",
+		"notes": "SELECT id FROM notes WHERE project_id = ? ORDER BY id",
+		"inbox_notes": "SELECT id FROM inbox_notes WHERE project_id = ? ORDER BY id",
+		"project_context": "SELECT project_id FROM context WHERE project_id = ?",
+		"checkouts": "SELECT path FROM checkouts WHERE project_id = ? ORDER BY path",
+	}
+	owned = {
+		label: [row[0] for row in connection.execute(query, (project_id,)).fetchall()]
+		for label, query in queries.items()
+	}
+	if not force:
+		_raise_if_referenced(
+			"project",
+			project_id,
+			{
+				label: values
+				for label, values in owned.items()
+				if label != "checkouts" and values
+			},
+			hint="pass --force to remove it with everything it owns",
+		)
+
+	result: dict[str, object] = {"id": project_id, "name": project["name"]}
+	if force:
+		# List the child records before the task and release removals delete
+		# them, so the output can name everything that was removed.
+		deleted = {label: values for label, values in owned.items() if values}
+		child_queries = {
+			"chunks": """
+				SELECT chunks.id
+				FROM chunks JOIN tasks ON tasks.id = chunks.task_id
+				WHERE tasks.project_id = ?
+				ORDER BY chunks.id
+			""",
+			"dependencies": """
+				SELECT task_dependencies.task_id || ' -> ' || task_dependencies.depends_on_task_id
+				FROM task_dependencies JOIN tasks ON tasks.id = task_dependencies.task_id
+				WHERE tasks.project_id = ?
+				ORDER BY task_dependencies.task_id, task_dependencies.depends_on_task_id
+			""",
+			"contract_steps": """
+				SELECT task_contract_steps.task_id || ':' || task_contract_steps.position
+				FROM task_contract_steps JOIN tasks ON tasks.id = task_contract_steps.task_id
+				WHERE tasks.project_id = ?
+				ORDER BY task_contract_steps.task_id, task_contract_steps.position
+			""",
+			"task_files": """
+				SELECT task_files.task_id || ':' || task_files.position
+				FROM task_files JOIN tasks ON tasks.id = task_files.task_id
+				WHERE tasks.project_id = ?
+				ORDER BY task_files.task_id, task_files.position
+			""",
+			"task_context": """
+				SELECT task_context.task_id
+				FROM task_context JOIN tasks ON tasks.id = task_context.task_id
+				WHERE tasks.project_id = ?
+				ORDER BY task_context.task_id
+			""",
+		}
+		deleted.update(
+			{
+				label: [
+					row[0]
+					for row in connection.execute(query, (project_id,)).fetchall()
+				]
+				for label, query in child_queries.items()
+			}
+		)
+		result["deleted"] = {
+			label: values for label, values in deleted.items() if values
+		}
+
+		# Delete all project notes together so supersession links between a task
+		# note and a release note do not depend on task removal order.
+		notes = connection.execute(
+			f"SELECT {_NOTE_COLUMNS} FROM notes WHERE project_id = ? ORDER BY created_at, id",
+			(project_id,),
+		).fetchall()
+		_delete_notes(connection, notes)
+		for task_id in owned["tasks"]:
+			_remove_task(connection, task_id, project_id, force=True)
+		for release_id in owned["releases"]:
+			_remove_release(connection, release_id, project_id, force=True)
+		connection.execute(
+			"DELETE FROM inbox_notes WHERE project_id = ?", (project_id,)
+		)
+		connection.execute("DELETE FROM context WHERE project_id = ?", (project_id,))
+
+	connection.execute("DELETE FROM checkouts WHERE project_id = ?", (project_id,))
+	connection.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+	return result, owned["checkouts"]
+
+
 def _require_release(
 	connection: sqlite3.Connection, release_id: str, project_id: str
 ) -> None:

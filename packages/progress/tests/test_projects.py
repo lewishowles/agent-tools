@@ -8,11 +8,13 @@ from agents_progress import projects as projects_module, worktrees as worktrees_
 from agents_progress.database import Database
 from agents_progress.errors import (
 	AlreadyExistsError,
+	GitBindingError,
 	NotAProjectError,
 	NotFoundError,
 	OrphanedProjectError,
 	ProgressError,
 	ProjectBindingRecoveryError,
+	StillReferencedError,
 	UninitialisedProjectError,
 	UnresolvedDependenciesError,
 	WrongObjectIdTypeError,
@@ -266,6 +268,211 @@ def test_detach_checkouts_detaches_nothing_when_a_named_path_was_never_recorded(
 			row["path"] for row in connection.execute("SELECT path FROM checkouts")
 		]
 	assert paths == [str(repository)]
+
+
+def test_remove_empty_project_forgets_its_checkout_and_binding(tmp_path) -> None:
+	repository = _git_repository(tmp_path / "repository")
+	store = ProjectStore(Database(tmp_path / "progress.db"))
+	project, _ = store.init("agents", "Agents", repository)
+	store.record_checkout(repository)
+
+	assert store.remove(project.id) == {"id": project.id, "name": "Agents"}
+	assert GitRepository(repository).get_binding() is None
+	with store.database.connection() as connection:
+		assert connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 0
+		assert connection.execute("SELECT COUNT(*) FROM checkouts").fetchone()[0] == 0
+
+
+def test_remove_project_leaves_missing_rebound_and_non_git_folders_alone(
+	tmp_path,
+) -> None:
+	repository = _git_repository(tmp_path / "repository")
+	rebound = _git_repository(tmp_path / "rebound")
+	store = ProjectStore(Database(tmp_path / "progress.db"))
+	project, _ = store.init("agents", "Agents", repository)
+	store.record_checkout(repository)
+	store.attach(project.id, rebound)
+	store.record_checkout(rebound)
+	other_project_id = generate_object_id(PROJECT_PREFIX)
+	GitRepository(rebound).set_binding(other_project_id)
+	with store.database.transaction() as connection:
+		for checkout_path in (tmp_path / "missing", tmp_path / "not-git"):
+			connection.execute(
+				"INSERT INTO checkouts (path, project_id, last_seen_at) VALUES (?, ?, ?)",
+				(str(checkout_path), project.id, "2026-01-01"),
+			)
+	(tmp_path / "not-git").mkdir()
+
+	assert store.remove(project.id) == {"id": project.id, "name": "Agents"}
+	assert GitRepository(repository).get_binding() is None
+	assert GitRepository(rebound).get_binding() == other_project_id
+	with store.database.connection() as connection:
+		assert connection.execute("SELECT COUNT(*) FROM checkouts").fetchone()[0] == 0
+
+
+def test_remove_project_reports_bindings_it_could_not_clear(tmp_path) -> None:
+	repository = _git_repository(tmp_path / "repository")
+	other_checkout = _git_repository(tmp_path / "other-checkout")
+	store = ProjectStore(Database(tmp_path / "progress.db"))
+	project, _ = store.init("agents", "Agents", repository)
+	store.record_checkout(repository)
+	store.attach(project.id, other_checkout)
+	store.record_checkout(other_checkout)
+	failing_repository = _FakeRepository(GitBindingError("cannot clear binding"))
+	failing_repository.binding = project.id
+	store.repository_factory = lambda path: (
+		failing_repository if path == str(repository) else GitRepository(path)
+	)
+
+	assert store.remove(project.id) == {
+		"id": project.id,
+		"name": "Agents",
+		"uncleared_checkouts": [str(repository)],
+	}
+	assert failing_repository.binding == project.id
+	assert GitRepository(other_checkout).get_binding() is None
+	with store.database.connection() as connection:
+		assert connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 0
+
+
+def test_remove_project_refuses_records_and_force_deletes_all_owned_rows(
+	tmp_path,
+) -> None:
+	repository = _git_repository(tmp_path / "repository")
+	store = ProjectStore(Database(tmp_path / "progress.db"))
+	project, _ = store.init("agents", "Agents", repository)
+	store.record_checkout(repository)
+	writes = WriteStore(store.database, store)
+	release = writes.release_add("first", "First", "A release", path=repository)
+	task = writes.task_add(
+		"first",
+		"First task",
+		"A task",
+		done_when=["Done"],
+		files=["src/app.py"],
+		release_id=release["id"],
+		path=repository,
+	)
+	other_task = writes.task_add(
+		"second", "Second task", "Another task", done_when=["Done"], path=repository
+	)
+	chunk = writes.chunk_add(
+		task["id"], "First chunk", "A chunk", "Is it done?", path=repository
+	)
+	writes.task_dependency_add(task["id"], other_task["id"], path=repository)
+	writes.context_set(
+		task_id=task["id"], current_goal="Finish the task", path=repository
+	)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO notes (id, project_id, task_id, release_id, type, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			(
+				"nte_" + "n" * 22,
+				project.id,
+				task["id"],
+				None,
+				"discovery",
+				"A note",
+				"2026-01-01",
+			),
+		)
+		connection.execute(
+			"INSERT INTO inbox_notes (id, project_id, text, created_at) VALUES (?, ?, ?, ?)",
+			("inb_" + "i" * 22, project.id, "An inbox note", "2026-01-01"),
+		)
+		connection.execute(
+			"INSERT INTO context (project_id, updated_at) VALUES (?, ?)",
+			(project.id, "2026-01-01"),
+		)
+	writes.decision_add(
+		None,
+		"A release decision",
+		supersedes_id="nte_" + "n" * 22,
+		release_id=release["id"],
+		path=repository,
+	)
+
+	with pytest.raises(StillReferencedError) as error:
+		store.remove(project.id)
+	assert set(error.value.details["references"]) == {
+		"releases",
+		"tasks",
+		"notes",
+		"inbox_notes",
+		"project_context",
+	}
+	result = store.remove(project.id, force=True)
+	assert set(result["deleted"]) == {
+		"releases",
+		"tasks",
+		"notes",
+		"inbox_notes",
+		"project_context",
+		"checkouts",
+		"chunks",
+		"dependencies",
+		"contract_steps",
+		"task_files",
+		"task_context",
+	}
+	assert set(result["deleted"]["tasks"]) == {task["id"], other_task["id"]}
+	assert result["deleted"]["releases"] == [release["id"]]
+	assert result["deleted"]["chunks"] == [chunk["id"]]
+	assert result["deleted"]["dependencies"] == [f"{task['id']} -> {other_task['id']}"]
+	assert GitRepository(repository).get_binding() is None
+	with store.database.connection() as connection:
+		for table in (
+			"projects",
+			"releases",
+			"tasks",
+			"chunks",
+			"task_dependencies",
+			"task_context",
+			"notes",
+			"inbox_notes",
+			"context",
+			"checkouts",
+			"task_contract_steps",
+			"task_files",
+		):
+			assert (
+				connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+			)
+		assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_remove_project_refuses_managed_worktrees_even_with_force(tmp_path) -> None:
+	repository = _git_repository(tmp_path / "repository")
+	store = ProjectStore(Database(tmp_path / "progress.db"))
+	project, _ = store.init("agents", "Agents", repository)
+	task = WriteStore(store.database, store).task_add(
+		"first", "First task", "A task", done_when=["Done"], path=repository
+	)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO task_worktrees (task_id, project_id, path, branch, common_dir, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+			(
+				task["id"],
+				project.id,
+				str(tmp_path / "worktree"),
+				"branch",
+				str(repository / ".git"),
+				"2026-01-01",
+			),
+		)
+
+	with pytest.raises(StillReferencedError) as error:
+		store.remove(project.id, force=True)
+	assert error.value.details["references"] == {"worktrees": [task["id"]]}
+	assert "progress worktree cleanup <task_id>" in error.value.message
+	with store.database.connection() as connection:
+		assert connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 1
+
+
+def test_remove_project_reports_unknown_id(tmp_path) -> None:
+	store = ProjectStore(Database(tmp_path / "progress.db"))
+	with pytest.raises(NotFoundError, match="project .* was not found"):
+		store.remove(generate_object_id(PROJECT_PREFIX))
 
 
 class _FakeRepository:
