@@ -160,7 +160,13 @@ If the task still exists but its checkout record is gone, run cleanup by task
 ID from the checkout of the branch you want to merge into. Cleanup finds the
 managed task branch and restores its checkout if needed.
 Ignored files in the removed checkout, such as `.env` or `node_modules`, are
-deleted with it. A rebase conflict is aborted. Uncommitted changes, an unknown
+deleted with it. If task commits clash with the base, cleanup keeps the
+checkout and names the files to fix there. Edit those files to remove the
+conflict markers. Files that cannot show markers, such as images or files
+deleted on one side, are named separately: whatever the checkout holds for them
+when you rerun, including a deletion, is kept. Then rerun
+`progress worktree cleanup TASK_ID`. Cleanup carries on from where it paused,
+including if a later commit clashes too. Uncommitted changes, an unknown
 or missing base, a refused fast-forward, a Git removal failure, or running the
 command from inside the task checkout leaves it recorded with a `pending`
 reason and a command for finishing by hand. Worktrees created before base

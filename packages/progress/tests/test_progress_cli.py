@@ -22,6 +22,7 @@ from agents_progress.errors import (
 from agents_progress.projects import Project, ProjectStore
 from agents_progress.reads import ReadStore
 from agents_progress.render import _status_result_type
+from agents_progress.repository import GitRepository
 from agents_progress.writes import WriteStore
 
 
@@ -7771,6 +7772,103 @@ def test_worktree_cleanup_command_reports_pending_and_removed(
 
 	assert cli.main(["worktree", "cleanup", task["id"], *arguments]) == 0
 	assert json.loads(capsys.readouterr().out)["data"] == {"status": "none"}
+
+
+def test_worktree_cleanup_command_explains_a_conflict_without_git_output(
+	tmp_path: Path, committed_repository: Path, monkeypatch, capsys
+) -> None:
+	monkeypatch.chdir(committed_repository)
+	database = Database(tmp_path / "progress.db")
+	ProjectStore(database).init("agents", "Agent configuration")
+	task = WriteStore(database).task_add(
+		"conflicted-task", "Conflicted task", "Finish the work", ["Complete the task"]
+	)
+	arguments = ["--database", str(database.path)]
+	assert cli.main(["worktree", "ensure", task["id"], *arguments, "--json"]) == 0
+	checkout = Path(json.loads(capsys.readouterr().out)["data"]["path"])
+	for path, content in (
+		(checkout, "task version\n"),
+		(committed_repository, "base version\n"),
+	):
+		(path / "tracked.txt").write_text(content)
+		repository = GitRepository(path)
+		assert (
+			repository.run(["config", "--local", "user.name", "Test"]).returncode == 0
+		)
+		assert (
+			repository.run(
+				["config", "--local", "user.email", "test@example.com"]
+			).returncode
+			== 0
+		)
+		assert repository.run(["add", "tracked.txt"]).returncode == 0
+		assert repository.run(["commit", "--quiet", "-m", "Work"]).returncode == 0
+
+	assert cli.main(["task", "complete", task["id"], *arguments]) == 0
+	output = capsys.readouterr().out
+	assert f"Worktree kept at {checkout}" in output
+	assert "tracked.txt" in output
+	assert "fix the clashes" in output
+	assert f"Finish by hand: progress worktree cleanup {task['id']}" in output
+	assert "hint:" not in output
+	assert "git " not in output
+
+
+def test_worktree_cleanup_branch_resumes_a_paused_replay_without_a_task_record(
+	tmp_path: Path, committed_repository: Path, monkeypatch, capsys
+) -> None:
+	monkeypatch.chdir(committed_repository)
+	database = Database(tmp_path / "progress.db")
+	ProjectStore(database).init("agents", "Agent configuration")
+	task = WriteStore(database).task_add(
+		"conflicted-task", "Conflicted task", "Finish the work", ["Complete the task"]
+	)
+	arguments = ["--database", str(database.path), "--json"]
+	assert cli.main(["worktree", "ensure", task["id"], *arguments]) == 0
+	worktree = json.loads(capsys.readouterr().out)["data"]
+	checkout = Path(worktree["path"])
+	for path, content in (
+		(checkout, "task version\n"),
+		(committed_repository, "base version\n"),
+	):
+		(path / "tracked.txt").write_text(content)
+		repository = GitRepository(path)
+		assert (
+			repository.run(["config", "--local", "user.name", "Test"]).returncode == 0
+		)
+		assert (
+			repository.run(
+				["config", "--local", "user.email", "test@example.com"]
+			).returncode
+			== 0
+		)
+		assert repository.run(["add", "tracked.txt"]).returncode == 0
+		assert repository.run(["commit", "--quiet", "-m", "Work"]).returncode == 0
+
+	assert cli.main(["task", "complete", task["id"], *arguments]) == 0
+	paused = json.loads(capsys.readouterr().out)["data"]["worktree_cleanup"]
+	assert paused["status"] == "pending"
+	assert "tracked.txt" in paused["reason"]
+	with database.transaction() as connection:
+		connection.execute(
+			"DELETE FROM task_worktrees WHERE task_id = ?", (task["id"],)
+		)
+		connection.execute(
+			"DELETE FROM task_contract_steps WHERE task_id = ?", (task["id"],)
+		)
+		connection.execute("DELETE FROM tasks WHERE id = ?", (task["id"],))
+	(checkout / "tracked.txt").write_text("resolved version\n")
+
+	assert (
+		cli.main(["worktree", "cleanup", "--branch", worktree["branch"], *arguments])
+		== 0
+	)
+	result = json.loads(capsys.readouterr().out)["data"]
+
+	assert result["status"] == "removed"
+	assert result["merged_commits"] == 1
+	assert not checkout.exists()
+	assert (committed_repository / "tracked.txt").read_text() == "resolved version\n"
 
 
 @pytest.mark.parametrize(

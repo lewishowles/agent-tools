@@ -41,10 +41,11 @@ class WorktreeStore(_StoreBase):
 		A checkout with uncommitted changes, an unknown or missing base, a rebase
 		conflict, a locked checkout, a refused fast-forward, or a checkout that
 		contains the current folder or the given path stays on disk with its branch
-		and record, so cleanup can be retried later. A removal failure can be
-		pending after the commits reached the base; retry then only removes the
-		checkout. A recorded folder that no longer exists is restored before
-		cleanup continues.
+		and record, so cleanup can be retried later. After a rebase conflict, a
+		rerun carries on from the pause once the clashing files are fixed. A
+		removal failure can be pending after the commits reached the base; retry
+		then only removes the checkout. A recorded folder that no longer exists is
+		restored before cleanup continues.
 
 		When the task has no checkout record but its managed branch exists, the
 		branch checked out where cleanup runs becomes the base, and a missing
@@ -93,7 +94,11 @@ class WorktreeStore(_StoreBase):
 			):
 				return pending(f"could not recreate the task worktree at {target}")
 
-			self._validated_record(row, project.id, common_dir)
+			checkout = GitRepository(target)
+			rebase_in_progress = self._rebase_in_progress(checkout, row["branch"])
+			self._validated_record(
+				row, project.id, common_dir, allow_detached_replay=rebase_in_progress
+			)
 
 			resolved_target = target.resolve()
 			if Path.cwd().resolve().is_relative_to(
@@ -101,7 +106,6 @@ class WorktreeStore(_StoreBase):
 			) or repository.path.is_relative_to(resolved_target):
 				return pending("command uses the task worktree")
 
-			checkout = GitRepository(target)
 			changes = checkout.run(
 				["status", "--porcelain", "--ignore-submodules=none"]
 			)
@@ -109,7 +113,7 @@ class WorktreeStore(_StoreBase):
 				return pending(
 					changes.stderr.strip() or "Git could not inspect the worktree"
 				)
-			if changes.stdout:
+			if changes.stdout and not rebase_in_progress:
 				return pending("worktree has uncommitted changes")
 
 			base = row["base_branch"]
@@ -126,7 +130,9 @@ class WorktreeStore(_StoreBase):
 					None if folder_was_missing else f"git merge {quote(branch_ref)}",
 				)
 
-			merged = self._merge_into_base(repository, checkout, base, row["branch"])
+			merged = self._merge_into_base(
+				repository, checkout, base, row["branch"], rebase_in_progress
+			)
 			if isinstance(merged, tuple):
 				reason, command = merged
 				return pending(reason, command)
@@ -337,11 +343,14 @@ class WorktreeStore(_StoreBase):
 		checkout: GitRepository,
 		base: str,
 		branch: str,
+		rebase_in_progress: bool,
 	) -> int | tuple[str, str | None]:
 		"""Replay the task commits onto the base, then fast-forward the base to them.
 
-		Return the number of commits merged, or a reason and an optional command
-		when the checkout must stay.
+		When an earlier cleanup paused on clashes, carry on with that replay once
+		the human has fixed them, instead of starting again. Return the number of
+		commits merged, or a reason and an optional command when the checkout
+		must stay.
 		"""
 		base_ref = f"refs/heads/{base}"
 		branch_ref = f"refs/heads/{branch}"
@@ -351,24 +360,45 @@ class WorktreeStore(_StoreBase):
 		if count == 0:
 			return 0
 
-		rebase = checkout.run(["rebase", base_ref])
+		if rebase_in_progress:
+			conflicts = self._unmerged_paths(checkout)
+			if isinstance(conflicts, str):
+				return conflicts, None
+			marked = [
+				path
+				for path in conflicts
+				if self._has_conflict_markers(checkout.path / path)
+			]
+			if marked:
+				return self._conflict_reason(base, checkout, marked), None
+			if (
+				conflicts
+				and checkout.run(["add", "-A", "--", *conflicts]).returncode != 0
+			):
+				return f"could not prepare the fixed files at {checkout.path}", None
+			# Keep each commit's message without opening an editor, even when
+			# the user's environment names one.
+			rebase = checkout.run(
+				["rebase", "--continue"], environment={"GIT_EDITOR": "true"}
+			)
+		else:
+			rebase = checkout.run(["rebase", base_ref])
 		if rebase.returncode != 0:
+			conflicts = self._unmerged_paths(checkout)
+			if isinstance(conflicts, list) and conflicts:
+				return self._conflict_reason(base, checkout, conflicts), None
+			if rebase_in_progress:
+				return (
+					f"could not continue the paused replay onto {base} at {checkout.path}",
+					None,
+				)
 			abort = checkout.run(["rebase", "--abort"])
 			if abort.returncode != 0:
 				return (
-					f"rebase failed and abort failed: {abort.stderr.strip()}",
-					f"git -C {quote(str(checkout.path))} rebase --abort",
+					f"could not replay the task onto {base} or stop the replay at {checkout.path}",
+					None,
 				)
-			detail = rebase.stderr.strip() or rebase.stdout.strip()
-			label = (
-				"rebase conflict"
-				if "CONFLICT" in (rebase.stdout + rebase.stderr)
-				else "rebase failed"
-			)
-			return (
-				f"{label}: {detail}",
-				f"git -C {quote(str(checkout.path))} rebase {quote(base_ref)}",
-			)
+			return f"could not replay the task onto {base}", None
 
 		replayed = self._commit_count(repository, base_ref, branch_ref)
 		if isinstance(replayed, str):
@@ -377,6 +407,93 @@ class WorktreeStore(_StoreBase):
 		if refusal is not None:
 			return f"fast-forward refused: {refusal}", None
 		return replayed
+
+	def _rebase_in_progress(self, checkout: GitRepository, branch: str) -> bool:
+		"""Report whether a replay of the task branch is paused part way."""
+		for name in ("rebase-merge", "rebase-apply"):
+			result = checkout.run(["rev-parse", "--git-path", name])
+			if result.returncode != 0:
+				continue
+			head_name = Path(result.stdout.strip()) / "head-name"
+			if (
+				head_name.is_file()
+				and head_name.read_text().strip() == f"refs/heads/{branch}"
+			):
+				return True
+		return False
+
+	def _unmerged_paths(self, checkout: GitRepository) -> list[str] | str:
+		"""List the files that still clash, relative to the checkout.
+
+		Return a reason instead when Git cannot list them.
+		"""
+		result = checkout.run(["diff", "--name-only", "--diff-filter=U", "-z"])
+		if result.returncode != 0:
+			return f"could not check clashing files at {checkout.path}"
+		return [path for path in result.stdout.split("\0") if path]
+
+	def _has_conflict_markers(self, path: Path) -> bool:
+		"""Report whether the file still has clash marker lines.
+
+		A line of equals signs alone does not count, because Markdown uses one to
+		underline a heading.
+		"""
+		if not path.is_file():
+			return False
+		with path.open(errors="replace") as file:
+			return any(line.startswith(("<<<<<<<", ">>>>>>>")) for line in file)
+
+	def _conflict_reason(
+		self, base: str, checkout: GitRepository, files: list[str]
+	) -> str:
+		"""Build the pause message that tells the human where to fix the clashes.
+
+		Files that cannot show clash markers, such as binary files or a file
+		deleted on one side, are named separately, because whatever the checkout
+		holds for them when cleanup reruns is kept as it is.
+		"""
+		# The Git merge stages present for each file; a file missing either
+		# side's stage was deleted on that side.
+		stages: dict[str, set[str]] = {}
+		entries = checkout.run(["ls-files", "--unmerged", "-z", "--", *files])
+
+		if entries.returncode == 0:
+			for entry in entries.stdout.split("\0"):
+				if entry:
+					metadata, file = entry.split("\t", 1)
+					stages.setdefault(file, set()).add(metadata.rsplit(" ", 1)[-1])
+
+		# The clashing files that cannot hold marker lines.
+		without_markers = []
+		for file in files:
+			file_path = checkout.path / file
+			if (
+				stages.get(file) and not {"2", "3"}.issubset(stages[file])
+			) or not file_path.is_file():
+				without_markers.append(file)
+			else:
+				with file_path.open("rb") as contents:
+					sample = contents.read(8192)
+				try:
+					sample.decode("utf-8")
+				except UnicodeDecodeError:
+					without_markers.append(file)
+				else:
+					if b"\0" in sample:
+						without_markers.append(file)
+
+		reason = (
+			f"could not replay the task onto {base}; fix the clashes in "
+			f"{', '.join(files)} at {checkout.path}"
+		)
+		if without_markers:
+			reason += (
+				f". These files cannot show clash markers: {', '.join(without_markers)}. "
+				"The version in the task folder when you rerun cleanup, including a "
+				"deletion, is the one that will be kept"
+			)
+
+		return f"{reason}. Then rerun the cleanup command below"
 
 	def _fast_forward_base(
 		self, repository: GitRepository, checkout: GitRepository, base: str, branch: str
@@ -861,11 +978,18 @@ class WorktreeStore(_StoreBase):
 		return path, branch
 
 	def _validated_record(
-		self, row: sqlite3.Row, project_id: str, common_dir: Path
+		self,
+		row: sqlite3.Row,
+		project_id: str,
+		common_dir: Path,
+		*,
+		allow_detached_replay: bool = False,
 	) -> dict[str, str]:
 		"""Return the saved task, project, path, and branch if they still match.
 
 		Refuse a record whose project, path, branch, or repository no longer match.
+		With allow_detached_replay, also accept a checkout with no branch, which
+		is how Git leaves it while a replay of the task branch is paused.
 		"""
 		task_id = row["task_id"]
 		path, branch = self._record_location(row, project_id, common_dir)
@@ -880,7 +1004,10 @@ class WorktreeStore(_StoreBase):
 
 		result = checkout.run(["symbolic-ref", "--quiet", "--short", "HEAD"])
 
-		if result.returncode != 0 or result.stdout.strip() != branch:
+		if not (
+			(result.returncode == 0 and result.stdout.strip() == branch)
+			or (allow_detached_replay and result.returncode == 1)
+		):
 			raise AlreadyExistsError(
 				f"recorded worktree at {path} is not on branch {branch}",
 				{"task_id": task_id, "path": str(path), "branch": branch},

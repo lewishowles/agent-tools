@@ -1641,8 +1641,11 @@ def test_task_complete_rebases_when_the_base_moves(
 	assert (committed_repository / "base.txt").read_text() == "base work\n"
 
 
-def test_task_complete_aborts_a_rebase_conflict_and_keeps_the_worktree(
-	committed_repository: Path,
+@pytest.mark.parametrize(
+	"resolved_content", ["resolved version\n", "Heading\n=======\n"]
+)
+def test_task_complete_keeps_a_rebase_conflict_until_the_files_are_fixed(
+	committed_repository: Path, resolved_content: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
 	store, worktrees = _git_backed_completion_store(committed_repository)
 	task = _add_task(
@@ -1651,24 +1654,269 @@ def test_task_complete_aborts_a_rebase_conflict_and_keeps_the_worktree(
 	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
 	_commit_worktree_file(checkout, "tracked.txt", "task version\n")
 	_commit_worktree_file(committed_repository, "tracked.txt", "base version\n")
-	branch_before = GitRepository(checkout).run(["rev-parse", "HEAD"]).stdout.strip()
-
 	completed = store.task_complete(task["id"], path=committed_repository)
 
 	cleanup = completed["worktree_cleanup"]
 	assert cleanup["status"] == "pending"
-	assert "rebase conflict" in cleanup["reason"]
-	assert "rebase" in cleanup["command"]
+	assert cleanup["base_branch"] in cleanup["reason"]
+	assert "tracked.txt" in cleanup["reason"]
+	assert str(checkout) in cleanup["reason"]
+	assert "fix the clashes" in cleanup["reason"]
+	assert cleanup["command"] == f"progress worktree cleanup {task['id']}"
+	assert "hint:" not in str(cleanup)
+	assert "git " not in str(cleanup)
 	assert checkout.exists()
-	assert (
-		GitRepository(checkout).run(["rev-parse", "HEAD"]).stdout.strip()
-		== branch_before
-	)
 	rebase_state = GitRepository(checkout).run(
 		["rev-parse", "--git-path", "rebase-merge"]
 	)
-	assert not Path(rebase_state.stdout.strip()).exists()
-	assert (checkout / "tracked.txt").read_text() == "task version\n"
+	assert Path(rebase_state.stdout.strip()).exists()
+	assert "<<<<<<<" in (checkout / "tracked.txt").read_text()
+
+	still_pending = worktrees.cleanup(task["id"], committed_repository)
+	assert still_pending["status"] == "pending"
+	assert still_pending["reason"] == cleanup["reason"]
+	assert Path(rebase_state.stdout.strip()).exists()
+
+	(checkout / "tracked.txt").write_text(resolved_content)
+	monkeypatch.setenv("GIT_EDITOR", "false")
+	finished = worktrees.cleanup(task["id"], committed_repository)
+	assert finished["status"] == "removed"
+	assert finished["merged_commits"] == 1
+	assert (committed_repository / "tracked.txt").read_text() == resolved_content
+	assert not checkout.exists()
+	assert (
+		GitRepository(committed_repository)
+		.run(["show-ref", "--verify", "--quiet", f"refs/heads/{cleanup['branch']}"])
+		.returncode
+		== 1
+	)
+
+
+@pytest.mark.parametrize(
+	"task_deletes", [False, True], ids=["task-version", "task-deletion"]
+)
+def test_task_complete_explains_a_clash_without_markers(
+	committed_repository: Path, task_deletes: bool
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "deleted-file", "Deleted file", path=committed_repository)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	base = GitRepository(committed_repository)
+	if task_deletes:
+		task_repository = GitRepository(checkout)
+		assert task_repository.run(["rm", "tracked.txt"]).returncode == 0
+		assert (
+			task_repository.run(
+				["commit", "--quiet", "-m", "Delete tracked file"]
+			).returncode
+			== 0
+		)
+		_commit_worktree_file(committed_repository, "tracked.txt", "base version\n")
+	else:
+		_commit_worktree_file(checkout, "tracked.txt", "task version\n")
+		assert base.run(["rm", "tracked.txt"]).returncode == 0
+		assert (
+			base.run(["commit", "--quiet", "-m", "Delete tracked file"]).returncode == 0
+		)
+
+	cleanup = store.task_complete(task["id"], path=committed_repository)[
+		"worktree_cleanup"
+	]
+
+	assert cleanup["status"] == "pending"
+	assert "These files cannot show clash markers: tracked.txt" in cleanup["reason"]
+	assert "The version in the task folder when you rerun cleanup" in cleanup["reason"]
+	assert "including a deletion, is the one that will be kept" in cleanup["reason"]
+	if task_deletes:
+		(checkout / "tracked.txt").unlink(missing_ok=True)
+		assert not (checkout / "tracked.txt").exists()
+	else:
+		assert (checkout / "tracked.txt").read_text() == "task version\n"
+
+	finished = worktrees.cleanup(task["id"], committed_repository)
+
+	assert finished["status"] == "removed"
+	assert not checkout.exists()
+	if task_deletes:
+		assert not (committed_repository / "tracked.txt").exists()
+	else:
+		assert (committed_repository / "tracked.txt").read_text() == "task version\n"
+
+
+def test_task_complete_explains_a_binary_clash_without_markers(
+	committed_repository: Path,
+) -> None:
+	_commit_worktree_file(committed_repository, "tracked.bin", "original\0bytes")
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "binary-file", "Binary file", path=committed_repository)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	_commit_worktree_file(checkout, "tracked.bin", "task\0bytes")
+	_commit_worktree_file(committed_repository, "tracked.bin", "base\0bytes")
+
+	cleanup = store.task_complete(task["id"], path=committed_repository)[
+		"worktree_cleanup"
+	]
+
+	assert cleanup["status"] == "pending"
+	assert "These files cannot show clash markers: tracked.bin" in cleanup["reason"]
+	assert "The version in the task folder when you rerun cleanup" in cleanup["reason"]
+	(checkout / "tracked.bin").write_bytes(b"task\0bytes")
+
+	finished = worktrees.cleanup(task["id"], committed_repository)
+
+	assert finished["status"] == "removed"
+	assert not checkout.exists()
+	assert (committed_repository / "tracked.bin").read_bytes() == b"task\0bytes"
+
+
+def test_worktree_cleanup_keeps_a_fixed_conflict_when_continue_fails(
+	committed_repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "paused-replay", "Paused replay", path=committed_repository)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	_commit_worktree_file(checkout, "tracked.txt", "task version\n")
+	_commit_worktree_file(committed_repository, "tracked.txt", "base version\n")
+	first = store.task_complete(task["id"], path=committed_repository)[
+		"worktree_cleanup"
+	]
+	assert first["status"] == "pending"
+	(checkout / "tracked.txt").write_text("resolved version\n")
+	(checkout / "notes.txt").write_text("other unfinished work\n")
+	rebase_state = GitRepository(checkout).run(
+		["rev-parse", "--git-path", "rebase-merge"]
+	)
+	original_run = GitRepository.run
+
+	def fail_continue(self, arguments, *, environment=None):
+		"""Return a failure while leaving the paused replay in place."""
+		if self.path == checkout and arguments == ["rebase", "--continue"]:
+			assert environment == {"GIT_EDITOR": "true"}
+			return subprocess.CompletedProcess(
+				arguments, 1, "", "hint: raw Git details"
+			)
+		return original_run(self, arguments, environment=environment)
+
+	with monkeypatch.context() as patch:
+		patch.setattr(GitRepository, "run", fail_continue)
+		result = worktrees.cleanup(task["id"], committed_repository)
+
+	assert result["status"] == "pending"
+	assert result["reason"] == (
+		f"could not continue the paused replay onto {first['base_branch']} at {checkout}"
+	)
+	assert result["command"] == f"progress worktree cleanup {task['id']}"
+	assert "hint:" not in str(result)
+	assert Path(rebase_state.stdout.strip()).exists()
+	assert (checkout / "tracked.txt").read_text() == "resolved version\n"
+	assert (checkout / "notes.txt").read_text() == "other unfinished work\n"
+
+
+def test_worktree_cleanup_can_pause_again_on_a_later_commit(
+	committed_repository: Path,
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "two-conflicts", "Two conflicts", path=committed_repository)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	_commit_worktree_file(checkout, "tracked.txt", "first task version\n")
+	_commit_worktree_file(checkout, "later.txt", "second task version\n")
+	_commit_worktree_file(committed_repository, "tracked.txt", "base version\n")
+	_commit_worktree_file(committed_repository, "later.txt", "base later version\n")
+
+	first = store.task_complete(task["id"], path=committed_repository)[
+		"worktree_cleanup"
+	]
+	assert first["status"] == "pending"
+	assert "tracked.txt" in first["reason"]
+	(checkout / "tracked.txt").write_text("resolved first version\n")
+
+	second = worktrees.cleanup(task["id"], committed_repository)
+	assert second["status"] == "pending"
+	assert "later.txt" in second["reason"]
+	assert "<<<<<<<" in (checkout / "later.txt").read_text()
+	(checkout / "later.txt").write_text("resolved second version\n")
+
+	finished = worktrees.cleanup(task["id"], committed_repository)
+	assert finished["status"] == "removed"
+	assert finished["merged_commits"] == 2
+	assert (
+		committed_repository / "tracked.txt"
+	).read_text() == "resolved first version\n"
+	assert (
+		committed_repository / "later.txt"
+	).read_text() == "resolved second version\n"
+	assert not checkout.exists()
+
+
+def test_worktree_cleanup_names_a_binary_clash_on_a_later_commit(
+	committed_repository: Path,
+) -> None:
+	_commit_worktree_file(committed_repository, "later.bin", "original\0bytes")
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "later-binary", "Later binary", path=committed_repository)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	_commit_worktree_file(checkout, "tracked.txt", "task version\n")
+	_commit_worktree_file(checkout, "later.bin", "task\0bytes")
+	_commit_worktree_file(committed_repository, "tracked.txt", "base version\n")
+	_commit_worktree_file(committed_repository, "later.bin", "base\0bytes")
+
+	first = store.task_complete(task["id"], path=committed_repository)[
+		"worktree_cleanup"
+	]
+	assert first["status"] == "pending"
+	assert "tracked.txt" in first["reason"]
+	(checkout / "tracked.txt").write_text("resolved version\n")
+
+	second = worktrees.cleanup(task["id"], committed_repository)
+
+	assert second["status"] == "pending"
+	assert "later.bin" in second["reason"]
+	assert "These files cannot show clash markers: later.bin" in second["reason"]
+	assert second["command"] == f"progress worktree cleanup {task['id']}"
+	(checkout / "later.bin").write_bytes(b"task\0bytes")
+
+	finished = worktrees.cleanup(task["id"], committed_repository)
+
+	assert finished["status"] == "removed"
+	assert finished["merged_commits"] == 2
+	assert not checkout.exists()
+	assert (committed_repository / "tracked.txt").read_text() == "resolved version\n"
+	assert (committed_repository / "later.bin").read_bytes() == b"task\0bytes"
+
+
+def test_worktree_cleanup_hides_a_replay_failure_without_clashing_files(
+	committed_repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+	store, worktrees = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "replay-error", "Replay error", path=committed_repository)
+	checkout = Path(worktrees.ensure(task["id"], committed_repository)["path"])
+	_commit_worktree_file(checkout, "task.txt", "task work\n")
+	original_run = GitRepository.run
+	aborted = False
+
+	def fail_rebase(self, arguments):
+		"""Fail the replay without a conflict and record its abort."""
+		nonlocal aborted
+		if self.path == checkout and arguments[:1] == ["rebase"]:
+			if arguments == ["rebase", "--abort"]:
+				aborted = True
+				return subprocess.CompletedProcess(arguments, 0, "", "")
+			return subprocess.CompletedProcess(
+				arguments, 1, "", "hint: raw Git details"
+			)
+		return original_run(self, arguments)
+
+	with monkeypatch.context() as patch:
+		patch.setattr(GitRepository, "run", fail_rebase)
+		result = store.task_complete(task["id"], path=committed_repository)[
+			"worktree_cleanup"
+		]
+
+	assert aborted
+	assert result["status"] == "pending"
+	assert result["reason"] == f"could not replay the task onto {result['base_branch']}"
+	assert result["command"] == f"progress worktree cleanup {task['id']}"
+	assert "hint:" not in str(result)
 
 
 def test_task_complete_keeps_a_worktree_without_a_recorded_base(

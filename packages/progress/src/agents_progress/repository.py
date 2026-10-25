@@ -1,5 +1,6 @@
 """Git repository discovery and local progress project bindings."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -19,9 +20,12 @@ class GitRepository:
 		candidate = Path(path) if path is not None else Path.cwd()
 		self.path = candidate.expanduser().resolve()
 
-	def run(self, arguments: list[str]) -> subprocess.CompletedProcess[str]:
+	def run(
+		self, arguments: list[str], *, environment: dict[str, str] | None = None
+	) -> subprocess.CompletedProcess[str]:
 		"""Return the completed Git process without raising for a non-zero exit.
 
+		Extra environment values override the inherited environment for this call.
 		Raise NotAProjectError if Git cannot be launched.
 		"""
 		try:
@@ -29,6 +33,7 @@ class GitRepository:
 				["git", "-C", str(self.path), *arguments],
 				capture_output=True,
 				check=False,
+				env={**os.environ, **environment} if environment is not None else None,
 				text=True,
 			)
 		except OSError as error:
