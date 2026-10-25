@@ -954,16 +954,33 @@ def _render_summary(data: object) -> str:
 		task = item["task"]
 		checkouts = item["checkouts"]
 		project_line = render_span(str(project["name"]), "accent", weight="bold")
+		# The project's block of output, starting with its name and existing folders.
+		lines = [project_line]
+		# Folders that no longer exist share one line instead of one each.
+		missing_count = 0
 
 		for row in checkouts:
-			stale_label = " (stale)" if row["stale"] else ""
-			project_line += render_span(
-				f" · {_summary_checkout_path(row['path'])}{stale_label}",
-				"muted",
-				weight="normal",
+			if row["stale"]:
+				missing_count += 1
+				continue
+
+			lines.append(
+				render_span(
+					_summary_checkout_path(row["path"]), "muted", weight="normal"
+				)
 			)
 
-		lines = [project_line, ""]
+		if missing_count:
+			# The word matches the count, as in 1 missing location or 2 missing locations.
+			location = "location" if missing_count == 1 else "locations"
+			# One line counts every missing folder and names the command that forgets them.
+			missing_line = (
+				f"{missing_count} missing {location} · "
+				"run progress checkout detach --stale"
+			)
+			lines.append(render_span(missing_line, "muted", weight="normal"))
+
+		lines.append("")
 		if isinstance(task, dict):
 			task_status = str(task["status"]).replace("-", " ")
 			task_line = (

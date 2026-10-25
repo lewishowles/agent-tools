@@ -8131,17 +8131,20 @@ def test_summary_runs_outside_a_repository_without_recording_checkout(
 	assert calls == []
 
 
-def test_summary_marks_missing_checkout_paths_as_stale(tmp_path: Path, capsys) -> None:
+def test_summary_counts_missing_checkouts_and_flags_them_stale_in_json(
+	tmp_path: Path, capsys
+) -> None:
 	database = tmp_path / "progress.db"
 	live_checkout = tmp_path / "agents"
 	live_checkout.mkdir()
 	stale_checkout = tmp_path / "missing"
+	another_stale_checkout = tmp_path / "missing-again"
 	with Database(database).transaction() as connection:
 		connection.execute(
 			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
 			("prj_" + "a" * 22, "agents", "Agents", "2026-01-01T00:00:00+00:00"),
 		)
-		for checkout in (live_checkout, stale_checkout):
+		for checkout in (live_checkout, stale_checkout, another_stale_checkout):
 			connection.execute(
 				"INSERT INTO checkouts (path, project_id, last_seen_at) VALUES (?, ?, ?)",
 				(str(checkout), "prj_" + "a" * 22, "2026-01-02T12:00:00+00:00"),
@@ -8152,13 +8155,81 @@ def test_summary_marks_missing_checkout_paths_as_stale(tmp_path: Path, capsys) -
 	assert {
 		checkout["path"]: checkout["stale"]
 		for checkout in response["data"][0]["checkouts"]
-	} == {str(live_checkout): False, str(stale_checkout): True}
+	} == {
+		str(live_checkout): False,
+		str(stale_checkout): True,
+		str(another_stale_checkout): True,
+	}
 
 	assert cli.main(["summary", "--database", str(database)]) == 0
 	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
-	assert f"Agents · {live_checkout} · {stale_checkout} (stale)\n" in output
+	assert f"Agents\n{live_checkout}\n" in output
+	assert "2 missing locations · run progress checkout detach --stale\n" in output
+	assert str(stale_checkout) not in output
+	assert str(another_stale_checkout) not in output
 	assert "last seen" not in output
 	assert "Checkout:" not in output
+
+
+def test_summary_shows_a_single_missing_location_without_listing_its_path(
+	tmp_path: Path, capsys
+) -> None:
+	database = tmp_path / "progress.db"
+	missing_checkout = tmp_path / "missing"
+	with Database(database).transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			("prj_" + "a" * 22, "agents", "Agents", "2026-01-01T00:00:00+00:00"),
+		)
+		connection.execute(
+			"INSERT INTO checkouts (path, project_id, last_seen_at) VALUES (?, ?, ?)",
+			(str(missing_checkout), "prj_" + "a" * 22, "2026-01-02T12:00:00+00:00"),
+		)
+
+	assert cli.main(["summary", "--database", str(database)]) == 0
+	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert output.startswith(
+		"\nAgents\n1 missing location · run progress checkout detach --stale\n\n"
+	)
+	assert str(missing_checkout) not in output
+
+
+def test_summary_lists_main_checkout_before_linked_worktree(
+	tmp_path: Path, capsys
+) -> None:
+	database = tmp_path / "progress.db"
+	main_checkout = tmp_path / "z-main"
+	linked_worktree = tmp_path / "a-worktree"
+	main_checkout.mkdir()
+	linked_worktree.mkdir()
+	(main_checkout / ".git").mkdir()
+	(linked_worktree / ".git").write_text("gitdir: elsewhere")
+	with Database(database).transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			("prj_" + "a" * 22, "agents", "Agents", "2026-01-01T00:00:00+00:00"),
+		)
+		for checkout in (linked_worktree, main_checkout):
+			connection.execute(
+				"INSERT INTO checkouts (path, project_id, last_seen_at) VALUES (?, ?, ?)",
+				(str(checkout), "prj_" + "a" * 22, "2026-01-02T12:00:00+00:00"),
+			)
+
+	assert cli.main(["summary", "--database", str(database), "--json"]) == 0
+	response = json.loads(capsys.readouterr().out)
+	assert [row["path"] for row in response["data"][0]["checkouts"]] == [
+		str(main_checkout),
+		str(linked_worktree),
+	]
+	assert set(response["data"][0]["checkouts"][0]) == {
+		"path",
+		"last_seen_at",
+		"stale",
+	}
+
+	assert cli.main(["summary", "--database", str(database)]) == 0
+	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert output.startswith(f"\nAgents\n{main_checkout}\n{linked_worktree}\n\n")
 
 
 def test_checkout_detach_runs_outside_a_repository_without_recording(
@@ -8309,7 +8380,10 @@ def test_human_summary_shows_active_ready_chunkless_and_idle_projects(
 	)
 
 	assert output == (
-		"Active · ~/active · ~/second (stale) · /workspace/other\n"
+		"Active\n"
+		"~/active\n"
+		"/workspace/other\n"
+		"1 missing location · run progress checkout detach --stale\n"
 		"\n"
 		"Build summary · in progress\n"
 		"Lay out blocks · active · (2/3)\n"

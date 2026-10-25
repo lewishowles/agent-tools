@@ -837,7 +837,8 @@ class ReadStore(_StoreBase):
 		"""List the current work for every stored project, sorted by name.
 
 		Each entry holds the project's `progress next` response plus its recorded
-		checkouts, the active chunk's position in its task, the commit plan for
+		checkouts (main checkout first, then the others in path order), the
+		active chunk's position in its task, the commit plan for
 		the current task, counts of its other tasks by status, and the next
 		action to show. Works from any directory, because it reads only the
 		database. A checkout is marked stale when its recorded path no longer
@@ -862,6 +863,11 @@ class ReadStore(_StoreBase):
 					"WHERE project_id = ? ORDER BY path",
 					(project.id,),
 				).fetchall()
+				# List the main checkout first and keep the rest in path order. The main
+				# checkout has a .git folder, while a worktree has a .git file.
+				checkouts = sorted(
+					checkouts, key=lambda row: not (Path(row["path"]) / ".git").is_dir()
+				)
 				status_rows = connection.execute(
 					"SELECT status, COUNT(*) AS total FROM tasks "
 					"WHERE project_id = ? AND id != COALESCE(?, '') GROUP BY status",

@@ -85,10 +85,12 @@ progress next --task <task_id>
 
 Show current work for every project stored in the database. Projects with a
 current task appear first, followed by projects with no current task. Each block
-shows any recorded checkout paths beside the project name, the task and its
-status, the active chunk and its position or completed chunk count, the release,
-and any other unfinished task counts. A checkout whose path no longer exists is
-marked `(stale)`. The command works outside a Git repository and does not record
+shows the project name, each recorded checkout folder on its own line with the
+main checkout first, the task and its status, the active chunk and its position
+or completed chunk count, the release, and any other unfinished task counts.
+Folders that no longer exist are counted on one line, such as `2 missing
+locations`, which points to `progress checkout detach --stale` for forgetting
+them. The command works outside a Git repository and does not record
 a checkout. Paths under your home directory start with `~` in human output. Use
 `--json` for per-project data. It includes full checkout paths, each checkout's
 boolean `stale` field and last-seen time, the next action, and the suggested
