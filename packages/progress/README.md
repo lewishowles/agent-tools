@@ -959,7 +959,7 @@ For a task with a handoff, the human output shows the task title, each recorded
 field, and the last update in your local time zone. Empty fields are omitted:
 
 ```text
-tsk_aaaaaaaaaaaaaaaaaaaaaa Finish the task
+tsk_aaaaaaaaaaaaaaaa Finish the task
 
 Current goal
 Finish the renderer.
@@ -969,7 +969,7 @@ Run the progress tests.
 
 ----------------------------------------
 
-Project: prj_pppppppppppppppppppppp
+Project: prj_pppppppppppppppp
 Last updated: 16 Oct 2026, 10:27
 ```
 

@@ -2,6 +2,7 @@
 
 import re
 import secrets
+import string
 from collections.abc import Callable
 
 from .errors import InvalidObjectIdError, ObjectIdCollisionError, WrongObjectIdTypeError
@@ -26,9 +27,12 @@ OBJECT_PREFIXES = frozenset(
 	}
 )
 
-# length of the random token appended after an object ID's prefix
-_RANDOM_PART_LENGTH = 22
-# characters secrets.token_urlsafe can produce, used to validate the random part
+# number of random characters in a new object ID, and the fewest any ID may have
+# (older IDs have 22)
+_RANDOM_PART_LENGTH = 16
+# letters and digits used in newly generated object IDs
+_RANDOM_PART_ALPHABET = string.ascii_letters + string.digits
+# characters accepted from both new IDs and older URL-safe IDs
 _URL_SAFE_RANDOM_PART = re.compile(r"[A-Za-z0-9_-]+")
 
 
@@ -108,7 +112,11 @@ def generate_object_id(
 	if max_attempts < 1:
 		raise ValueError("max_attempts must be at least 1")
 
-	random_token = token_factory or (lambda: secrets.token_urlsafe(16))
+	random_token = token_factory or (
+		lambda: "".join(
+			secrets.choice(_RANDOM_PART_ALPHABET) for _ in range(_RANDOM_PART_LENGTH)
+		)
+	)
 
 	for _ in range(max_attempts):
 		candidate = f"{prefix}{random_token()}"

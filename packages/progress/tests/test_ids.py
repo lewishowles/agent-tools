@@ -29,13 +29,15 @@ from agents_progress.ids import (
 		TASK_PREFIX,
 	],
 )
-def test_generated_ids_have_a_type_prefix_and_128_bits_of_random_input(
+def test_generated_ids_have_a_type_prefix_and_16_alphanumeric_characters(
 	prefix: str,
 ) -> None:
 	object_id = generate_object_id(prefix)
+	random_part = object_id.removeprefix(prefix)
 
 	assert object_id.startswith(prefix)
-	assert len(object_id.removeprefix(prefix)) >= 22
+	assert len(random_part) == 16
+	assert random_part.isascii() and random_part.isalnum()
 	assert validate_object_id(object_id, prefix) == object_id
 
 
@@ -70,7 +72,7 @@ def test_wrong_id_type_error_keeps_the_single_prefix_detail() -> None:
 	],
 )
 def test_object_id_prefix_recognises_every_object_type(prefix: str) -> None:
-	assert object_id_prefix(prefix + "a" * 22) == prefix
+	assert object_id_prefix(prefix + "a" * 20 + "-_") == prefix
 
 
 @pytest.mark.parametrize(
@@ -84,10 +86,10 @@ def test_object_id_prefix_rejects_invalid_ids(value: object) -> None:
 
 def test_validation_rejects_malformed_random_parts() -> None:
 	with pytest.raises(InvalidObjectIdError):
-		validate_object_id(PROJECT_PREFIX + "too-short", PROJECT_PREFIX)
+		validate_object_id(PROJECT_PREFIX + "a" * 15, PROJECT_PREFIX)
 
 	with pytest.raises(InvalidObjectIdError):
-		validate_object_id(PROJECT_PREFIX + "a" * 21 + "=", PROJECT_PREFIX)
+		validate_object_id(PROJECT_PREFIX + "a" * 15 + "=", PROJECT_PREFIX)
 
 
 def test_generation_retries_a_collision() -> None:
