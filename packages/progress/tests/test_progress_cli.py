@@ -7734,13 +7734,23 @@ def test_worktree_commands_return_the_task_checkout_without_creating_on_get(
 	assert created["path"] in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+	("record_checkout", "folder_missing"),
+	[(True, False), (False, False), (True, True)],
+	ids=["recorded-checkout", "no-checkout", "folder-already-gone"],
+)
 def test_worktree_cleanup_command_reports_pending_and_removed(
-	tmp_path: Path, committed_repository: Path, monkeypatch, capsys
+	tmp_path: Path,
+	committed_repository: Path,
+	monkeypatch,
+	capsys,
+	record_checkout: bool,
+	folder_missing: bool,
 ) -> None:
 	repository = committed_repository
 	monkeypatch.chdir(repository)
 	database = Database(tmp_path / "progress.db")
-	ProjectStore(database).init("agents", "Agent configuration")
+	project, _ = ProjectStore(database).init("agents", "Agent configuration")
 	task = WriteStore(database).task_add(
 		"cleanup-task", "Cleanup task", "Finish the work", ["Complete the task"]
 	)
@@ -7751,6 +7761,13 @@ def test_worktree_cleanup_command_reports_pending_and_removed(
 
 	assert cli.main(["worktree", "ensure", task["id"], *arguments]) == 0
 	checkout = Path(json.loads(capsys.readouterr().out)["data"]["path"])
+	checkout_path = str(checkout.expanduser().resolve(strict=False))
+	if record_checkout:
+		with database.transaction() as connection:
+			connection.execute(
+				"INSERT INTO checkouts (path, project_id, last_seen_at) VALUES (?, ?, ?)",
+				(checkout_path, project.id, "2026-01-01T00:00:00+00:00"),
+			)
 	(checkout / "tracked.txt").write_text("unfinished work\n")
 
 	assert cli.main(["task", "complete", task["id"], *arguments]) == 0
@@ -7762,13 +7779,35 @@ def test_worktree_cleanup_command_reports_pending_and_removed(
 	assert json.loads(capsys.readouterr().out)["data"]["status"] == "pending"
 
 	(checkout / "tracked.txt").write_text("committed content\n")
+	if folder_missing:
+		subprocess.run(
+			["git", "-C", str(repository), "worktree", "remove", str(checkout)],
+			check=True,
+		)
 
 	assert (
 		cli.main(["worktree", "cleanup", task["id"], "--database", str(database.path)])
 		== 0
 	)
-	assert f"Removed worktree at {checkout}" in capsys.readouterr().out
+	output = capsys.readouterr().out
+	if folder_missing:
+		assert f"Worktree folder at {checkout} was already gone" in output
+	else:
+		assert f"Removed worktree at {checkout}" in output
 	assert not checkout.exists()
+	with database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT COUNT(*) FROM task_worktrees WHERE task_id = ?", (task["id"],)
+			).fetchone()[0]
+			== 0
+		)
+		assert (
+			connection.execute(
+				"SELECT COUNT(*) FROM checkouts WHERE path = ?", (checkout_path,)
+			).fetchone()[0]
+			== 0
+		)
 
 	assert cli.main(["worktree", "cleanup", task["id"], *arguments]) == 0
 	assert json.loads(capsys.readouterr().out)["data"] == {"status": "none"}

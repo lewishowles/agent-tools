@@ -33,7 +33,9 @@ class WorktreeStore(_StoreBase):
 
 		The task's commits are replayed onto the base branch recorded when the
 		checkout was created, the base is fast-forwarded to them, the checkout is
-		removed and the merged task branch is deleted. Return status "removed"
+		removed and the merged task branch is deleted. Removing the checkout also
+		forgets its folder, so progress summary stops listing it as a location,
+		including when the folder was already gone. Return status "removed"
 		with the number of commits merged, "pending" with a reason, or "none" when
 		the task has no recorded checkout or managed branch. Removed and pending
 		results include the path, task branch and base branch.
@@ -87,6 +89,9 @@ class WorktreeStore(_StoreBase):
 			repository = GitRepository(path)
 			common_dir = repository.common_dir()
 			target, _ = self._record_location(row, project.id, common_dir)
+			# The folder's path as recorded checkouts store it, worked out before cleanup
+			# removes the folder.
+			checkout_path = str(target.expanduser().resolve(strict=False))
 
 			folder_was_missing = not target.exists() and not target.is_symlink()
 			if folder_was_missing and not self._restore_missing_checkout(
@@ -162,6 +167,10 @@ class WorktreeStore(_StoreBase):
 			with self.database.transaction() as connection:
 				connection.execute(
 					"DELETE FROM task_worktrees WHERE task_id = ?", (task_id,)
+				)
+				connection.execute(
+					"DELETE FROM checkouts WHERE path = ? AND project_id = ?",
+					(checkout_path, project.id),
 				)
 			return {
 				"status": "removed",
