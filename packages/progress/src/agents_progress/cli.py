@@ -356,7 +356,14 @@ _COMMAND_SPECS = (
 			_CommandSpec(
 				"cleanup",
 				"remove a done task's clean worktree",
-				arguments=(_argument("task_id", metavar="TASK_ID"),),
+				arguments=(
+					_argument("task_id", nargs="?", metavar="TASK_ID"),
+					_argument(
+						"--branch",
+						metavar="BRANCH",
+						help="finish a managed branch after its task record is gone",
+					),
+				),
 			),
 		),
 		destination="worktree_command",
@@ -1572,21 +1579,6 @@ def _worktree_cleanup_lines(data: dict[str, object]) -> list[str]:
 		lines = [f"Worktree kept at {data['path']}: {data['reason']}"]
 		lines.append(f"Finish by hand: {data['command']}")
 		return lines
-	if data.get("reason") == "folder already gone":
-		lines = [f"Worktree folder at {data['path']} was already gone"]
-		commits = data.get("unmerged_commits", 0)
-		if commits:
-			lines.append(
-				f"{commits} unmerged {'commit remains' if commits == 1 else 'commits remain'} "
-				f"on {data['branch']}"
-			)
-		if data.get("count_error"):
-			lines.append(f"Could not count unmerged commits: {data['count_error']}")
-		if commits or data.get("count_error"):
-			lines.append(f"Run the merge from a checkout of {data['base_branch']}")
-			lines.append(f"Finish by hand: {data['command']}")
-		return lines
-
 	lines = []
 	commits = data.get("merged_commits", 0)
 	if commits:
@@ -1649,6 +1641,15 @@ def _run_show(args: argparse.Namespace, database: Database) -> tuple[object, str
 	return store.inbox_get(args.object_id), "show inbox"
 
 
+def _run_worktree_cleanup(
+	args: argparse.Namespace, database: Database
+) -> dict[str, object]:
+	"""Clean up one recorded task or one managed branch without its task record."""
+	if (args.task_id is None) == (args.branch is None):
+		raise CliUsageError("give either TASK_ID or --branch BRANCH")
+	return WorktreeStore(database).cleanup(args.task_id, branch=args.branch)
+
+
 def _run_command(
 	args: argparse.Namespace, *, include_release_titles: bool = False
 ) -> tuple[object, str]:
@@ -1690,7 +1691,7 @@ def _run_command(
 			"worktree get",
 		),
 		("worktree", "cleanup"): lambda: (
-			WorktreeStore(database).cleanup(args.task_id),
+			_run_worktree_cleanup(args, database),
 			"worktree cleanup",
 		),
 		("doctor", None): lambda: (ReadStore(database).doctor(), "doctor"),

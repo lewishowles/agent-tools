@@ -621,9 +621,11 @@ class WriteStore(_StoreBase):
 		force: bool = False,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Remove done tasks with no notes or dependencies, or every done task with force.
+		"""Remove done tasks that have no notes or dependencies; with force, remove those that do too.
 
-		Kept checkouts appear under "blocked". Eligible folders are removed after
+		A done task whose branch has commits not on its base is always kept, with
+		or without force, so its work can still be finished by task ID. Kept
+		checkouts appear under "blocked". Eligible folders are removed after
 		their task records and listed as removed or left on disk. The remaining tasks
 		in each queue that lost a task are numbered from 1 in their previous order.
 		"""
@@ -650,7 +652,8 @@ class WriteStore(_StoreBase):
 					or _task_dependency_edges(connection, task_id)
 				):
 					skipped_task_ids.add(task_id)
-					continue
+				# Tasks skipped for their notes or dependencies are still checked,
+				# so the result also lists any unmerged commits they have.
 				inspection_ids.append(task_id)
 		for task_id in inspection_ids:
 			inspection = worktrees.inspect_cleanup(task_id, path, force=force)
@@ -2627,11 +2630,14 @@ def _delete_task_values(connection: sqlite3.Connection, task_id: str) -> None:
 def _assert_checkout_removable(task_id: str, inspection: dict[str, str]) -> None:
 	"""Refuse the removal when a task's checkout must stay, naming its path and reason."""
 	if inspection["status"] == "kept":
-		_raise_if_referenced(
-			"task",
-			task_id,
-			{"worktrees": [inspection["path"]]},
-			hint=inspection["reason"],
+		checkout_path = inspection["path"]
+		raise StillReferencedError(
+			f"task {task_id} cannot be removed: {inspection['reason']} (worktree: {checkout_path})",
+			{
+				"id": task_id,
+				"references": {"worktrees": [checkout_path]},
+				"children": [checkout_path],
+			},
 		)
 
 

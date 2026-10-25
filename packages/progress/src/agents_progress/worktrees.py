@@ -23,7 +23,11 @@ class WorktreeStore(_StoreBase):
 	"""Keep a task's recorded checkout tied to its project and Git repository."""
 
 	def cleanup(
-		self, task_id: str, path: str | Path | None = None
+		self,
+		task_id: str | None = None,
+		path: str | Path | None = None,
+		*,
+		branch: str | None = None,
 	) -> dict[str, object]:
 		"""Merge a done task's branch into its base, then remove its checkout.
 
@@ -31,41 +35,32 @@ class WorktreeStore(_StoreBase):
 		checkout was created, the base is fast-forwarded to them, the checkout is
 		removed and the merged task branch is deleted. Return status "removed"
 		with the number of commits merged, "pending" with a reason, or "none" when
-		the task has no recorded checkout. Removed and pending results include
-		the path, task branch and base branch.
+		the task has no recorded checkout or managed branch. Removed and pending
+		results include the path, task branch and base branch.
 
 		A checkout with uncommitted changes, an unknown or missing base, a rebase
 		conflict, a locked checkout, a refused fast-forward, or a checkout that
 		contains the current folder or the given path stays on disk with its branch
 		and record, so cleanup can be retried later. A removal failure can be
 		pending after the commits reached the base; retry then only removes the
-		checkout. A recorded folder that no longer exists has its record cleared.
-		Raise when the task is missing or not done.
+		checkout. A recorded folder that no longer exists is restored before
+		cleanup continues.
+
+		When the task has no checkout record but its managed branch exists, the
+		branch checked out where cleanup runs becomes the base, and a missing
+		checkout folder is recreated first. Pass branch instead of task_id to
+		finish a managed branch whose task record has been deleted.
+
+		Raise when the task is missing or not done, when a given branch is not a
+		managed task branch, does not exist, or still has a task record, or when
+		cleanup runs on the task branch itself or outside any branch.
 		"""
-		task_id = validate_object_id(task_id, TASK_PREFIX)
 		project = self.current_project(path)
-
-		with self.database.connection() as connection:
-			task = connection.execute(
-				"SELECT status FROM tasks WHERE id = ? AND project_id = ?",
-				(task_id, project.id),
-			).fetchone()
-			if task is None:
-				raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
-			if task["status"] != "done":
-				raise InvalidTransitionError(
-					f"task {task_id} must be done before its worktree can be cleaned up",
-					{"id": task_id, "status": task["status"]},
-				)
-
-			row = connection.execute(
-				"SELECT task_id, project_id, path, branch, base_branch, common_dir "
-				"FROM task_worktrees WHERE task_id = ?",
-				(task_id,),
-			).fetchone()
-
-		if row is None:
-			return {"status": "none"}
+		task_id, row, retry, early_result = self._cleanup_target(
+			task_id, branch, path, project.id
+		)
+		if early_result is not None:
+			return early_result
 		# the details every removed or pending result reports
 		info = {
 			"task_id": task_id,
@@ -73,7 +68,6 @@ class WorktreeStore(_StoreBase):
 			"branch": row["branch"],
 			"base_branch": row["base_branch"],
 		}
-		retry = f"progress worktree cleanup {task_id}"
 		branch_ref = f"refs/heads/{row['branch']}"
 
 		def pending(reason: str, command: str | None = None) -> dict[str, object]:
@@ -93,30 +87,11 @@ class WorktreeStore(_StoreBase):
 			common_dir = repository.common_dir()
 			target, _ = self._record_location(row, project.id, common_dir)
 
-			if not target.exists() and not target.is_symlink():
-				base = row["base_branch"]
-				unmerged_commits = 0
-				count_error = None
-				if base is not None:
-					count = self._commit_count(
-						repository, f"refs/heads/{base}", branch_ref
-					)
-					if isinstance(count, int):
-						unmerged_commits = count
-					else:
-						count_error = count
-				with self.database.transaction() as connection:
-					connection.execute(
-						"DELETE FROM task_worktrees WHERE task_id = ?", (task_id,)
-					)
-				gone = {"status": "removed", "reason": "folder already gone", **info}
-				if unmerged_commits:
-					gone["unmerged_commits"] = unmerged_commits
-				if count_error:
-					gone["count_error"] = count_error
-				if unmerged_commits or count_error:
-					gone["command"] = f"git merge {quote(branch_ref)}"
-				return gone
+			folder_was_missing = not target.exists() and not target.is_symlink()
+			if folder_was_missing and not self._restore_missing_checkout(
+				repository, target, row["branch"]
+			):
+				return pending(f"could not recreate the task worktree at {target}")
 
 			self._validated_record(row, project.id, common_dir)
 
@@ -141,14 +116,14 @@ class WorktreeStore(_StoreBase):
 			if base is None:
 				return pending(
 					"base branch was not recorded; run the command from the intended base checkout, then remove the worktree and branch by hand",
-					f"git merge {quote(branch_ref)}",
+					None if folder_was_missing else f"git merge {quote(branch_ref)}",
 				)
 			base_ref = f"refs/heads/{base}"
 			base_exists = repository.run(["show-ref", "--verify", "--quiet", base_ref])
 			if base_exists.returncode != 0:
 				return pending(
 					f"base branch {base} no longer exists; run the command from the intended base checkout",
-					f"git merge {quote(branch_ref)}",
+					None if folder_was_missing else f"git merge {quote(branch_ref)}",
 				)
 
 			merged = self._merge_into_base(repository, checkout, base, row["branch"])
@@ -195,6 +170,157 @@ class WorktreeStore(_StoreBase):
 		except (ProgressError, sqlite3.Error, OSError) as error:
 			reason = error.message if isinstance(error, ProgressError) else str(error)
 			return pending(reason or type(error).__name__)
+
+	def _cleanup_target(
+		self,
+		task_id: str | None,
+		branch: str | None,
+		path: str | Path | None,
+		project_id: str,
+	) -> tuple[
+		str, sqlite3.Row | dict[str, str | None] | None, str, dict[str, object] | None
+	]:
+		"""Choose what cleanup works on: a task's recorded checkout or its managed branch.
+
+		Return the task ID, the checkout row, the command that retries this cleanup,
+		and an early result. When no checkout is recorded, the row is an in-memory
+		stand-in built from the managed branch, and a missing folder is recreated
+		first. The early result is set, and the row is None, when there is nothing
+		to clean up or the folder could not be recreated.
+		"""
+		if branch is not None:
+			try:
+				task_id = validate_object_id(
+					branch.removeprefix("progress/task/"), TASK_PREFIX
+				)
+			except ProgressError as error:
+				raise ProgressError(f"{branch} is not a managed task branch") from error
+			if branch != f"progress/task/{task_id}":
+				raise ProgressError(f"{branch} is not a managed task branch")
+			with self.database.connection() as connection:
+				if connection.execute(
+					"SELECT 1 FROM tasks WHERE id = ?", (task_id,)
+				).fetchone():
+					raise ProgressError(
+						f"task {task_id} still exists; use progress worktree cleanup {task_id}"
+					)
+			row = None
+			retry = f"progress worktree cleanup --branch {branch}"
+		else:
+			task_id = validate_object_id(task_id, TASK_PREFIX)
+			with self.database.connection() as connection:
+				task = connection.execute(
+					"SELECT status FROM tasks WHERE id = ? AND project_id = ?",
+					(task_id, project_id),
+				).fetchone()
+				if task is None:
+					raise NotFoundError(
+						f"task {task_id} was not found", {"id": task_id}
+					)
+				if task["status"] != "done":
+					raise InvalidTransitionError(
+						f"task {task_id} must be done before its worktree can be cleaned up",
+						{"id": task_id, "status": task["status"]},
+					)
+				row = connection.execute(
+					"SELECT task_id, project_id, path, branch, base_branch, common_dir "
+					"FROM task_worktrees WHERE task_id = ?",
+					(task_id,),
+				).fetchone()
+			retry = f"progress worktree cleanup {task_id}"
+
+		if row is not None:
+			return task_id, row, retry, None
+		target, managed_branch, exists, base = self._unrecorded_branch(
+			task_id, project_id, path
+		)
+		if not exists:
+			if branch is not None:
+				raise NotFoundError(
+					f"branch {managed_branch} was not found", {"branch": managed_branch}
+				)
+			return task_id, None, retry, {"status": "none"}
+		if base is None:
+			raise ProgressError("Run cleanup from the intended base branch checkout")
+		repository = GitRepository(path)
+		folder_was_missing = not target.exists() and not target.is_symlink()
+		if folder_was_missing and not self._restore_missing_checkout(
+			repository, target, managed_branch
+		):
+			return (
+				task_id,
+				None,
+				retry,
+				{
+					"status": "pending",
+					"task_id": task_id,
+					"path": str(target),
+					"branch": managed_branch,
+					"base_branch": base,
+					"reason": f"could not recreate the task worktree at {target}",
+					"command": retry,
+				},
+			)
+		row = {
+			"task_id": task_id,
+			"project_id": project_id,
+			"path": str(target),
+			"branch": managed_branch,
+			"base_branch": base,
+			"common_dir": str(repository.common_dir()),
+		}
+		return task_id, row, retry, None
+
+	def _unrecorded_branch(
+		self, task_id: str, project_id: str, path: str | Path | None
+	) -> tuple[Path, str, bool, str | None]:
+		"""Describe a task's managed branch when no checkout is recorded for it.
+
+		Return the managed folder, the branch name, whether the branch exists, and
+		the branch checked out where the command runs, which serves as the base.
+		The base is None when HEAD is detached or is the task branch itself. Raise
+		when Git cannot check the branch.
+		"""
+		target, branch = self._managed_location(project_id, task_id)
+		repository = GitRepository(path)
+		branch_result = repository.run(
+			["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"]
+		)
+		if branch_result.returncode not in (0, 1):
+			raise GitBindingError(f"Git could not check task branch {branch}")
+		exists = branch_result.returncode == 0
+		if not exists:
+			return target, branch, False, None
+		base_result = repository.run(["symbolic-ref", "--quiet", "--short", "HEAD"])
+		base = base_result.stdout.strip()
+		if base_result.returncode != 0 or base == branch:
+			base = None
+		return target, branch, True, base
+
+	def _restore_missing_checkout(
+		self, repository: GitRepository, target: Path, branch: str
+	) -> bool:
+		"""Recreate a missing managed checkout without changing other Git worktrees.
+
+		Return whether the checkout was recreated.
+		"""
+		try:
+			worktrees = repository.run(["worktree", "list", "--porcelain"])
+			prunable = worktrees.returncode == 0 and any(
+				entry.splitlines()[0] == f"worktree {target}"
+				and any(
+					line == "prunable" or line.startswith("prunable ")
+					for line in entry.splitlines()[1:]
+				)
+				for entry in worktrees.stdout.strip().split("\n\n")
+				if entry
+			)
+			arguments = ["worktree", "add"]
+			if prunable:
+				arguments.append("-f")
+			return repository.run([*arguments, str(target), branch]).returncode == 0
+		except (ProgressError, OSError):
+			return False
 
 	def _commit_count(
 		self, repository: GitRepository, base_ref: str, branch_ref: str
@@ -306,7 +432,8 @@ class WorktreeStore(_StoreBase):
 		"""Decide whether a task's checkout can be removed, without changing anything.
 
 		Return status "none" when no checkout is recorded, "gone" when the folder no
-		longer exists, "removable", or "kept" with a plain reason. With force, a
+		longer exists, "removable", or "kept" with a plain reason. A done task with
+		commits outside its base stays kept even with force. With force, a
 		record outside the managed location, or one that fails validation while its
 		folder exists, is "unsafe": the caller deletes the record but never the
 		folder. Without force, such a record, uncommitted changes, or an unfinished
@@ -325,10 +452,84 @@ class WorktreeStore(_StoreBase):
 			).fetchone()
 		if row is None:
 			raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
-		if row["path"] is None:
+		# a task with no saved checkout can still have a managed branch to protect
+		unrecorded = row["path"] is None
+		if unrecorded:
+			if row["status"] != "done":
+				return {"status": "none"}
+			try:
+				managed_path, branch, exists, base_branch = self._unrecorded_branch(
+					task_id, project.id, path
+				)
+			except (ProgressError, OSError) as error:
+				managed_path, _ = self._managed_location(project.id, task_id)
+				reason = (
+					error.message if isinstance(error, ProgressError) else str(error)
+				)
+				return {
+					"status": "kept",
+					"path": str(managed_path),
+					"reason": f"could not check the task branch ({reason}); run progress worktree cleanup {task_id} first",
+				}
+			if not exists:
+				return {"status": "none"}
+			checkout_path = str(managed_path)
+		else:
+			checkout_path = row["path"]
+			if Path(checkout_path) != self._managed_location(project.id, task_id)[0]:
+				return {
+					"status": "unsafe" if force else "kept",
+					"path": checkout_path,
+					"reason": (
+						"outside the managed location"
+						if force
+						else "recorded path is outside the managed location"
+					),
+				}
+			try:
+				repository = GitRepository(path)
+				self._record_location(row, project.id, repository.common_dir())
+			except (ProgressError, OSError) as error:
+				reason = (
+					error.message if isinstance(error, ProgressError) else str(error)
+				)
+				return {
+					"status": "unsafe" if force else "kept",
+					"path": checkout_path,
+					"reason": reason,
+				}
+			branch = row["branch"]
+			base_branch = row["base_branch"]
+		if row["status"] == "done":
+			# count holds the number of unmerged commits, or the reason it could
+			# not be counted, which also keeps the task
+			try:
+				if base_branch is None:
+					count = "the base branch is unknown"
+				else:
+					repository = GitRepository(path)
+					count = self._commit_count(
+						repository,
+						f"refs/heads/{base_branch}",
+						f"refs/heads/{branch}",
+					)
+			except (ProgressError, OSError) as error:
+				count = (
+					error.message if isinstance(error, ProgressError) else str(error)
+				)
+			if count != 0:
+				reason = (
+					f"{count} task {'commit is' if count == 1 else 'commits are'} not on the base branch"
+					if isinstance(count, int)
+					else f"could not check task commits against the base branch ({count})"
+				)
+				return {
+					"status": "kept",
+					"path": checkout_path,
+					"reason": f"{reason}; run progress worktree cleanup {task_id} first",
+				}
+		if unrecorded:
 			return {"status": "none"}
-
-		checkout_path = row["path"]
 		if (
 			force
 			and not Path(checkout_path).exists()
@@ -336,18 +537,6 @@ class WorktreeStore(_StoreBase):
 		):
 			return {"status": "gone", "path": checkout_path}
 
-		if Path(checkout_path) != self._managed_location(project.id, task_id)[0]:
-			if force:
-				return {
-					"status": "unsafe",
-					"path": checkout_path,
-					"reason": "outside the managed location",
-				}
-			return {
-				"status": "kept",
-				"path": checkout_path,
-				"reason": "recorded path is outside the managed location",
-			}
 		if row["status"] != "done" and not force:
 			return {
 				"status": "kept",

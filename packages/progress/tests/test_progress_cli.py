@@ -6980,53 +6980,6 @@ def test_task_complete_prints_merged_commits_on_their_own_line(
 	assert "Removed worktree at /tmp/task-worktree\n" in output
 
 
-def test_cleanup_prints_a_missing_folder_and_its_unmerged_commits() -> None:
-	"""A deleted folder still exposes commits that need to be merged by hand."""
-	data = {
-		"status": "removed",
-		"reason": "folder already gone",
-		"path": "/tmp/task-worktree",
-		"branch": "progress/task/tsk_test",
-		"base_branch": "main",
-		"unmerged_commits": 2,
-		"command": "git merge refs/heads/progress/task/tsk_test",
-	}
-
-	output = cli._render_human_output("worktree cleanup", data)
-
-	assert output.splitlines() == [
-		"Worktree folder at /tmp/task-worktree was already gone",
-		"2 unmerged commits remain on progress/task/tsk_test",
-		"Run the merge from a checkout of main",
-		"Finish by hand: git merge refs/heads/progress/task/tsk_test",
-	]
-	assert "Removed worktree" not in output
-
-
-def test_cleanup_prints_git_error_when_missing_folder_commits_cannot_be_counted() -> (
-	None
-):
-	"""A failed count stays visible alongside the manual merge command."""
-	data = {
-		"status": "removed",
-		"reason": "folder already gone",
-		"path": "/tmp/task-worktree",
-		"branch": "progress/task/tsk_test",
-		"base_branch": "main",
-		"count_error": "cannot read branch",
-		"command": "git merge refs/heads/progress/task/tsk_test",
-	}
-
-	output = cli._render_human_output("worktree cleanup", data)
-
-	assert output.splitlines() == [
-		"Worktree folder at /tmp/task-worktree was already gone",
-		"Could not count unmerged commits: cannot read branch",
-		"Run the merge from a checkout of main",
-		"Finish by hand: git merge refs/heads/progress/task/tsk_test",
-	]
-
-
 def test_human_chunk_complete_output_is_concise(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -7818,6 +7771,167 @@ def test_worktree_cleanup_command_reports_pending_and_removed(
 
 	assert cli.main(["worktree", "cleanup", task["id"], *arguments]) == 0
 	assert json.loads(capsys.readouterr().out)["data"] == {"status": "none"}
+
+
+@pytest.mark.parametrize(
+	"folder_gone", [False, True], ids=["checkout-present", "checkout-gone"]
+)
+def test_worktree_cleanup_branch_finishes_an_orphaned_managed_branch(
+	tmp_path: Path, committed_repository: Path, monkeypatch, capsys, folder_gone: bool
+) -> None:
+	monkeypatch.chdir(committed_repository)
+	database = Database(tmp_path / "progress.db")
+	ProjectStore(database).init("agents", "Agent configuration")
+	task = WriteStore(database).task_add(
+		"orphaned-task", "Orphaned task", "Finish the work", ["Complete the task"]
+	)
+	arguments = ["--database", str(database.path), "--json"]
+	assert cli.main(["worktree", "ensure", task["id"], *arguments]) == 0
+	worktree = json.loads(capsys.readouterr().out)["data"]
+	checkout = Path(worktree["path"])
+	(checkout / "tracked.txt").write_text("task work\n")
+	assert cli.main(["task", "complete", task["id"], *arguments]) == 0
+	capsys.readouterr()
+	assert (
+		subprocess.run(
+			["git", "-C", str(checkout), "add", "tracked.txt"], check=False
+		).returncode
+		== 0
+	)
+	assert (
+		subprocess.run(
+			[
+				"git",
+				"-C",
+				str(checkout),
+				"-c",
+				"user.name=Test",
+				"-c",
+				"user.email=test@example.com",
+				"commit",
+				"-m",
+				"Finish task work",
+			],
+			check=False,
+			capture_output=True,
+		).returncode
+		== 0
+	)
+	if folder_gone:
+		assert (
+			subprocess.run(
+				[
+					"git",
+					"-C",
+					str(committed_repository),
+					"worktree",
+					"remove",
+					str(checkout),
+				],
+				check=False,
+			).returncode
+			== 0
+		)
+	with database.transaction() as connection:
+		connection.execute(
+			"DELETE FROM task_worktrees WHERE task_id = ?", (task["id"],)
+		)
+		connection.execute(
+			"DELETE FROM task_contract_steps WHERE task_id = ?", (task["id"],)
+		)
+		connection.execute("DELETE FROM tasks WHERE id = ?", (task["id"],))
+
+	assert (
+		cli.main(["worktree", "cleanup", "--branch", worktree["branch"], *arguments])
+		== 0
+	)
+	result = json.loads(capsys.readouterr().out)["data"]
+
+	assert result["status"] == "removed"
+	assert result["merged_commits"] == 1
+	assert any(
+		f"into {result['base_branch']}" in line
+		for line in cli._worktree_cleanup_lines(result)
+	)
+	assert not checkout.exists()
+	assert (committed_repository / "tracked.txt").read_text() == "task work\n"
+	with database.connection() as connection:
+		assert (
+			connection.execute("SELECT COUNT(*) FROM task_worktrees").fetchone()[0] == 0
+		)
+	assert (
+		subprocess.run(
+			[
+				"git",
+				"-C",
+				str(committed_repository),
+				"show-ref",
+				"--verify",
+				"--quiet",
+				f"refs/heads/{worktree['branch']}",
+			],
+			check=False,
+		).returncode
+		== 1
+	)
+
+
+def test_worktree_cleanup_branch_rejects_unmanaged_and_combined_targets(
+	tmp_path: Path, committed_repository: Path, monkeypatch, capsys
+) -> None:
+	monkeypatch.chdir(committed_repository)
+	database = Database(tmp_path / "progress.db")
+	ProjectStore(database).init("agents", "Agent configuration")
+	arguments = ["--database", str(database.path), "--json"]
+
+	assert (
+		cli.main(["worktree", "cleanup", "--branch", "feature/unmanaged", *arguments])
+		== 1
+	)
+	unmanaged = json.loads(capsys.readouterr().out)["error"]
+	assert "managed task branch" in unmanaged["message"]
+	assert (
+		cli.main(
+			[
+				"worktree",
+				"cleanup",
+				"tsk_example",
+				"--branch",
+				"feature/unmanaged",
+				*arguments,
+			]
+		)
+		== 2
+	)
+	combined = json.loads(capsys.readouterr().out)["error"]
+	assert combined["code"] == "usage"
+
+
+def test_worktree_cleanup_branch_requires_an_existing_orphaned_branch(
+	tmp_path: Path, committed_repository: Path, monkeypatch, capsys
+) -> None:
+	monkeypatch.chdir(committed_repository)
+	database = Database(tmp_path / "progress.db")
+	ProjectStore(database).init("agents", "Agent configuration")
+	arguments = ["--database", str(database.path), "--json"]
+	missing_branch = "progress/task/tsk_" + "a" * 22
+
+	assert (
+		cli.main(["worktree", "cleanup", "--branch", missing_branch, *arguments]) == 1
+	)
+	missing = json.loads(capsys.readouterr().out)["error"]
+	assert missing["code"] == "not-found"
+	assert missing_branch in missing["message"]
+
+	task = WriteStore(database).task_add(
+		"existing-task", "Existing task", "Finish the work", ["Complete the task"]
+	)
+	assert cli.main(["worktree", "ensure", task["id"], *arguments]) == 0
+	branch = json.loads(capsys.readouterr().out)["data"]["branch"]
+
+	assert cli.main(["worktree", "cleanup", "--branch", branch, *arguments]) == 1
+	existing = json.loads(capsys.readouterr().out)["error"]
+	assert f"task {task['id']} still exists" in existing["message"]
 
 
 def test_dispatch_records_project_commands_once_and_skips_help_version_and_command_list(

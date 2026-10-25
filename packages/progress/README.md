@@ -136,6 +136,7 @@ checkout already recorded for it:
 progress worktree ensure TASK_ID [--json] [--database <path>]
 progress worktree get TASK_ID [--json] [--database <path>]
 progress worktree cleanup TASK_ID [--json] [--database <path>]
+progress worktree cleanup --branch progress/task/TASK_ID [--json] [--database <path>]
 ```
 
 `ensure` creates a task branch from the current checkout's HEAD commit at
@@ -155,18 +156,27 @@ edits from the source checkout.
 commits onto the recorded base branch, fast-forwards the base, removes the
 checkout, and safely deletes the task branch. If the base is checked out in
 another worktree, Git merges there and may refuse because of local changes.
+If the task still exists but its checkout record is gone, run cleanup by task
+ID from the checkout of the branch you want to merge into. Cleanup finds the
+managed task branch and restores its checkout if needed.
 Ignored files in the removed checkout, such as `.env` or `node_modules`, are
 deleted with it. A rebase conflict is aborted. Uncommitted changes, an unknown
 or missing base, a refused fast-forward, a Git removal failure, or running the
 command from inside the task checkout leaves it recorded with a `pending`
 reason and a command for finishing by hand. Worktrees created before base
 tracking have an unknown base and need a manual merge, worktree removal, and
-branch deletion. If the folder is already gone, its record is cleared without
-pruning Git worktrees. If the task branch has commits outside the recorded base,
-the result reports their number and gives a command to merge them from a checkout
-of the base. Git keeps the entry for a hand-deleted folder until
-`git worktree prune`; until then, Git refuses to delete its branch. Repeating
-cleanup after removal reports `none`.
+branch deletion. If you deleted the folder yourself, cleanup restores it and
+finishes the merge. If Git cannot recreate the folder or finish the merge, the
+checkout stays recorded and the result gives a `progress worktree cleanup`
+command to retry.
+Repeating cleanup after removal reports `none`.
+
+If a task record has already been removed but its managed branch remains, run
+`progress worktree cleanup --branch progress/task/TASK_ID` from the checkout of
+the branch you want to merge into. The task ID argument and `--branch` cannot be
+used together. Cleanup restores the managed worktree if its folder is gone,
+merges its commits into the current branch, then removes the worktree and task
+branch. Other branch names are refused.
 
 ## Projects
 
@@ -257,6 +267,15 @@ With `--force`, every task in the release is removed with its chunks, notes,
 dependency edges, done-when and file rows, followed by the release's notes. The
 human output lists the deleted records grouped by
 type. Forced removal does not ask for confirmation.
+If a done task in the release has commits that have not reached its base branch,
+`--force` refuses to remove the release. Run `progress worktree cleanup TASK_ID`
+from the base branch checkout to keep those commits, then remove the release.
+To discard the commits, first let Git forget the worktree. If its folder still
+exists, run `git worktree remove --force <folder>`, using the worktree folder
+named in the refusal; if you deleted the folder yourself, run
+`git worktree prune`. Then run
+`git branch -D progress/task/TASK_ID` and repeat `release remove --force`.
+The refusal also applies when the worktree folder or saved checkout record is gone.
 
 ### `progress release rename`
 
@@ -430,6 +449,14 @@ With `--force`, it lists the deleted records grouped by type and any unblocked
 tasks below that line. The JSON result includes each removed task's title.
 The `--force` option still refuses to remove a task note that is superseded by
 a note outside the cascade, so the superseding note must be removed first.
+It also refuses to remove a done task with commits that have not reached its
+base branch, even when the worktree folder or saved checkout record is gone.
+Run `progress worktree cleanup TASK_ID` from the base branch checkout to keep
+those commits, then remove the task. To discard them, first let Git forget the
+worktree. If its folder still exists, run `git worktree remove --force <folder>`,
+using the worktree folder named in the refusal; if you deleted the folder
+yourself, run `git worktree prune`. Then run
+`git branch -D progress/task/TASK_ID` and repeat `task remove --force`.
 
 ### `progress task clean`
 
@@ -456,9 +483,18 @@ Use `--force` only when those notes and dependency edges can be deleted:
 progress task clean --force [--json] [--database <path>]
 ```
 
-The forced pass removes all completed tasks, including tasks without notes or
-dependency edges. It also removes their notes, dependency edges, and chunks
-before removing any releases left with no tasks.
+The forced pass also removes completed tasks that have notes or dependency
+edges. It removes their notes, dependency edges, and chunks before removing any
+releases left with no tasks.
+
+Both passes keep a completed task while its worktree branch has commits that
+are not on its base branch. The result tells you to run
+`progress worktree cleanup TASK_ID` first. This also applies when the worktree
+folder or saved checkout record is gone. Without a saved record, progress uses
+the branch checked out where you run the command as the base. If progress cannot
+check whether the commits reached the base, run `progress worktree cleanup TASK_ID`
+from the checkout of the branch you want to merge into.
+
 Release-owned notes are removed with those releases. An empty release that was
 not affected by this command is not removed.
 
