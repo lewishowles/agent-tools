@@ -12,6 +12,24 @@ from agent_board import cli
 from agent_board.board import ANSI_STYLE_PATTERN
 
 
+@pytest.fixture(autouse=True)
+def keep_quota_checks_local(monkeypatch) -> None:
+    """Keep CLI tests from starting provider commands in background threads."""
+
+    class Reader:
+        """Leave quota scheduling to the dedicated quota tests."""
+
+        def check_if_due(self, has_team):
+            """Accept the listing without checking an external account."""
+            return False
+
+        def check_now(self):
+            """Accept a key press without checking an external account."""
+            return False
+
+    monkeypatch.setattr(cli, "QuotaReader", Reader)
+
+
 def test_missing_hcom_returns_one_without_hiding_cursor(monkeypatch) -> None:
     """A missing command exits before changing the terminal display."""
     output = io.StringIO()
@@ -86,7 +104,9 @@ def test_nonzero_hcom_exit_is_shown_on_the_board(
     monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
     monkeypatch.setattr(cli.subprocess, "run", failed_hcom)
     monkeypatch.setattr(
-        cli, "_wait_for_resize", lambda fd, seconds: stop_after_refresh(seconds)
+        cli,
+        "_wait_for_wakeup",
+        lambda fd, seconds, input_fd: stop_after_refresh(seconds),
     )
     monkeypatch.setattr(cli.time, "strftime", lambda format: "12:34:56")
     monkeypatch.setattr(
@@ -137,13 +157,13 @@ def test_redirected_output_prints_one_plain_snapshot(monkeypatch) -> None:
         hcom_calls.append(command)
         return subprocess.CompletedProcess(command, 0, "[]", "")
 
-    def unexpected_wait(read_fd, seconds):
+    def unexpected_wait(read_fd, seconds, input_fd):
         """Fail if redirected output waits for another reading."""
         raise AssertionError("waited for another reading")
 
     monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
     monkeypatch.setattr(cli.subprocess, "run", listed_hcom)
-    monkeypatch.setattr(cli, "_wait_for_resize", unexpected_wait)
+    monkeypatch.setattr(cli, "_wait_for_wakeup", unexpected_wait)
     monkeypatch.setattr(
         cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
     )
@@ -186,7 +206,9 @@ def test_terminal_screen_is_restored_on_exit(monkeypatch, exit_kind: str) -> Non
     monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
     monkeypatch.setattr(cli.subprocess, "run", failed_hcom)
     monkeypatch.setattr(
-        cli, "_wait_for_resize", lambda fd, seconds: stop_after_refresh(seconds)
+        cli,
+        "_wait_for_wakeup",
+        lambda fd, seconds, input_fd: stop_after_refresh(seconds),
     )
     monkeypatch.setattr(
         cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
@@ -231,7 +253,7 @@ def test_non_terminal_input_is_left_alone(monkeypatch) -> None:
     output = io.StringIO()
     input_stream = io.StringIO()
 
-    def stop_after_refresh(read_fd, seconds):
+    def stop_after_refresh(read_fd, seconds, input_fd):
         """Close the board after it draws once."""
         raise KeyboardInterrupt
 
@@ -245,7 +267,7 @@ def test_non_terminal_input_is_left_alone(monkeypatch) -> None:
         "run",
         lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "[]", ""),
     )
-    monkeypatch.setattr(cli, "_wait_for_resize", stop_after_refresh)
+    monkeypatch.setattr(cli, "_wait_for_wakeup", stop_after_refresh)
     monkeypatch.setattr(cli.sys, "stdout", output)
     monkeypatch.setattr(output, "isatty", lambda: True)
     monkeypatch.setattr(cli.sys, "stdin", input_stream)
@@ -265,12 +287,12 @@ def test_resize_redraws_latest_reading_without_another_hcom_call(monkeypatch) ->
     hcom_calls = []
     original_handler = signal.getsignal(signal.SIGWINCH)
 
-    def wait_for_resize(read_fd, seconds):
+    def wait_for_resize(read_fd, seconds, input_fd):
         """Resize during the first wait, then end the board on the next."""
         wait_times.append(seconds)
         if len(wait_times) == 1:
             signal.getsignal(signal.SIGWINCH)(signal.SIGWINCH, None)
-            return True
+            return cli.Wakeup.RESIZE
 
         raise KeyboardInterrupt
 
@@ -279,7 +301,7 @@ def test_resize_redraws_latest_reading_without_another_hcom_call(monkeypatch) ->
         hcom_calls.append(command)
         return subprocess.CompletedProcess(command, 0, "[]", "")
 
-    monkeypatch.setattr(cli, "_wait_for_resize", wait_for_resize)
+    monkeypatch.setattr(cli, "_wait_for_wakeup", wait_for_resize)
     monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
     monkeypatch.setattr(
         cli.shutil, "get_terminal_size", lambda: os.terminal_size((next(widths), 24))
@@ -315,13 +337,13 @@ def test_resize_render_error_stays_on_the_board(monkeypatch) -> None:
 
         return original_render_board(*args, **kwargs)
 
-    def wait_for_resize(read_fd, seconds):
+    def wait_for_resize(read_fd, seconds, input_fd):
         """Request one resize, then close the board after its error frame."""
         nonlocal waits
         waits += 1
         if waits == 1:
             signal.getsignal(signal.SIGWINCH)(signal.SIGWINCH, None)
-            return True
+            return cli.Wakeup.RESIZE
 
         raise KeyboardInterrupt
 
@@ -335,7 +357,7 @@ def test_resize_render_error_stays_on_the_board(monkeypatch) -> None:
         lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "[]", ""),
     )
     monkeypatch.setattr(cli, "render_board", render_with_late_error)
-    monkeypatch.setattr(cli, "_wait_for_resize", wait_for_resize)
+    monkeypatch.setattr(cli, "_wait_for_wakeup", wait_for_resize)
     monkeypatch.setattr(cli.sys, "stdout", output)
     monkeypatch.setattr(output, "isatty", lambda: True)
 
@@ -350,11 +372,140 @@ def test_resize_wait_drains_the_wakeup_pipe() -> None:
     read_fd, write_fd = os.pipe()
     try:
         os.write(write_fd, b"x")
-        assert cli._wait_for_resize(read_fd, 0) is True
-        assert cli._wait_for_resize(read_fd, 0) is False
+        assert cli._wait_for_wakeup(read_fd, 0) is cli.Wakeup.RESIZE
+        assert cli._wait_for_wakeup(read_fd, 0) is cli.Wakeup.TIMEOUT
     finally:
         os.close(read_fd)
         os.close(write_fd)
+
+
+def test_r_wakes_the_board_after_other_keys() -> None:
+    """Other keys are skipped until r, and a later resize still wakes the board."""
+    resize_read_fd, resize_write_fd = os.pipe()
+    input_read_fd, input_write_fd = os.pipe()
+    try:
+        os.write(input_write_fd, b"xr")
+        assert (
+            cli._wait_for_wakeup(resize_read_fd, 0.1, input_read_fd) is cli.Wakeup.QUOTA
+        )
+        os.write(resize_write_fd, b"x")
+        assert (
+            cli._wait_for_wakeup(resize_read_fd, 0.1, input_read_fd)
+            is cli.Wakeup.RESIZE
+        )
+    finally:
+        os.close(resize_read_fd)
+        os.close(resize_write_fd)
+        os.close(input_read_fd)
+        os.close(input_write_fd)
+
+
+@pytest.mark.parametrize(
+    ("second_event", "expected"),
+    [("resize", cli.Wakeup.RESIZE), ("timeout", cli.Wakeup.TIMEOUT)],
+)
+def test_closed_input_does_not_keep_waking_the_board(
+    monkeypatch, second_event, expected
+) -> None:
+    """After input closes, a resize or the deadline still ends the wait."""
+    resize_read_fd, resize_write_fd = os.pipe()
+    input_read_fd, input_write_fd = os.pipe()
+    # Record which descriptors remain watched after input returns EOF.
+    watched = []
+    # Count reads from the closed input so another EOF cannot spin the loop.
+    input_reads = []
+    original_read = os.read
+
+    def next_event(descriptors, writes, errors, timeout):
+        """Deliver closed input first, then the selected later event."""
+        watched.append(list(descriptors))
+        if len(watched) == 1:
+            return [input_read_fd], [], []
+        if second_event == "resize":
+            return [resize_read_fd], [], []
+        return [], [], []
+
+    def read_descriptor(descriptor, size):
+        """Count input reads while letting the real pipes provide their bytes."""
+        if descriptor == input_read_fd:
+            input_reads.append(descriptor)
+        return original_read(descriptor, size)
+
+    try:
+        os.close(input_write_fd)
+        if second_event == "resize":
+            os.write(resize_write_fd, b"x")
+        monkeypatch.setattr(cli.select, "select", next_event)
+        monkeypatch.setattr(cli.os, "read", read_descriptor)
+
+        assert cli._wait_for_wakeup(resize_read_fd, 0.1, input_read_fd) is expected
+        assert watched == [
+            [resize_read_fd, input_read_fd],
+            [resize_read_fd],
+        ]
+        assert input_reads == [input_read_fd]
+    finally:
+        os.close(resize_read_fd)
+        os.close(resize_write_fd)
+        os.close(input_read_fd)
+
+
+@pytest.mark.parametrize("team_status", [None, "inactive", "blocked", "listening"])
+def test_quota_checks_follow_listed_teams_and_r(monkeypatch, team_status) -> None:
+    """Automatic checks need a listed team, while r also works on an empty board."""
+    output = io.StringIO()
+    input_stream = io.StringIO()
+    checks = []
+    waits = 0
+    member = {
+        "directory": "",
+        "name": "Team-orchestrator",
+        "status": team_status,
+        "status_age_seconds": 0,
+        "tag": "Team-orchestrator",
+        "unread_count": 0,
+    }
+
+    class Reader:
+        """Record scheduling requests without calling agent-quota."""
+
+        def check_if_due(self, has_team):
+            """Keep the team decision made from this HCOM listing."""
+            checks.append(("automatic", has_team))
+
+        def check_now(self):
+            """Record the explicit request from the keyboard."""
+            checks.append(("manual", True))
+
+    def listed_hcom(command, **kwargs):
+        """Return one team or no agents for this refresh."""
+        agents = [] if team_status is None else [member]
+        return subprocess.CompletedProcess(command, 0, json.dumps(agents), "")
+
+    def wait_for_key(read_fd, seconds, input_fd):
+        """Press r once and then close the board."""
+        nonlocal waits
+        waits += 1
+        if waits == 1:
+            return cli.Wakeup.QUOTA
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "QuotaReader", Reader)
+    monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
+    monkeypatch.setattr(cli.subprocess, "run", listed_hcom)
+    monkeypatch.setattr(cli, "_wait_for_wakeup", wait_for_key)
+    monkeypatch.setattr(cli.sys, "stdout", output)
+    monkeypatch.setattr(output, "isatty", lambda: True)
+    monkeypatch.setattr(cli.sys, "stdin", input_stream)
+    monkeypatch.setattr(input_stream, "isatty", lambda: True)
+    monkeypatch.setattr(input_stream, "fileno", lambda: 42)
+    monkeypatch.setattr(cli.termios, "tcgetattr", lambda fd: [1, 2, 3, 4, 5, 6, []])
+    monkeypatch.setattr(cli.termios, "tcsetattr", lambda *args: None)
+    monkeypatch.setattr(cli.tty, "setcbreak", lambda fd: None)
+
+    assert cli.main() == 0
+    expected = team_status not in (None, "inactive")
+    assert checks == [("automatic", expected), ("manual", True)]
 
 
 @pytest.mark.parametrize(
@@ -393,7 +544,9 @@ def test_unreadable_listing_is_reported_separately(
     monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
     monkeypatch.setattr(cli.subprocess, "run", unreadable_hcom)
     monkeypatch.setattr(
-        cli, "_wait_for_resize", lambda fd, seconds: stop_after_refresh(seconds)
+        cli,
+        "_wait_for_wakeup",
+        lambda fd, seconds, input_fd: stop_after_refresh(seconds),
     )
     monkeypatch.setattr(
         cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
@@ -421,7 +574,9 @@ def test_hcom_disappearing_shows_error_and_restores_cursor(monkeypatch) -> None:
     monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
     monkeypatch.setattr(cli.subprocess, "run", missing_hcom)
     monkeypatch.setattr(
-        cli, "_wait_for_resize", lambda fd, seconds: stop_after_refresh(seconds)
+        cli,
+        "_wait_for_wakeup",
+        lambda fd, seconds, input_fd: stop_after_refresh(seconds),
     )
     monkeypatch.setattr(
         cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
@@ -455,12 +610,16 @@ def test_each_refresh_uses_current_width_and_time(monkeypatch) -> None:
         if refreshes == 2:
             raise KeyboardInterrupt
 
+        return cli.Wakeup.TIMEOUT
+
     monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
     monkeypatch.setattr(cli.shutil, "get_terminal_size", lambda: next(sizes))
     monkeypatch.setattr(cli.time, "strftime", lambda format: next(times))
     monkeypatch.setattr(cli.subprocess, "run", listed_hcom)
     monkeypatch.setattr(
-        cli, "_wait_for_resize", lambda fd, seconds: stop_after_two_refreshes(seconds)
+        cli,
+        "_wait_for_wakeup",
+        lambda fd, seconds, input_fd: stop_after_two_refreshes(seconds),
     )
     monkeypatch.setattr(cli.sys, "stdout", output)
     monkeypatch.setattr(output, "isatty", lambda: True)
@@ -517,6 +676,8 @@ def test_refreshes_keep_the_phase_timer_until_the_displayed_status_changes(
         if refreshes == 3:
             raise KeyboardInterrupt
 
+        return cli.Wakeup.TIMEOUT
+
     monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
     monkeypatch.setattr(
         cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
@@ -524,7 +685,9 @@ def test_refreshes_keep_the_phase_timer_until_the_displayed_status_changes(
     monkeypatch.setattr(cli.subprocess, "run", listed_hcom)
     monkeypatch.setattr(cli.time, "monotonic", lambda: next(times))
     monkeypatch.setattr(
-        cli, "_wait_for_resize", lambda fd, seconds: stop_after_three_refreshes(seconds)
+        cli,
+        "_wait_for_wakeup",
+        lambda fd, seconds, input_fd: stop_after_three_refreshes(seconds),
     )
     monkeypatch.setattr(
         cli, "_poll_activity", lambda agents, previous, checked, now: ({}, now)
@@ -679,6 +842,8 @@ def test_quiet_team_polls_activity_and_terminal_once(monkeypatch) -> None:
         if refreshes == 4:
             raise KeyboardInterrupt
 
+        return cli.Wakeup.TIMEOUT
+
     monkeypatch.setattr(cli, "_read_last_activity", read_events)
     monkeypatch.setattr(cli, "_read_terminal_reason", read_terminal)
     monkeypatch.setattr(cli.subprocess, "run", listed_hcom)
@@ -688,7 +853,9 @@ def test_quiet_team_polls_activity_and_terminal_once(monkeypatch) -> None:
     )
     monkeypatch.setattr(cli.time, "monotonic", iter([1000, 1002, 1004, 1006]).__next__)
     monkeypatch.setattr(
-        cli, "_wait_for_resize", lambda fd, seconds: stop_after_four_refreshes(seconds)
+        cli,
+        "_wait_for_wakeup",
+        lambda fd, seconds, input_fd: stop_after_four_refreshes(seconds),
     )
     monkeypatch.setattr(cli.sys, "stdout", output)
     monkeypatch.setattr(output, "isatty", lambda: True)
@@ -776,6 +943,8 @@ def test_new_event_clears_quiet_reason_and_returns_team_to_working(monkeypatch) 
         if refreshes == 3:
             raise KeyboardInterrupt
 
+        return cli.Wakeup.TIMEOUT
+
     monkeypatch.setattr(cli, "_read_last_activity", read_events)
     monkeypatch.setattr(cli, "_read_terminal_reason", read_terminal)
     monkeypatch.setattr(cli.subprocess, "run", listed_hcom)
@@ -785,7 +954,9 @@ def test_new_event_clears_quiet_reason_and_returns_team_to_working(monkeypatch) 
     )
     monkeypatch.setattr(cli.time, "monotonic", iter([1000, 1002, 1030]).__next__)
     monkeypatch.setattr(
-        cli, "_wait_for_resize", lambda fd, seconds: stop_after_three_refreshes(seconds)
+        cli,
+        "_wait_for_wakeup",
+        lambda fd, seconds, input_fd: stop_after_three_refreshes(seconds),
     )
     monkeypatch.setattr(cli.sys, "stdout", output)
     monkeypatch.setattr(output, "isatty", lambda: True)

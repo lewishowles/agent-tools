@@ -11,15 +11,18 @@ import termios
 import time
 import tty
 from datetime import datetime
+from enum import Enum, auto
 from functools import partial
 from pathlib import Path
 
 from agent_board.board import (
     active_team_members,
+    lists_team,
     quiet_team_members,
     render_board,
     render_error,
 )
+from agent_board.quota import QuotaReader
 
 # The terminal code that opens a separate screen for the board, so its frames
 # stay out of the user's scrollback.
@@ -45,6 +48,17 @@ ACTIVITY_POLL_SECONDS = 30
 # failure. A live failure stays near the bottom of the pane, while an older one
 # higher up may already be over.
 RECENT_TERMINAL_LINES = 5
+
+
+class Wakeup(Enum):
+    """What ended the wait between board refreshes."""
+
+    # The terminal was resized, so the board redraws the listing it already has.
+    RESIZE = auto()
+    # The r key was pressed to check quota now.
+    QUOTA = auto()
+    # The wait ran out, so the board reads HCOM again.
+    TIMEOUT = auto()
 
 
 def main() -> int:
@@ -88,6 +102,9 @@ def main() -> int:
     # The main checkout found for each agent directory, kept across refreshes
     # so Git runs once per directory.
     checkout_by_directory = {}
+    # Checks quota on a background thread, so a slow check never holds up a
+    # refresh.
+    quota_reader = QuotaReader()
     # The two ends of a pipe the resize handler writes to. Writing to a pipe
     # takes no lock, so a resize can never freeze the board mid-wait.
     resize_read_fd = None
@@ -156,6 +173,8 @@ def main() -> int:
                     now = time.monotonic()
                     _update_unread_since(agents, unread_since, now)
                     _set_main_checkouts(agents, checkout_by_directory)
+                    if terminal:
+                        quota_reader.check_if_due(lists_team(agents))
 
                     last_activity, last_activity_checked_at = _poll_activity(
                         agents, last_activity, last_activity_checked_at, now
@@ -214,9 +233,14 @@ def main() -> int:
                 sys.stdout.write(CLEAR_SCREEN + "\n".join(lines) + "\n")
                 sys.stdout.flush()
 
-                if not _wait_for_resize(
-                    resize_read_fd, max(0, refresh_at - time.perf_counter())
-                ):
+                # A resize or key press redraws without moving the next HCOM
+                # reading.
+                wait_seconds = max(0, refresh_at - time.perf_counter())
+                wakeup = _wait_for_wakeup(resize_read_fd, wait_seconds, input_fd)
+
+                if wakeup is Wakeup.QUOTA:
+                    quota_reader.check_now()
+                elif wakeup is Wakeup.TIMEOUT:
                     break
     except KeyboardInterrupt:
         return 0
@@ -243,18 +267,48 @@ def main() -> int:
                     os.close(resize_write_fd)
 
 
-def _wait_for_resize(read_fd: int, timeout: float) -> bool:
-    """Wait until the terminal is resized or `timeout` seconds pass.
+def _wait_for_wakeup(
+    read_fd: int, timeout: float, input_fd: int | None = None
+) -> Wakeup:
+    """Wait until the terminal is resized, r is pressed or `timeout` seconds pass.
 
-    Returns True after a resize, with the pipe emptied so the next wait blocks
-    again.
+    Other keys are ignored and the wait carries on to the same deadline.
+
+    Args:
+        read_fd: The pipe the resize handler writes to, emptied after a resize
+            so the next wait blocks again.
+        timeout: The seconds left before the next HCOM reading.
+        input_fd: The terminal input to watch for r, or None when there is none.
+
+    Returns:
+        What ended the wait.
     """
-    readable, _, _ = select.select([read_fd], [], [], timeout)
-    if readable:
-        os.read(read_fd, 65536)
-        return True
+    deadline = time.monotonic() + timeout
+    descriptors = [read_fd] if input_fd is None else [read_fd, input_fd]
 
-    return False
+    while True:
+        readable, _, _ = select.select(
+            descriptors, [], [], max(0, deadline - time.monotonic())
+        )
+
+        if not readable:
+            return Wakeup.TIMEOUT
+
+        if read_fd in readable:
+            os.read(read_fd, 65536)
+
+        if input_fd in readable:
+            key = os.read(input_fd, 1)
+
+            if key == b"r":
+                return Wakeup.QUOTA
+
+            # Closed input always counts as readable, so stop watching it.
+            if not key:
+                descriptors.remove(input_fd)
+
+        if read_fd in readable:
+            return Wakeup.RESIZE
 
 
 def _unexpected_listing_message(error: KeyError | TypeError) -> str:

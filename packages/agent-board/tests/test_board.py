@@ -5,6 +5,7 @@ import re
 import pytest
 from agent_board.board import (
     ANSI_STYLE_PATTERN,
+    lists_team,
     quiet_team_members,
     render_board,
     render_error,
@@ -68,6 +69,14 @@ def board_content(
         rows.append(content.rstrip())
 
     return rows
+
+
+def test_listed_team_matches_the_board_grouping() -> None:
+    """Blocked and listening members count; inactive members do not."""
+    assert lists_team([]) is False
+    assert lists_team([agent("Team", None, status="inactive")]) is False
+    assert lists_team([agent("Team", None, status="blocked")]) is True
+    assert lists_team([agent("Team", None, status="listening")]) is True
 
 
 def test_phase_timer_starts_as_an_estimate_and_resets_when_the_status_changes() -> None:

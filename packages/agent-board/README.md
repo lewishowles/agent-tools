@@ -28,4 +28,4 @@ Install it from this workspace:
 uv tool install --from packages/agent-board agent-board
 ```
 
-Run `agent-board` beside your HCOM teams. It opens on a separate terminal screen; press Ctrl+C to close it and return to the screen you had before. When you pipe or redirect its output, it prints one plain snapshot and exits. The board needs `hcom` on `PATH`.
+Run `agent-board` beside your HCOM teams. It opens on a separate terminal screen; press `r` to refresh account quota, or Ctrl+C to close it and return to the screen you had before. While at least one team is listed, the board also refreshes quota in the background about every five minutes. Quota comes from `agent-quota`, which needs to be on `PATH`. It keeps each reading for a while (five minutes for Codex, ten for Claude), so a refresh can show a saved reading up to that old. When you pipe or redirect the board's output, it prints one plain snapshot and exits. The board needs `hcom` on `PATH`.

@@ -71,6 +71,11 @@ STUCK_AFTER_SECONDS = 60
 QUIET_AFTER_SECONDS = 300
 
 
+def lists_team(agents: list[dict]) -> bool:
+    """Report whether the board shows at least one team for this listing."""
+    return bool(_group_teams(agents))
+
+
 def active_team_members(agents: list[dict]) -> list[dict]:
     """Return members of teams that currently have an active agent."""
     return [
