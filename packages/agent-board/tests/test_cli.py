@@ -152,7 +152,8 @@ def test_nonzero_hcom_exit_is_shown_on_the_board(
         assert output.getvalue().count("HCOM error: listing failed") == 1
 
 
-def test_redirected_output_prints_one_plain_snapshot(monkeypatch) -> None:
+@pytest.mark.parametrize("width", [80, 122])
+def test_redirected_output_prints_one_plain_snapshot(monkeypatch, width: int) -> None:
     """A pipe receives one complete board without terminal controls or waiting."""
     output = io.StringIO()
     hcom_calls = []
@@ -170,7 +171,7 @@ def test_redirected_output_prints_one_plain_snapshot(monkeypatch) -> None:
     monkeypatch.setattr(cli.subprocess, "run", listed_hcom)
     monkeypatch.setattr(cli, "_wait_for_wakeup", unexpected_wait)
     monkeypatch.setattr(
-        cli.shutil, "get_terminal_size", lambda: os.terminal_size((80, 24))
+        cli.shutil, "get_terminal_size", lambda: os.terminal_size((width, 24))
     )
     monkeypatch.setattr(cli.time, "strftime", lambda format: "12:34:56")
     monkeypatch.setattr(cli.sys, "stdout", output)
@@ -180,7 +181,11 @@ def test_redirected_output_prints_one_plain_snapshot(monkeypatch) -> None:
     assert hcom_calls == [["hcom", "list", "--json"]]
     assert output.getvalue().startswith("\n╭─ ✻ agent board ")
     assert "12:34:56 ─╮" in output.getvalue()
-    assert "╯\n\nQuota\nNot checked yet\n" in output.getvalue()
+    if width == 80:
+        assert "╯\n\nQuota\nNot checked yet\n" in output.getvalue()
+    else:
+        assert "─╮  Quota\n" in output.getvalue()
+        assert "│  Not checked yet\n" in output.getvalue()
     assert "\x1b[" not in output.getvalue()
 
 

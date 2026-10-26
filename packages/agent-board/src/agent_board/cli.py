@@ -18,10 +18,10 @@ from pathlib import Path
 from agent_board.board import (
     active_team_members,
     lists_team,
+    place_quota_panel,
     quiet_team_members,
     render_board,
     render_error,
-    stack_quota_panel,
 )
 from agent_board.quota import QuotaReader
 from agent_board.quota_panel import render_quota_panel
@@ -227,8 +227,18 @@ def main() -> int:
                     )
                     lines = draw_board(width=width, current_time=current_time)
 
-                panel_lines = render_quota_panel(quota_reader.snapshot(), width=width)
-                lines = stack_quota_panel(lines, panel_lines, width=width)
+                # The board chooses the panel width, so it gets a function that
+                # draws the panel at that width.
+                # The default argument only satisfies Ruff's loop-variable check:
+                # the panel is drawn before the loop moves on.
+                snapshot = quota_reader.snapshot()
+                lines = place_quota_panel(
+                    lines,
+                    lambda panel_width, snapshot=snapshot: render_quota_panel(
+                        snapshot, width=panel_width
+                    ),
+                    width=width,
+                )
 
                 if not terminal:
                     sys.stdout.write("\n".join(lines) + "\n")

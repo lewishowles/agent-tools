@@ -2,6 +2,8 @@
 
 import re
 from collections import defaultdict
+from collections.abc import Callable
+from itertools import zip_longest
 from pathlib import Path
 
 # The board label for each role's work, in priority order: the first role
@@ -57,9 +59,18 @@ ANSI_STYLE_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 # plain rows, because the title and clock alone need 29 columns.
 MIN_FRAME_WIDTH = 30
 
-# The widest the frame gets. Wider terminals leave the extra columns empty to
-# the right, so the clock and counts stay close to the rows they describe.
+# The widest the teams frame gets, so its clock and counts stay close to the
+# rows they describe. The quota panel shares this limit, and on wide terminals
+# it fills the space to the right of the frame.
 MAX_FRAME_WIDTH = 80
+
+# The blank columns between the teams frame and the quota panel when they sit
+# side by side.
+_SIDE_PANEL_GAP = 2
+
+# The narrowest the quota panel gets beside the teams frame. Narrower terminals
+# put the panel below the frame, so the side layout starts at 122 columns.
+_MIN_SIDE_PANEL_WIDTH = 40
 
 # How long a waiting agent can leave messages unread before its team shows as
 # stuck. Messages normally wake an agent within a refresh or two, so a longer
@@ -381,14 +392,15 @@ def render_error(
     )
 
 
-def stack_quota_panel(
-    board_lines: list[str], panel_lines: list[str], *, width: int
+def place_quota_panel(
+    board_lines: list[str], render_panel: Callable[[int], list[str]], *, width: int
 ) -> list[str]:
-    """Put the quota panel under the teams board, except in the compact view.
+    """Put the quota panel beside the teams board on wide terminals, or below it.
 
     Args:
         board_lines: The already rendered teams board or HCOM error.
-        panel_lines: The quota heading and account lines.
+        render_panel: Draws the quota panel at the width it is given. It is
+            called once, after the board has chosen the panel's width.
         width: The terminal's width for this refresh.
 
     Returns:
@@ -397,7 +409,33 @@ def stack_quota_panel(
     if width < MIN_FRAME_WIDTH:
         return board_lines
 
+    if width >= MAX_FRAME_WIDTH + _SIDE_PANEL_GAP + _MIN_SIDE_PANEL_WIDTH:
+        panel_width = min(width - MAX_FRAME_WIDTH - _SIDE_PANEL_GAP, MAX_FRAME_WIDTH)
+        return _join_columns(board_lines, render_panel(panel_width))
+
+    panel_lines = render_panel(width)
     return [*board_lines, "", *panel_lines]
+
+
+def _join_columns(board_lines: list[str], panel_lines: list[str]) -> list[str]:
+    """Show the quota panel to the right of the teams frame.
+
+    The board's blank first line stays on its own, so the quota heading sits
+    level with the frame's top edge. When one column runs out, the other
+    carries on alone, and quota rows below the frame keep the panel's column.
+    """
+    top_line, *frame_lines = board_lines
+    rows = []
+
+    for board_line, panel_line in zip_longest(frame_lines, panel_lines, fillvalue=""):
+        if not panel_line:
+            rows.append(board_line)
+            continue
+
+        padding = " " * (MAX_FRAME_WIDTH - _visible_width(board_line))
+        rows.append(f"{board_line}{padding}{' ' * _SIDE_PANEL_GAP}{panel_line}")
+
+    return [top_line, *rows]
 
 
 def _plain_lines(lines: list[str], width: int) -> list[str]:

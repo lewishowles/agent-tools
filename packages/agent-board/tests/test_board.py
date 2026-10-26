@@ -6,10 +6,10 @@ import pytest
 from agent_board.board import (
     ANSI_STYLE_PATTERN,
     lists_team,
+    place_quota_panel,
     quiet_team_members,
     render_board,
     render_error,
-    stack_quota_panel,
 )
 from agent_board.cli import _update_unread_since
 
@@ -1152,13 +1152,102 @@ def test_missing_tag_uses_agent_name_as_team_prefix() -> None:
     )
 
 
-@pytest.mark.parametrize("width", [29, 30, 80])
+@pytest.mark.parametrize("width", [29, 30, 80, 121])
 def test_quota_stacks_below_frame_without_changing_compact_rows(width: int) -> None:
-    """The panel starts below the teams frame from 30 columns onward."""
+    """The panel starts below the teams frame from 30 through 121 columns."""
     board_lines = render_board([], width=width, current_time="12:34:56")
-    combined = stack_quota_panel(board_lines, ["Quota", "Not checked yet"], width=width)
+    panel_widths = []
+
+    def render_panel(panel_width: int) -> list[str]:
+        """Record the width selected for the quota panel."""
+        panel_widths.append(panel_width)
+        return ["Quota", "Not checked yet"]
+
+    combined = place_quota_panel(board_lines, render_panel, width=width)
 
     if width < 30:
         assert combined == board_lines
+        assert panel_widths == []
     else:
         assert combined == [*board_lines, "", "Quota", "Not checked yet"]
+        assert panel_widths == [width]
+
+
+@pytest.mark.parametrize("width", [122, 200])
+def test_quota_uses_the_spare_width_beside_the_full_board(width: int) -> None:
+    """The side panel grows with the terminal until it reaches 80 columns."""
+    board_lines = render_board([], width=width, current_time="12:34:56")
+    panel_widths = []
+
+    def render_panel(panel_width: int) -> list[str]:
+        """Draw a line that fills the width selected by the board."""
+        panel_widths.append(panel_width)
+        return ["Quota", "x" * panel_width]
+
+    combined = place_quota_panel(board_lines, render_panel, width=width)
+    panel_width = min(width - 82, 80)
+
+    assert panel_widths == [panel_width]
+    assert combined[0] == ""
+    assert combined[1] == board_lines[1] + "  Quota"
+    assert combined[2] == board_lines[2] + "  " + "x" * panel_width
+    assert all(len(ANSI_STYLE_PATTERN.sub("", line)) <= width for line in combined)
+
+
+@pytest.mark.parametrize("colour", [False, True])
+def test_taller_teams_column_keeps_the_quota_in_place(colour: bool) -> None:
+    """A short quota panel leaves the lower teams rows untouched, coloured or plain."""
+    agents = [
+        agent(f"Agent-Tools-{index}", "scout", status="active") for index in range(5)
+    ]
+    board_lines = render_board(
+        agents, width=122, current_time="12:34:56", colour=colour
+    )
+
+    combined = place_quota_panel(board_lines, lambda width: ["Quota"], width=122)
+
+    assert len(combined) == len(board_lines)
+    assert combined[1] == board_lines[1] + "  Quota"
+    assert all(
+        ANSI_STYLE_PATTERN.sub("", line) == ANSI_STYLE_PATTERN.sub("", board_line)
+        for line, board_line in zip(combined[2:], board_lines[2:])
+    )
+
+
+def test_taller_quota_column_pads_after_the_teams_frame() -> None:
+    """Quota rows continue in the right column when the teams frame ends."""
+    board_lines = render_board([], width=122, current_time="12:34:56")
+    panel_lines = ["Quota", *[f"account {index}" for index in range(8)]]
+
+    combined = place_quota_panel(board_lines, lambda width: panel_lines, width=122)
+
+    assert len(combined) == len(panel_lines) + 1
+    assert combined[len(board_lines)] == " " * 82 + panel_lines[len(board_lines) - 1]
+    assert combined[-1] == " " * 82 + panel_lines[-1]
+
+
+def test_quota_heading_lines_up_beside_an_hcom_error() -> None:
+    """The quota heading sits beside the top edge of an hcom error frame."""
+    error_lines = render_error("listing failed", width=122, current_time="12:34:56")
+
+    combined = place_quota_panel(error_lines, lambda width: ["Quota"], width=122)
+
+    assert combined[0] == ""
+    assert combined[1] == error_lines[1] + "  Quota"
+
+
+def test_quota_layout_switches_when_the_terminal_crosses_122_columns() -> None:
+    """Every redraw places the same panel according to the current width."""
+    panel_lines = ["Quota", "Not checked yet"]
+    layouts = []
+
+    for width in [121, 122, 121]:
+        board_lines = render_board([], width=width, current_time="12:34:56")
+        layouts.append(
+            place_quota_panel(board_lines, lambda panel_width: panel_lines, width=width)
+        )
+
+    assert layouts[0] == layouts[2]
+    assert layouts[0][-2:] == panel_lines
+    assert layouts[1][1].endswith("  Quota")
+    assert layouts[1][-2:] != panel_lines
