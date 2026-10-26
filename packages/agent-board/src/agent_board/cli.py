@@ -21,8 +21,10 @@ from agent_board.board import (
     quiet_team_members,
     render_board,
     render_error,
+    stack_quota_panel,
 )
 from agent_board.quota import QuotaReader
+from agent_board.quota_panel import render_quota_panel
 
 # The terminal code that opens a separate screen for the board, so its frames
 # stay out of the user's scrollback.
@@ -224,6 +226,9 @@ def main() -> int:
                         render_error, _unexpected_listing_message(error), colour=colour
                     )
                     lines = draw_board(width=width, current_time=current_time)
+
+                panel_lines = render_quota_panel(quota_reader.snapshot(), width=width)
+                lines = stack_quota_panel(lines, panel_lines, width=width)
 
                 if not terminal:
                     sys.stdout.write("\n".join(lines) + "\n")

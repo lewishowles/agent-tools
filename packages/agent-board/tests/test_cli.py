@@ -10,6 +10,7 @@ import termios
 import pytest
 from agent_board import cli
 from agent_board.board import ANSI_STYLE_PATTERN
+from agent_board.quota import QuotaSnapshot
 
 
 @pytest.fixture(autouse=True)
@@ -26,6 +27,10 @@ def keep_quota_checks_local(monkeypatch) -> None:
         def check_now(self):
             """Accept a key press without checking an external account."""
             return False
+
+        def snapshot(self):
+            """Show no readings, as before the first check."""
+            return QuotaSnapshot(accounts={}, error=None, checking=False)
 
     monkeypatch.setattr(cli, "QuotaReader", Reader)
 
@@ -175,7 +180,7 @@ def test_redirected_output_prints_one_plain_snapshot(monkeypatch) -> None:
     assert hcom_calls == [["hcom", "list", "--json"]]
     assert output.getvalue().startswith("\n╭─ ✻ agent board ")
     assert "12:34:56 ─╮" in output.getvalue()
-    assert output.getvalue().endswith("╯\n")
+    assert "╯\n\nQuota\nNot checked yet\n" in output.getvalue()
     assert "\x1b[" not in output.getvalue()
 
 
@@ -477,6 +482,12 @@ def test_quota_checks_follow_listed_teams_and_r(monkeypatch, team_status) -> Non
             """Record the explicit request from the keyboard."""
             checks.append(("manual", True))
 
+        def snapshot(self):
+            """Show the latest check state on the redraw after r."""
+            return QuotaSnapshot(
+                accounts={}, error=None, checking=("manual", True) in checks
+            )
+
     def listed_hcom(command, **kwargs):
         """Return one team or no agents for this refresh."""
         agents = [] if team_status is None else [member]
@@ -506,6 +517,7 @@ def test_quota_checks_follow_listed_teams_and_r(monkeypatch, team_status) -> Non
     assert cli.main() == 0
     expected = team_status not in (None, "inactive")
     assert checks == [("automatic", expected), ("manual", True)]
+    assert "Quota · Checking…" in output.getvalue()
 
 
 @pytest.mark.parametrize(

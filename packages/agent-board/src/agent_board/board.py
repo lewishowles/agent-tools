@@ -381,12 +381,31 @@ def render_error(
     )
 
 
+def stack_quota_panel(
+    board_lines: list[str], panel_lines: list[str], *, width: int
+) -> list[str]:
+    """Put the quota panel under the teams board, except in the compact view.
+
+    Args:
+        board_lines: The already rendered teams board or HCOM error.
+        panel_lines: The quota heading and account lines.
+        width: The terminal's width for this refresh.
+
+    Returns:
+        The combined lines, or only the teams board below 30 columns.
+    """
+    if width < MIN_FRAME_WIDTH:
+        return board_lines
+
+    return [*board_lines, "", *panel_lines]
+
+
 def _plain_lines(lines: list[str], width: int) -> list[str]:
     """Show the board's lines without a frame, each shortened to the terminal width.
 
     The leading empty line matches the gap above the frame on wider terminals.
     """
-    return ["", *(_shorten_visible(line, width) for line in lines)]
+    return ["", *(shorten_visible(line, width) for line in lines)]
 
 
 def _frame_lines(
@@ -429,7 +448,7 @@ def _frame_lines(
     # The corners, the dashes beside the text and the spaces around it use six
     # columns.
     bottom_start = (
-        f"╰─ {_shorten_visible(bottom_text, width - 6)} "
+        f"╰─ {shorten_visible(bottom_text, width - 6)} "
         if bottom_text is not None
         else "╰"
     )
@@ -455,7 +474,7 @@ def _frame_lines(
     framed_rows = []
 
     for line in lines:
-        short_line = _shorten_visible(line, content_width)
+        short_line = shorten_visible(line, content_width)
         padding = " " * (content_width - _visible_width(short_line))
 
         if frame_style:
@@ -474,7 +493,7 @@ def _visible_width(line: str) -> int:
     return len(ANSI_STYLE_PATTERN.sub("", line))
 
 
-def _shorten_visible(line: str, width: int) -> str:
+def shorten_visible(line: str, width: int) -> str:
     """Shorten a line to fit a number of columns, ending it with "…" when cut.
 
     Colour codes take no columns and are never split. A shortened line that

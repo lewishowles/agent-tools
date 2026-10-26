@@ -9,6 +9,7 @@ from agent_board.board import (
     quiet_team_members,
     render_board,
     render_error,
+    stack_quota_panel,
 )
 from agent_board.cli import _update_unread_since
 
@@ -1149,3 +1150,15 @@ def test_missing_tag_uses_agent_name_as_team_prefix() -> None:
     assert board_content([entry])[1] == (
         "○ working  Agent-Tools · standalone-lamo (partial team)"
     )
+
+
+@pytest.mark.parametrize("width", [29, 30, 80])
+def test_quota_stacks_below_frame_without_changing_compact_rows(width: int) -> None:
+    """The panel starts below the teams frame from 30 columns onward."""
+    board_lines = render_board([], width=width, current_time="12:34:56")
+    combined = stack_quota_panel(board_lines, ["Quota", "Not checked yet"], width=width)
+
+    if width < 30:
+        assert combined == board_lines
+    else:
+        assert combined == [*board_lines, "", "Quota", "Not checked yet"]
