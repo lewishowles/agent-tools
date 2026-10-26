@@ -17,12 +17,14 @@ from pathlib import Path
 
 from agent_board.board import (
     active_team_members,
+    group_teams,
     lists_team,
     place_quota_panel,
     quiet_team_members,
     render_board,
     render_error,
 )
+from agent_board.progress_lookup import ProgressReader
 from agent_board.quota import QuotaReader
 from agent_board.quota_panel import render_quota_panel
 
@@ -107,6 +109,8 @@ def main() -> int:
     # Checks quota on a background thread, so a slow check never holds up a
     # refresh.
     quota_reader = QuotaReader()
+    # Checks each team's task in the background and keeps the last usable task.
+    progress_reader = ProgressReader()
     # The two ends of a pipe the resize handler writes to. Writing to a pipe
     # takes no lock, so a resize can never freeze the board mid-wait.
     resize_read_fd = None
@@ -175,6 +179,7 @@ def main() -> int:
                     now = time.monotonic()
                     _update_unread_since(agents, unread_since, now)
                     _set_main_checkouts(agents, checkout_by_directory)
+                    progress_reader.update(_team_directories(agents))
                     if terminal:
                         quota_reader.check_if_due(lists_team(agents))
 
@@ -280,6 +285,31 @@ def main() -> int:
                     os.close(resize_read_fd)
                 if resize_write_fd is not None:
                     os.close(resize_write_fd)
+
+
+def _team_directories(agents: list[dict]) -> dict[str, str]:
+    """Pick one working directory per team for task lookups.
+
+    The orchestrator's directory wins; otherwise the first listed member's.
+
+    Args:
+        agents: The members in the latest HCOM listing.
+
+    Returns:
+        One working directory per team, keyed as the board keys its rows.
+    """
+    # Keep one selected working directory for each team on the board.
+    directories = {}
+
+    for key, members in group_teams(agents).items():
+        # The orchestrator's directory represents the team when present.
+        chosen = next(
+            (agent for agent, role in members if role == "orchestrator"),
+            members[0][0],
+        )
+        directories[key] = chosen["directory"]
+
+    return directories
 
 
 def _wait_for_wakeup(

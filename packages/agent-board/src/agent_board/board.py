@@ -84,14 +84,14 @@ QUIET_AFTER_SECONDS = 300
 
 def lists_team(agents: list[dict]) -> bool:
     """Report whether the board shows at least one team for this listing."""
-    return bool(_group_teams(agents))
+    return bool(group_teams(agents))
 
 
 def active_team_members(agents: list[dict]) -> list[dict]:
     """Return members of teams that currently have an active agent."""
     return [
         agent
-        for members in _group_teams(agents).values()
+        for members in group_teams(agents).values()
         if any(member["status"] == "active" for member, _ in members)
         for agent, _ in members
     ]
@@ -111,7 +111,7 @@ def quiet_team_members(
     """
     quiet = {}
 
-    for key, members in _group_teams(agents).items():
+    for key, members in group_teams(agents).items():
         active = [agent for agent, _ in members if agent["status"] == "active"]
 
         if not active or any(
@@ -174,7 +174,7 @@ def render_board(
             The board updates this in place and removes teams that have gone.
             When omitted, rows show no timer except blocked HCOM wait times.
     """
-    teams = _group_teams(agents)
+    teams = group_teams(agents)
     unread_since = unread_since or {}
     last_activity = last_activity or {}
 
@@ -576,7 +576,7 @@ def shorten_visible(line: str, width: int) -> str:
     )
 
 
-def _group_teams(
+def group_teams(
     agents: list[dict],
 ) -> dict[str, list[tuple[dict, str | None]]]:
     """Group live agents by their team tag for polling and display."""

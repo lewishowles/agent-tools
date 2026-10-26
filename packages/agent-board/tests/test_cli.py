@@ -35,6 +35,93 @@ def keep_quota_checks_local(monkeypatch) -> None:
     monkeypatch.setattr(cli, "QuotaReader", Reader)
 
 
+@pytest.fixture(autouse=True)
+def keep_progress_checks_local(monkeypatch) -> None:
+    """Keep CLI tests from starting progress commands in background threads."""
+
+    class Reader:
+        """Leave task lookup scheduling to its dedicated tests."""
+
+        def update(self, directories):
+            """Accept each listing without starting an external command."""
+
+    monkeypatch.setattr(cli, "ProgressReader", Reader)
+
+
+def test_team_directories_prefer_orchestrator_and_skip_inactive_members() -> None:
+    """Progress uses the same team keys and live members as the board."""
+    agents = [
+        {
+            "name": "Alpha-scout",
+            "tag": "Alpha-scout",
+            "status": "listening",
+            "directory": "/scout",
+        },
+        {
+            "name": "Alpha-orchestrator",
+            "tag": "Alpha-orchestrator",
+            "status": "active",
+            "directory": "/leader",
+        },
+        {
+            "name": "Beta-reviewer",
+            "tag": "Beta-reviewer",
+            "status": "blocked",
+            "directory": "/reviewer",
+        },
+        {"name": "Other", "status": "listening", "directory": "/other"},
+        {
+            "name": "Gone",
+            "tag": "Gone-scout",
+            "status": "inactive",
+            "directory": "/gone",
+        },
+    ]
+
+    assert cli._team_directories(agents) == {
+        "Alpha": "/leader",
+        "Beta": "/reviewer",
+        "Other": "/other",
+    }
+
+
+def test_main_sends_team_directories_to_progress_reader(monkeypatch) -> None:
+    """A successful listing schedules each live team's directory."""
+    output = io.StringIO()
+    updates = []
+    agents = [
+        {
+            "name": "Alpha-orchestrator",
+            "tag": "Alpha-orchestrator",
+            "status": "listening",
+            "directory": "/project",
+            "unread_count": 0,
+        }
+    ]
+
+    class Reader:
+        """Record the directories selected by the CLI."""
+
+        def update(self, directories):
+            """Keep the latest team map for the assertion."""
+            updates.append(directories)
+
+    monkeypatch.setattr(cli, "ProgressReader", Reader)
+    monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, json.dumps(agents), ""
+        ),
+    )
+    monkeypatch.setattr(cli, "_set_main_checkouts", lambda agents, cache: None)
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.main() == 0
+    assert updates == [{"Alpha": "/project"}]
+
+
 def test_missing_hcom_returns_one_without_hiding_cursor(monkeypatch) -> None:
     """A missing command exits before changing the terminal display."""
     output = io.StringIO()
