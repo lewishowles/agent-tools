@@ -20,7 +20,7 @@ from agent_run.commands import (
     rename_command,
 )
 from agent_run.database import connect_database
-from agent_run.repository import Repository, create_repository_id
+from agent_run.repository import Repository, create_repository_id, identify_repository
 
 
 def _initialise_repository(path: Path) -> Path:
@@ -391,6 +391,51 @@ def test_cli_add_and_list_support_text_and_json(
         },
     }
     assert list_output.err == ""
+
+
+def test_cli_list_text_shows_only_non_default_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The text list shows a command line and only settings that were changed."""
+    root = _initialise_repository(tmp_path / "repository")
+    (root / "scripts").mkdir()
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    repository = identify_repository()
+    connection = connect_database(tmp_path / "agent-run.db")
+    try:
+        add_command(
+            connection,
+            repository,
+            "build",
+            ["make", "all"],
+            "scripts",
+            capability="file-list",
+            manual=True,
+            timeout_seconds=30,
+        )
+        add_command(connection, repository, "test", ["pytest", "unit tests"])
+    finally:
+        connection.close()
+
+    exit_code = main(["list"])
+    output = capsys.readouterr()
+
+    assert exit_code == 0
+    assert output.out == (
+        "build\n"
+        "make all\n"
+        "./scripts\n"
+        "--file, --glob\n"
+        "manual · 30s timeout\n"
+        "\n"
+        "test\n"
+        "pytest 'unit tests'\n"
+    )
+    assert output.err == ""
 
 
 @pytest.mark.parametrize("timeout", ["0", "-1"])

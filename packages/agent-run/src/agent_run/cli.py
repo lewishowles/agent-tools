@@ -2276,6 +2276,34 @@ def _format_command(command: Command) -> str:
     )
 
 
+def _format_list_command(command: Command) -> str:
+    """Format one command for `agent-run list`.
+
+    The name and command line always appear. The folder, file support, manual
+    flag and timeout only appear when they differ from the defaults.
+    """
+    lines = [
+        render_span(command.name, tone="info"),
+        render_span(shlex.join(command.argv), tone="muted"),
+    ]
+
+    if command.working_directory != ".":
+        lines.append(render_span(f"./{command.working_directory}", tone="muted"))
+
+    if command.capability == FILE_LIST_CAPABILITY:
+        lines.append(render_span("--file, --glob", tone="muted"))
+
+    settings = []
+    if command.manual:
+        settings.append("manual")
+    if command.timeout_seconds is not None:
+        settings.append(f"{command.timeout_seconds:g}s timeout")
+    if settings:
+        lines.append(render_span(" · ".join(settings), tone="muted"))
+
+    return "\n".join(lines)
+
+
 def _format_timeout(timeout_seconds: float) -> str:
     """Format a timeout value with the unit shown to a human."""
     unit = "second" if timeout_seconds == 1 else "seconds"
@@ -2287,7 +2315,7 @@ def _format_commands(commands: Sequence[Command]) -> str:
     if not commands:
         return render_empty_state(title="No named commands registered")
 
-    return "\n\n".join(_format_command(command) for command in commands)
+    return "\n\n".join(_format_list_command(command) for command in commands)
 
 
 def _is_interactive_terminal() -> bool:

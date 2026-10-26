@@ -2434,7 +2434,7 @@ def test_cli_named_file_list_run_appends_relative_files(
     list_output = capsys.readouterr()
 
     assert list_exit_code == 0
-    assert "capability         file-list" in list_output.out
+    assert "--file, --glob" in list_output.out
 
     exit_code = main(
         [
