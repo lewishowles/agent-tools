@@ -1257,7 +1257,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
         data = {"commands": [_command_record(command) for command in commands]}
-        text = _format_commands(commands)
+        text = f"\n{_format_commands(commands)}"
 
         if parsed.json:
             return render_success(json_mode=True, data=data)

@@ -426,7 +426,7 @@ def test_cli_list_text_shows_only_non_default_settings(
 
     assert exit_code == 0
     assert output.out == (
-        "build\n"
+        "\nbuild\n"
         "make all\n"
         "./scripts\n"
         "--file, --glob\n"
