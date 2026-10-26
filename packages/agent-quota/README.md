@@ -36,7 +36,7 @@ For tools that need structured data:
 agent-quota --json
 ```
 
-The result has one account entry per row. `used_percent` is the share spent as a whole number, and all known times are ISO 8601 UTC strings with a `+00:00` offset. An unreadable account has an `error` in place of `session` and `week`, with `checked_at: null`. This abbreviated example shows one available account and one unavailable account:
+The result has one account entry per row. `used_percent` is the share spent as a whole number, and all known times are ISO 8601 UTC strings with a `+00:00` offset. An unreadable account has a short `error` in place of `session` and `week`, with `checked_at: null`. When the probe has more information, `error_detail` holds the response and stderr excerpts, plus the Codex request number when available. For a signed-out Claude account, the detail starts with the command to sign in. The detail is omitted when there is none and never appears in the table. This abbreviated example shows one available account and one unavailable account:
 
 ```json
 {
@@ -62,7 +62,8 @@ The result has one account entry per row. `used_percent` is the share spent as a
         "provider": "codex",
         "account": "2",
         "checked_at": null,
-        "error": "Codex quota request failed"
+        "error": "Codex rejected the quota request",
+        "error_detail": "request: 2; response: {\"id\":2,\"error\":{\"message\":\"unauthorised\"}}; stderr: <empty>"
       }
     ]
   }

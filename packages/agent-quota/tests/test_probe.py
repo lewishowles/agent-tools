@@ -179,6 +179,99 @@ def test_account_usage_reports_probe_errors(tmp_path, monkeypatch):
     }
 
 
+def test_account_usage_keeps_signed_out_instructions_in_detail(tmp_path, monkeypatch):
+    """A named signed-out Claude account keeps sign-in steps out of its short error."""
+
+    class Server:
+        """A finished Claude process whose output has no quota windows."""
+
+        # The exit status of a Claude run that worked but printed no quota.
+        returncode = 0
+
+        def communicate(self, timeout):
+            """Return text from a signed-out account without starting Claude."""
+            assert timeout == 20
+            return b"Cost summary without usage windows", b""
+
+    monkeypatch.setattr(probe.subprocess, "Popen", lambda *args, **kwargs: Server())
+    monkeypatch.setattr(probe, "stop_server", lambda server: b"")
+    monkeypatch.setattr(probe, "claude_signed_out", lambda env: True)
+    monkeypatch.setattr(probe.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    result = probe.account_usage("claude", "2")
+
+    assert result["error"] == "Claude account is signed out"
+    assert "Sign in with: CLAUDE_CONFIG_DIR=" in result["error_detail"]
+    assert "Sign in" not in result["error"]
+
+
+def test_account_usage_separates_response_and_stderr_from_error(tmp_path, monkeypatch):
+    """Raw tool output stays in the diagnostic field, away from the account message."""
+    monkeypatch.setattr(probe.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    def fail_probe(account_home):
+        """Return a failed provider response with separate output streams."""
+        raise probe.probe_error(
+            "Claude quota request failed", '{"reason":"logged out"}', "login expired"
+        )
+
+    monkeypatch.setattr(probe, "claude_usage", fail_probe)
+
+    assert probe.account_usage("claude", "default") == {
+        "provider": "claude",
+        "account": "default",
+        "error": "Claude quota request failed",
+        "error_detail": 'response: {"reason":"logged out"}; stderr: login expired',
+    }
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected_error"),
+    [
+        ('{"id":2,"error":{"message":"denied"}}', "Codex rejected the quota request"),
+        (None, "Codex closed the connection during the quota request"),
+    ],
+)
+def test_codex_request_failure_keeps_request_number_in_detail(
+    tmp_path, monkeypatch, reply, expected_error
+):
+    """A failed RPC identifies the request in JSON detail, never in the short error."""
+    server_script = tmp_path / "codex_server.py"
+    server_script.write_text(
+        """import json
+import sys
+
+json.loads(sys.stdin.readline())
+print(json.dumps({"id": 1, "result": {}}), flush=True)
+json.loads(sys.stdin.readline())
+json.loads(sys.stdin.readline())
+if sys.argv[1] != "closed":
+    print(sys.argv[1], flush=True)
+print("provider diagnostic", file=sys.stderr, flush=True)
+"""
+    )
+    real_popen = subprocess.Popen
+
+    def start_server(command, **kwargs):
+        """Use a local server that rejects or closes the second request."""
+        assert command == ["codex", "app-server"]
+        mode = "closed" if reply is None else reply
+        return real_popen([sys.executable, str(server_script), mode], **kwargs)
+
+    monkeypatch.setattr(probe.subprocess, "Popen", start_server)
+    monkeypatch.setattr(probe.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    result = probe.account_usage("codex", "default")
+
+    assert result["error"] == expected_error
+    assert "2" not in result["error"]
+    assert "denied" not in result["error"]
+    assert "request: 2" in result["error_detail"]
+    assert "stderr: provider diagnostic" in result["error_detail"]
+    if reply is not None:
+        assert "denied" in result["error_detail"]
+
+
 def test_account_usage_names_unexpected_probe_failures(tmp_path, monkeypatch):
     """An unexpected failure reports only its error type, never the raw details."""
     monkeypatch.setattr(probe.tempfile, "gettempdir", lambda: str(tmp_path))

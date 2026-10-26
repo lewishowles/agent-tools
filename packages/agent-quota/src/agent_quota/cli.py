@@ -28,7 +28,8 @@ def account_data(reading):
     """Turn one probe reading into its JSON entry, with used rather than remaining percentages.
 
     Used percentages are rounded to whole numbers, as the table shows them, so every
-    provider gives the same number type.
+    provider gives the same number type. An unreadable account gets its short error
+    instead, plus error_detail only when the probe gave one.
     """
     result = {
         "provider": reading["provider"],
@@ -40,6 +41,8 @@ def account_data(reading):
 
     if "error" in reading:
         result["error"] = reading["error"]
+        if reading.get("error_detail"):
+            result["error_detail"] = reading["error_detail"]
         return result
 
     for name in ("session", "week"):

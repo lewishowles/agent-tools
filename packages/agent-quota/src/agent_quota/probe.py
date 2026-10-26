@@ -43,12 +43,36 @@ class QuotaResponseError(ValueError):
     # @param  {str}  message
     #     What went wrong, used as the error text.
     # @param  {str}  response
-    #     The line that could not be used, already decoded.
-    def __init__(self, message, response):
+    #     The line that could not be used, already decoded, or None when the
+    #     connection closed before a line arrived.
+    # @param  {int}  request_id
+    #     The request that failed, kept out of the message so the account error stays
+    #     short.
+    def __init__(self, message, response, request_id=None):
         super().__init__(message)
 
         # The unusable line, read by codex_usage when it builds the probe error.
         self.response = response
+
+        # The failed request's number, added to the error detail by codex_usage.
+        self.request_id = request_id
+
+
+# A failed probe whose short message is shown to people and whose detail is kept for
+# diagnosis.
+#
+# It is a ValueError so the handlers for expected probe failures catch it, and
+# account_usage copies the detail into the account's error_detail field.
+class _ProbeError(ValueError):
+    # @param  {str}  message
+    #     What went wrong, in one short sentence.
+    # @param  {str}  detail
+    #     The excerpts and request number that explain the failure.
+    def __init__(self, message, detail):
+        super().__init__(message)
+
+        # The diagnostic text, which the table never shows.
+        self.detail = detail
 
 
 # Reduce text to a single bounded line for inclusion in an error.
@@ -106,8 +130,9 @@ def response_text(response):
 
 # Build the error a failed probe raises, naming what the tool actually returned.
 #
-# Without the excerpts, a logged-out account, an empty response, and a genuine change
-# in wording all report the same sentence and cannot be told apart afterwards.
+# The message stays short for the table, and the excerpts go into the error's detail.
+# Without them, a logged-out account, an empty response, and a genuine change in
+# wording all report the same sentence and cannot be told apart afterwards.
 #
 # @param  {str}  message
 #     What went wrong.
@@ -115,10 +140,15 @@ def response_text(response):
 #     The response being parsed when it failed.
 # @param  {str}  stderr
 #     Anything the tool wrote to stderr.
-def probe_error(message, response, stderr):
-    return ValueError(
-        f"{message}; response: {excerpt(response)}; stderr: {excerpt(stderr)}"
-    )
+# @param  {int}  request_id
+#     The Codex request that failed, when there is one.
+def probe_error(message, response, stderr, request_id=None):
+    details = []  # The labelled parts of the detail, in the order they are shown.
+    if request_id is not None:
+        details.append(f"request: {request_id}")
+
+    details.extend((f"response: {excerpt(response)}", f"stderr: {excerpt(stderr)}"))
+    return _ProbeError(message, "; ".join(details))
 
 
 # Accept finite JSON numbers while excluding booleans.
@@ -242,8 +272,10 @@ def claude_usage(account_home):
                 if account_home is not None:
                     login_command = f"CLAUDE_CONFIG_DIR={account_home} {login_command}"
 
-                raise ValueError(
-                    f"Claude account is signed out; sign in with: {login_command}"
+                raise _ProbeError(
+                    "Claude account is signed out",
+                    f"Sign in with: {login_command}; response: {excerpt(output)}; "
+                    f"stderr: {excerpt(stderr_text)}",
                 )
 
             raise probe_error(
@@ -340,7 +372,11 @@ def read_rpc(server, request_id, deadline):
         # The bytes available now, read without a blocking readline.
         block = os.read(server.stdout.fileno(), 65536)
         if not block:
-            raise ValueError(f"Codex closed the connection during request {request_id}")
+            raise QuotaResponseError(
+                "Codex closed the connection during the quota request",
+                None,
+                request_id,
+            )
 
         total_bytes += len(block)
         if total_bytes > 1048576:
@@ -366,7 +402,7 @@ def read_rpc(server, request_id, deadline):
             if message.get("id") == request_id:
                 if "error" in message:
                     raise QuotaResponseError(
-                        f"Codex rejected quota request {request_id}", line_text
+                        "Codex rejected the quota request", line_text, request_id
                     )
 
                 return message["result"]
@@ -497,7 +533,12 @@ def codex_usage(account_home):
         stderr = decode_text(stop_server(server))
 
     if failure is not None:
-        response = response_text(getattr(failure, "response", response))
+        # The line the failure carries, or None when it has none, as when the
+        # connection closed, so the last response read is reported instead.
+        failed_response = getattr(failure, "response", None)
+        response = response_text(
+            response if failed_response is None else failed_response
+        )
         # A KeyError renders as the bare quoted key, so name the type for anything that
         # did not arrive as a stated ValueError message.
         detail = str(failure) or "Codex quota response is unusable"
@@ -506,7 +547,9 @@ def codex_usage(account_home):
             if isinstance(failure, ValueError)
             else f"{type(failure).__name__}: {detail}"
         )
-        raise probe_error(message, response, stderr) from failure
+        raise probe_error(
+            message, response, stderr, getattr(failure, "request_id", None)
+        ) from failure
 
 
 # Reuse a saved quota summary only while its expiry is still valid.
@@ -580,7 +623,7 @@ def write_cache(cache_file, quota, expires):
 #
 # Returns provider, account, checked_at, session and week, with times as Unix
 # timestamps. An account that cannot be read returns provider, account and an error
-# message instead, so one failure does not stop the others being shown.
+# message and optional detail instead, so one failure does not stop the others.
 #
 # @param  {str}  provider
 #     "claude" or "codex"; anything else raises ValueError.
@@ -591,6 +634,7 @@ def account_usage(provider, account):
         raise ValueError("Unknown provider or account")
 
     ttl = CACHE_LIFETIMES[provider]  # How long this provider's readings stay current.
+    detail = None  # Diagnostic text for a failed probe, when the failure has any.
     try:
         # Saves each account's reading in a per-user cache so later agent-quota runs reuse it.
         cache_dir = Path(tempfile.gettempdir()) / ("hcom-quota-" + str(os.getuid()))
@@ -640,6 +684,7 @@ def account_usage(provider, account):
         }
     except ValueError as error:
         message = str(error)
+        detail = getattr(error, "detail", None)
     except (
         OSError,
         KeyError,
@@ -649,4 +694,7 @@ def account_usage(provider, account):
     ) as error:
         message = f"Quota probe failed: {type(error).__name__}"
 
-    return {"provider": provider, "account": account, "error": message}
+    result = {"provider": provider, "account": account, "error": message}
+    if detail:
+        result["error_detail"] = detail
+    return result

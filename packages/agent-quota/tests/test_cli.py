@@ -7,10 +7,13 @@ import pytest
 from agent_quota import cli
 
 
-def reading(provider, account, error=None):
+def reading(provider, account, error=None, error_detail=None):
     """Make a fixed probe result without starting either provider's command."""
     if error is not None:
-        return {"provider": provider, "account": account, "error": error}
+        result = {"provider": provider, "account": account, "error": error}
+        if error_detail is not None:
+            result["error_detail"] = error_detail
+        return result
 
     return {
         "provider": provider,
@@ -61,6 +64,9 @@ def test_unavailable_account_keeps_other_rows_and_exits_zero(monkeypatch, capsys
             provider,
             account,
             "sign in required" if (provider, account) == ("claude", "2") else None,
+            "response: private reply; stderr: private diagnostic"
+            if (provider, account) == ("claude", "2")
+            else None,
         )
 
     monkeypatch.setattr(cli.probe, "account_usage", account_usage)
@@ -71,6 +77,8 @@ def test_unavailable_account_keeps_other_rows_and_exits_zero(monkeypatch, capsys
     lines = capsys.readouterr().out.splitlines()
     assert "claude (2)" in lines[2]
     assert "unavailable: sign in required" in lines[2]
+    assert "private reply" not in "\n".join(lines)
+    assert "private diagnostic" not in "\n".join(lines)
     assert "25%" in lines[1] and "25%" in lines[3] and "25%" in lines[4]
 
 
@@ -109,6 +117,9 @@ def test_json_has_used_percentages_utc_times_and_errors(monkeypatch, capsys):
             provider,
             account,
             "unavailable" if (provider, account) == ("codex", "2") else None,
+            "request: 2; response: rejected; stderr: <empty>"
+            if (provider, account) == ("codex", "2")
+            else None,
         )
 
     monkeypatch.setattr(cli.probe, "account_usage", account_usage)
@@ -139,6 +150,17 @@ def test_json_has_used_percentages_utc_times_and_errors(monkeypatch, capsys):
         "account": "2",
         "checked_at": None,
         "error": "unavailable",
+        "error_detail": "request: 2; response: rejected; stderr: <empty>",
+    }
+
+
+def test_json_omits_error_detail_when_no_diagnostic_exists():
+    """An account failure without raw details has only the short error."""
+    assert cli.account_data(reading("claude", "default", "sign in required")) == {
+        "provider": "claude",
+        "account": "default",
+        "checked_at": None,
+        "error": "sign in required",
     }
 
 
