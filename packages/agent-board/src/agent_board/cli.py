@@ -235,7 +235,7 @@ def main() -> int:
                 lines = place_quota_panel(
                     lines,
                     lambda panel_width, snapshot=snapshot: render_quota_panel(
-                        snapshot, width=panel_width
+                        snapshot, width=panel_width, colour=colour
                     ),
                     width=width,
                 )

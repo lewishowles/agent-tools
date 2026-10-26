@@ -95,6 +95,13 @@ def test_nonzero_hcom_exit_is_shown_on_the_board(
 ) -> None:
     """A failed HCOM command keeps its frame and follows the terminal colour setting."""
     output = io.StringIO()
+    quota_colours = []
+    original_render_quota_panel = cli.render_quota_panel
+
+    def render_quota(*args, **kwargs):
+        """Record the colour setting passed to the quota box."""
+        quota_colours.append(kwargs["colour"])
+        return original_render_quota_panel(*args, **kwargs)
 
     def failed_hcom(*args, **kwargs):
         """Return the exit status and error text from one failed listing."""
@@ -108,6 +115,7 @@ def test_nonzero_hcom_exit_is_shown_on_the_board(
 
     monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
     monkeypatch.setattr(cli.subprocess, "run", failed_hcom)
+    monkeypatch.setattr(cli, "render_quota_panel", render_quota)
     monkeypatch.setattr(
         cli,
         "_wait_for_wakeup",
@@ -139,6 +147,7 @@ def test_nonzero_hcom_exit_is_shown_on_the_board(
     assert "│  retry later" in plain_output
     assert "│" + " " * 78 + "│\n╰" in plain_output
     assert "╰" + "─" * 78 + "╯" in plain_output
+    assert quota_colours == [coloured]
 
     if coloured:
         assert "\x1b[38;5;214m╭" in board_output
@@ -152,7 +161,7 @@ def test_nonzero_hcom_exit_is_shown_on_the_board(
         assert output.getvalue().count("HCOM error: listing failed") == 1
 
 
-@pytest.mark.parametrize("width", [80, 122])
+@pytest.mark.parametrize("width", [80, 162])
 def test_redirected_output_prints_one_plain_snapshot(monkeypatch, width: int) -> None:
     """A pipe receives one complete board without terminal controls or waiting."""
     output = io.StringIO()
@@ -182,10 +191,10 @@ def test_redirected_output_prints_one_plain_snapshot(monkeypatch, width: int) ->
     assert output.getvalue().startswith("\n╭─ ✻ agent board ")
     assert "12:34:56 ─╮" in output.getvalue()
     if width == 80:
-        assert "╯\n\nQuota\nNot checked yet\n" in output.getvalue()
+        assert "╯\n\n╭─ Quota " in output.getvalue()
     else:
-        assert "─╮  Quota\n" in output.getvalue()
-        assert "│  Not checked yet\n" in output.getvalue()
+        assert "─╮  ╭─ Quota " in output.getvalue()
+    assert "Not checked yet" in output.getvalue()
     assert "\x1b[" not in output.getvalue()
 
 
@@ -522,7 +531,7 @@ def test_quota_checks_follow_listed_teams_and_r(monkeypatch, team_status) -> Non
     assert cli.main() == 0
     expected = team_status not in (None, "inactive")
     assert checks == [("automatic", expected), ("manual", True)]
-    assert "Quota · Checking…" in output.getvalue()
+    assert "checking… ─╮" in output.getvalue()
 
 
 @pytest.mark.parametrize(

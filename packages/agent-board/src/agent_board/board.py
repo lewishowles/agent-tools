@@ -68,9 +68,9 @@ MAX_FRAME_WIDTH = 80
 # side by side.
 _SIDE_PANEL_GAP = 2
 
-# The narrowest the quota panel gets beside the teams frame. Narrower terminals
-# put the panel below the frame, so the side layout starts at 122 columns.
-_MIN_SIDE_PANEL_WIDTH = 40
+# The quota box only goes beside the teams frame at its full width, so the side
+# layout starts at 162 columns.
+_MIN_SIDE_PANEL_WIDTH = MAX_FRAME_WIDTH
 
 # How long a waiting agent can leave messages unread before its team shows as
 # stuck. Messages normally wake an agent within a refresh or two, so a longer
@@ -307,7 +307,7 @@ def render_board(
         if not framed:
             return _plain_lines(lines, width)
 
-        return _frame_lines(
+        return frame_lines(
             lines,
             width,
             current_time,
@@ -358,7 +358,7 @@ def render_board(
         return _plain_lines(lines, width)
 
     bottom_text = f"{len(needs_you)} waiting on you · {len(working)} working"
-    return _frame_lines(
+    return frame_lines(
         lines,
         width,
         current_time,
@@ -383,7 +383,7 @@ def render_error(
     if width < MIN_FRAME_WIDTH:
         return _plain_lines(lines, width)
 
-    return _frame_lines(
+    return frame_lines(
         lines,
         width,
         current_time,
@@ -420,14 +420,15 @@ def place_quota_panel(
 def _join_columns(board_lines: list[str], panel_lines: list[str]) -> list[str]:
     """Show the quota panel to the right of the teams frame.
 
-    The board's blank first line stays on its own, so the quota heading sits
-    level with the frame's top edge. When one column runs out, the other
-    carries on alone, and quota rows below the frame keep the panel's column.
+    The board's blank first line stays on its own, so the top edges of the
+    teams frame and the quota panel sit on the same row. When one column runs
+    out, the other carries on alone, and quota rows below the frame keep the
+    panel's column.
     """
-    top_line, *frame_lines = board_lines
+    top_line, *board_rows = board_lines
     rows = []
 
-    for board_line, panel_line in zip_longest(frame_lines, panel_lines, fillvalue=""):
+    for board_line, panel_line in zip_longest(board_rows, panel_lines, fillvalue=""):
         if not panel_line:
             rows.append(board_line)
             continue
@@ -446,15 +447,16 @@ def _plain_lines(lines: list[str], width: int) -> list[str]:
     return ["", *(shorten_visible(line, width) for line in lines)]
 
 
-def _frame_lines(
+def frame_lines(
     lines: list[str],
     width: int,
-    current_time: str,
+    top_right_text: str,
     bottom_text: str | None,
     *,
     frame_style: str | None = None,
+    title: str = "✻ agent board",
 ) -> list[str]:
-    """Draw the rounded frame around the board's lines.
+    """Draw a rounded frame around the board or quota panel's lines.
 
     A blank row sits above and below the content. Content lines sit two spaces
     in from each side, and the right padding ignores colour codes. Content and
@@ -465,21 +467,26 @@ def _frame_lines(
         lines: The content to show inside the frame.
         width: The terminal's width for this refresh. The frame is never wider
             than MAX_FRAME_WIDTH.
-        current_time: The local time for the top edge, formatted as HH:MM:SS.
+        top_right_text: The board clock or the quota reading age for the top edge.
         bottom_text: The text set into the bottom edge, or None for a plain edge.
         frame_style: The terminal colour for the border and the bottom-edge
             text, or None to draw the frame without colour.
+        title: The label in the top-left edge.
     """
     width = min(width, MAX_FRAME_WIDTH)
-    top_start = "╭─ ✻ agent board "
-    top_end = f" {current_time} ─╮"
+    # The left corner and the title at the start of the top edge.
+    top_start = f"╭─ {title} "
+    # The clock or reading age and the right corner at the end of the top edge.
+    top_end = f" {top_right_text} ─╮"
+    # The dashes that fill the top edge between the title and the right-hand text.
     top_dashes = "─" * max(0, width - len(top_start) - len(top_end))
+    # The whole top edge, redrawn with colours below when the frame has a style.
     top = top_start + top_dashes + top_end
 
     if frame_style:
         top = (
-            f"{frame_style}╭─ {RESET_STYLE}{AMBER_STYLE}✻ agent board{RESET_STYLE}"
-            f"{frame_style} {top_dashes} {RESET_STYLE}{AMBER_STYLE}{current_time}"
+            f"{frame_style}╭─ {RESET_STYLE}{AMBER_STYLE}{title}{RESET_STYLE}"
+            f"{frame_style} {top_dashes} {RESET_STYLE}{AMBER_STYLE}{top_right_text}"
             f"{RESET_STYLE}{frame_style} ─╮{RESET_STYLE}"
         )
 
