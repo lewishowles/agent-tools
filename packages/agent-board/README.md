@@ -4,7 +4,9 @@
 
 Apart from blocked teams, each row shows how long the team has been in its current status. A `+` means the team was already in that status when the board first saw it. The timer resets when the status changes or the board restarts. A stuck team's time counts from when it went quiet: its last HCOM event, or when the board first saw its unread messages.
 
-Below 30 columns, the board shows plain rows without the frame, headings, clock, or counts, and shortens long rows to fit.
+When a team's directory belongs to a `progress` project, a line beneath the team shows its task and active chunk. In a task worktree it shows that team's task; in a plain project checkout it shows the project's next task. If there is no active chunk, the line shows only the task. The board checks in the background about once a minute and keeps the last task through temporary check failures. No line appears when `progress` is missing or the directory is outside a progress project.
+
+Below 30 columns, the board shows plain rows without the frame, headings, clock, counts, or task lines, and shortens long rows to fit.
 
 The frame turns red for blocked teams, magenta for teams that need you, and amber otherwise; set `NO_COLOR` to show the same board without colour.
 
@@ -17,6 +19,7 @@ The frame turns red for blocked teams, magenta for teams that need you, and ambe
 │                                                          │
 │  WORKING                                                 │
 │  ▶ implementing · 1m  agent-tools · agent-board          │
+│    Task: Show team tasks · Chunk: Draw task lines        │
 │  ◌ checking · 30s     agent-tools · scratch              │
 │                                                          │
 ╰─ 2 waiting on you · 2 working ───────────────────────────╯

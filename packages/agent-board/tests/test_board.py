@@ -12,6 +12,7 @@ from agent_board.board import (
     render_error,
 )
 from agent_board.cli import _update_unread_since
+from agent_board.progress_lookup import TaskReading
 
 
 def agent(
@@ -225,6 +226,100 @@ def test_frame_shows_mixed_groups_and_counts_at_full_width() -> None:
     assert lines[-1].startswith("╰─ 1 waiting on you · 1 working ")
     assert lines[-1].endswith("─╯")
     assert all(len(line) == 60 for line in lines[1:])
+
+
+def test_task_and_chunk_lines_follow_teams_in_both_groups() -> None:
+    """Each known task sits directly under its waiting or working team."""
+    agents = [
+        agent("Waiting", "orchestrator"),
+        agent("Waiting", "scout"),
+        agent("Working", "scout", status="active"),
+    ]
+    readings = {
+        "Waiting": TaskReading("Plan the release", "Review the draft"),
+        "Working": TaskReading("Build the board", "Show team tasks"),
+    }
+
+    lines = render_board(
+        agents, width=80, current_time="12:34:56", task_readings=readings
+    )
+
+    assert "Waiting" in lines[4]
+    assert "Task: Plan the release · Chunk: Review the draft" in lines[5]
+    assert "Working" in lines[8]
+    assert "Task: Build the board · Chunk: Show team tasks" in lines[9]
+
+
+def test_task_lines_are_dimmed_in_both_groups() -> None:
+    """Task details use the muted style under waiting and working teams."""
+    agents = [
+        agent("Waiting", "scout", status="blocked"),
+        agent("Working", "scout", status="active"),
+    ]
+    readings = {
+        "Waiting": TaskReading("Plan the release", None),
+        "Working": TaskReading("Build the board", "Show team tasks"),
+    }
+
+    lines = render_board(
+        agents,
+        width=80,
+        current_time="12:34:56",
+        colour=True,
+        task_readings=readings,
+    )
+    task_lines = [line for line in lines if "Task:" in line]
+
+    assert len(task_lines) == 2
+    assert all("\x1b[2m  Task:" in line for line in task_lines)
+    assert all("\x1b[0m" in line for line in task_lines)
+    assert all(len(ANSI_STYLE_PATTERN.sub("", line)) == 80 for line in task_lines)
+
+
+def test_task_line_shows_task_alone_and_skips_teams_without_a_task() -> None:
+    """A task without an active chunk has one label, and unknown teams have none."""
+    agents = [agent("Known", "scout", status="active"), agent("Unknown", "scout")]
+
+    lines = render_board(
+        agents,
+        width=80,
+        current_time="12:34:56",
+        task_readings={"Known": TaskReading("Build the board", None)},
+    )
+
+    assert sum("Task:" in line for line in lines) == 1
+    assert "Task: Build the board" in "\n".join(lines)
+    assert "Chunk:" not in "\n".join(lines)
+
+
+def test_task_line_is_shortened_to_the_80_column_frame() -> None:
+    """A long task stays within the capped frame on a wide terminal."""
+    agents = [agent("Working", "scout", status="active")]
+
+    lines = render_board(
+        agents,
+        width=200,
+        current_time="12:34:56",
+        task_readings={"Working": TaskReading("A" * 100, "B" * 100)},
+    )
+
+    assert lines[5].endswith("…  │")
+    assert len(lines[5]) == 80
+
+
+def test_plain_board_below_30_columns_omits_task_lines() -> None:
+    """A compact board shows only team rows even when task readings exist."""
+    agents = [agent("Working", "scout", status="active")]
+
+    lines = render_board(
+        agents,
+        width=29,
+        current_time="12:34:56",
+        task_readings={"Working": TaskReading("Build the board", "Show team tasks")},
+    )
+
+    assert len(lines) == 2
+    assert "Task:" not in "\n".join(lines)
 
 
 @pytest.mark.parametrize(

@@ -10,6 +10,7 @@ import termios
 import pytest
 from agent_board import cli
 from agent_board.board import ANSI_STYLE_PATTERN
+from agent_board.progress_lookup import TaskReading
 from agent_board.quota import QuotaSnapshot
 
 
@@ -44,6 +45,10 @@ def keep_progress_checks_local(monkeypatch) -> None:
 
         def update(self, directories):
             """Accept each listing without starting an external command."""
+
+        def snapshot(self):
+            """Report no tasks, as before any lookup has finished."""
+            return {}
 
     monkeypatch.setattr(cli, "ProgressReader", Reader)
 
@@ -86,7 +91,7 @@ def test_team_directories_prefer_orchestrator_and_skip_inactive_members() -> Non
 
 
 def test_main_sends_team_directories_to_progress_reader(monkeypatch) -> None:
-    """A successful listing schedules each live team's directory."""
+    """A successful listing schedules its directory and draws its current task."""
     output = io.StringIO()
     updates = []
     agents = [
@@ -94,6 +99,7 @@ def test_main_sends_team_directories_to_progress_reader(monkeypatch) -> None:
             "name": "Alpha-orchestrator",
             "tag": "Alpha-orchestrator",
             "status": "listening",
+            "status_age_seconds": 60,
             "directory": "/project",
             "unread_count": 0,
         }
@@ -105,6 +111,10 @@ def test_main_sends_team_directories_to_progress_reader(monkeypatch) -> None:
         def update(self, directories):
             """Keep the latest team map for the assertion."""
             updates.append(directories)
+
+        def snapshot(self):
+            """Give the board the task found for its listed team."""
+            return {"Alpha": TaskReading("Build the board", "Show team tasks")}
 
     monkeypatch.setattr(cli, "ProgressReader", Reader)
     monkeypatch.setattr(cli.shutil, "which", lambda command: "/usr/bin/hcom")
@@ -120,6 +130,7 @@ def test_main_sends_team_directories_to_progress_reader(monkeypatch) -> None:
 
     assert cli.main() == 0
     assert updates == [{"Alpha": "/project"}]
+    assert "Task: Build the board · Chunk: Show team tasks" in output.getvalue()
 
 
 def test_missing_hcom_returns_one_without_hiding_cursor(monkeypatch) -> None:

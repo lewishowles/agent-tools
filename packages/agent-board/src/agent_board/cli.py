@@ -209,6 +209,7 @@ def main() -> int:
                         quiet_reasons=quiet_reasons,
                         now=now,
                         phase_since=phase_since,
+                        task_readings=progress_reader.snapshot(),
                     )
             except (KeyError, TypeError) as error:
                 error_message = _unexpected_listing_message(error)

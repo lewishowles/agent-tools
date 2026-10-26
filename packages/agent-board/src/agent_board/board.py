@@ -2,9 +2,11 @@
 
 import re
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from itertools import zip_longest
 from pathlib import Path
+
+from agent_board.progress_lookup import TaskReading
 
 # The board label for each role's work, in priority order: the first role
 # with an active agent names what a working team is doing.
@@ -138,6 +140,7 @@ def render_board(
     quiet_reasons: dict[str, str | None] | None = None,
     now: float = 0,
     phase_since: dict[str, tuple[str, float, bool]] | None = None,
+    task_readings: Mapping[str, TaskReading] | None = None,
 ) -> list[str]:
     """Build the framed board lines for one `hcom list --json` snapshot.
 
@@ -173,6 +176,8 @@ def render_board(
             phases start at the event or unread time that made the team quiet.
             The board updates this in place and removes teams that have gone.
             When omitted, rows show no timer except blocked HCOM wait times.
+        task_readings: The latest task and chunk for each live team, keyed by
+            team. A team with no entry gets no task line.
     """
     teams = group_teams(agents)
     unread_since = unread_since or {}
@@ -180,6 +185,7 @@ def render_board(
 
     quiet_members = quiet_members or {}
     quiet_reasons = quiet_reasons or {}
+    task_readings = task_readings or {}
 
     needs_you = []
     working = []
@@ -276,11 +282,18 @@ def render_board(
             repository,
             label_rest,
             _phase_status(status, key, phase_since, now, stuck_since.get(key)),
+            key,
         )
         for order, repository, label_rest, status, key in needs_you
     ]
     working = [
-        (label, repository, label_rest, _phase_status(status, key, phase_since, now))
+        (
+            label,
+            repository,
+            label_rest,
+            _phase_status(status, key, phase_since, now),
+            key,
+        )
         for label, repository, label_rest, status, key in working
     ]
 
@@ -290,7 +303,7 @@ def render_board(
     working.sort(key=lambda row: row[0])
 
     # The border follows the most urgent team and is amber when none is waiting.
-    if any(status.startswith("blocked") for _, _, _, status in needs_you):
+    if any(status.startswith("blocked") for _, _, _, status, _ in needs_you):
         frame_style = RED_STYLE
     elif needs_you:
         frame_style = MAGENTA_STYLE
@@ -315,8 +328,8 @@ def render_board(
             frame_style=frame_style if colour else None,
         )
 
-    shown_statuses = [status for _, _, _, status in needs_you] + [
-        status for _, _, _, status in working
+    shown_statuses = [status for _, _, _, status, _ in needs_you] + [
+        status for _, _, _, status, _ in working
     ]
     status_width = max(len(status) for status in shown_statuses)
 
@@ -324,7 +337,7 @@ def render_board(
         heading = "WAITING ON YOU"
         lines.append(f"{DIM_STYLE}{heading}{RESET_STYLE}" if colour else heading)
 
-    for _, repository, label_rest, status in needs_you:
+    for _, repository, label_rest, status, key in needs_you:
         symbol = STATUS_SYMBOLS[status.partition(" · ")[0]]
         padded_status = f"{status:<{status_width}}"
 
@@ -339,6 +352,10 @@ def render_board(
         else:
             lines.append(f"{symbol} {padded_status}  {repository}{label_rest}")
 
+        if framed and (reading := task_readings.get(key)) is not None:
+            line = _render_task_line(reading.task, reading.chunk, width)
+            lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
+
     if working and framed:
         if needs_you:
             lines.append("")
@@ -349,10 +366,14 @@ def render_board(
         # Without headings, a blank line keeps the two groups apart.
         lines.append("")
 
-    for _, repository, label_rest, status in working:
+    for _, repository, label_rest, status, key in working:
         symbol = STATUS_SYMBOLS[status.partition(" · ")[0]]
         line = f"{symbol} {status:<{status_width}}  {repository}{label_rest}"
         lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
+
+        if framed and (reading := task_readings.get(key)) is not None:
+            line = _render_task_line(reading.task, reading.chunk, width)
+            lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
 
     if not framed:
         return _plain_lines(lines, width)
@@ -365,6 +386,27 @@ def render_board(
         bottom_text,
         frame_style=frame_style if colour else None,
     )
+
+
+def _render_task_line(task: str, chunk: str | None, width: int) -> str:
+    """Build the line that names a team's task beneath its row.
+
+    Args:
+        task: The title of the team's progress task.
+        chunk: The title of the task's active chunk, or None to show only the task.
+        width: The terminal width; the frame never grows past MAX_FRAME_WIDTH.
+
+    Returns:
+        One line, indented to sit under the team's status, shortened to fit
+        inside the frame.
+    """
+    # The task label, with the chunk added when the task has one.
+    line = f"  Task: {task}"
+
+    if chunk is not None:
+        line += f" · Chunk: {chunk}"
+
+    return shorten_visible(line, min(width, MAX_FRAME_WIDTH) - 6)
 
 
 def render_error(
