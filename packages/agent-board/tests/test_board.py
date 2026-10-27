@@ -5,6 +5,7 @@ import re
 import pytest
 from agent_board.board import (
     ANSI_STYLE_PATTERN,
+    BoardState,
     frame_lines,
     lists_team,
     place_quota_panel,
@@ -54,15 +55,17 @@ def board_content(
     )
     framed = render_board(
         agents,
+        BoardState(
+            unread_since=unread_since or {},
+            last_activity=last_activity or {},
+            quiet_members=quiet_members,
+            quiet_reasons=quiet_reasons or {},
+            now=now,
+            phase_since=phase_since,
+        ),
         width=80,
         current_time="12:34:56",
         colour=colour,
-        unread_since=unread_since,
-        last_activity=last_activity,
-        quiet_members=quiet_members,
-        quiet_reasons=quiet_reasons,
-        now=now,
-        phase_since=phase_since,
     )
     rows = []
 
@@ -253,7 +256,7 @@ def test_task_and_chunk_lines_follow_teams_in_both_groups() -> None:
     }
 
     lines = render_board(
-        agents, width=80, current_time="12:34:56", task_readings=readings
+        agents, BoardState(task_readings=readings), width=80, current_time="12:34:56"
     )
 
     assert "Waiting" in lines[4]
@@ -275,10 +278,10 @@ def test_task_lines_are_dimmed_in_both_groups() -> None:
 
     lines = render_board(
         agents,
+        BoardState(task_readings=readings),
         width=80,
         current_time="12:34:56",
         colour=True,
-        task_readings=readings,
     )
     task_lines = [line for line in lines if "Task:" in line]
 
@@ -294,9 +297,9 @@ def test_task_line_shows_task_alone_and_skips_teams_without_a_task() -> None:
 
     lines = render_board(
         agents,
+        BoardState(task_readings={"Known": TaskReading("Build the board", None)}),
         width=80,
         current_time="12:34:56",
-        task_readings={"Known": TaskReading("Build the board", None)},
     )
 
     assert sum("Task:" in line for line in lines) == 1
@@ -310,9 +313,9 @@ def test_task_line_is_shortened_to_the_80_column_frame() -> None:
 
     lines = render_board(
         agents,
+        BoardState(task_readings={"Working": TaskReading("A" * 100, "B" * 100)}),
         width=200,
         current_time="12:34:56",
-        task_readings={"Working": TaskReading("A" * 100, "B" * 100)},
     )
 
     assert lines[5].endswith("…  │")
@@ -325,9 +328,11 @@ def test_plain_board_below_30_columns_omits_task_lines() -> None:
 
     lines = render_board(
         agents,
+        BoardState(
+            task_readings={"Working": TaskReading("Build the board", "Show team tasks")}
+        ),
         width=29,
         current_time="12:34:56",
-        task_readings={"Working": TaskReading("Build the board", "Show team tasks")},
     )
 
     assert len(lines) == 2

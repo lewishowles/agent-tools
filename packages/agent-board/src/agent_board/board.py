@@ -3,6 +3,7 @@
 import re
 from collections import defaultdict
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from itertools import zip_longest
 from pathlib import Path
 
@@ -84,6 +85,38 @@ STUCK_AFTER_SECONDS = 60
 QUIET_AFTER_SECONDS = 300
 
 
+@dataclass
+class BoardState:
+    """Hold the readings and timers used to draw one board frame.
+
+    The CLI builds a new one for each `hcom list` reading.
+    """
+
+    # The first time each listening agent was seen with unread messages, keyed
+    # by agent name.
+    unread_since: dict[str, float] = field(default_factory=dict)
+    # The latest HCOM event time for each active team's members, keyed by agent
+    # name.
+    last_activity: dict[str, float] = field(default_factory=dict)
+    # The active member to blame for each quiet team, keyed by team. Its
+    # terminal gives the stuck reason.
+    quiet_members: dict[str, str] = field(default_factory=dict)
+    # Known terminal failure reasons, keyed by active agent name.
+    quiet_reasons: dict[str, str | None] = field(default_factory=dict)
+    # The monotonic time for this refresh, in seconds.
+    now: float = 0
+    # The phase timers from the previous refresh, keyed by team. Each entry
+    # holds the phase, its known start time, and whether the team was already
+    # in that phase when the board first saw it. Stuck phases start at the
+    # event or unread time that made the team quiet. The board updates this in
+    # place and removes teams that have gone. When None, rows show no timer
+    # except blocked HCOM wait times.
+    phase_since: dict[str, tuple[str, float, bool]] | None = None
+    # The latest task and chunk for each live team, keyed by team. A team with
+    # no entry gets no task line.
+    task_readings: Mapping[str, TaskReading] = field(default_factory=dict)
+
+
 def lists_team(agents: list[dict]) -> bool:
     """Report whether the board shows at least one team for this listing."""
     return bool(group_teams(agents))
@@ -130,17 +163,11 @@ def quiet_team_members(
 
 def render_board(
     agents: list[dict],
+    state: BoardState | None = None,
     *,
     width: int,
     current_time: str,
     colour: bool = False,
-    unread_since: dict[str, float] | None = None,
-    last_activity: dict[str, float] | None = None,
-    quiet_members: dict[str, str] | None = None,
-    quiet_reasons: dict[str, str | None] | None = None,
-    now: float = 0,
-    phase_since: dict[str, tuple[str, float, bool]] | None = None,
-    task_readings: Mapping[str, TaskReading] | None = None,
 ) -> list[str]:
     """Build the framed board lines for one `hcom list --json` snapshot.
 
@@ -158,34 +185,22 @@ def render_board(
 
     Args:
         agents: The records from `hcom list --json`.
+        state: The latest team readings and phase timers. When omitted, the
+            board shows no task lines, phase durations or stuck teams.
         width: The terminal's width for this refresh.
         current_time: The local time for the top edge, formatted as HH:MM:SS.
         colour: Whether to colour the frame and rows and dim the headings,
             working rows and team names after the repository.
-        unread_since: The first time each listening agent was seen with unread
-            messages, keyed by agent name.
-        last_activity: The latest HCOM event time for each active team's
-            members, keyed by agent name.
-        quiet_members: The active member to blame for each quiet team, keyed
-            by team. Its terminal gives the stuck reason.
-        quiet_reasons: Known terminal failure reasons, keyed by active agent name.
-        now: The monotonic time for this refresh, in seconds.
-        phase_since: The phase timers from the previous refresh, keyed by team.
-            Each entry holds the phase, its known start time, and whether the
-            team was already in that phase when the board first saw it. Stuck
-            phases start at the event or unread time that made the team quiet.
-            The board updates this in place and removes teams that have gone.
-            When omitted, rows show no timer except blocked HCOM wait times.
-        task_readings: The latest task and chunk for each live team, keyed by
-            team. A team with no entry gets no task line.
     """
+    state = state or BoardState()
+    unread_since = state.unread_since
+    last_activity = state.last_activity
+    quiet_members = state.quiet_members
+    quiet_reasons = state.quiet_reasons
+    now = state.now
+    phase_since = state.phase_since
+    task_readings = state.task_readings
     teams = group_teams(agents)
-    unread_since = unread_since or {}
-    last_activity = last_activity or {}
-
-    quiet_members = quiet_members or {}
-    quiet_reasons = quiet_reasons or {}
-    task_readings = task_readings or {}
 
     needs_you = []
     working = []

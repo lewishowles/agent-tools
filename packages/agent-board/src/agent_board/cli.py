@@ -16,6 +16,7 @@ from functools import partial
 from pathlib import Path
 
 from agent_board.board import (
+    BoardState,
     active_team_members,
     group_teams,
     lists_team,
@@ -202,14 +203,16 @@ def main() -> int:
                     draw_board = partial(
                         render_board,
                         agents,
+                        BoardState(
+                            unread_since=unread_since,
+                            last_activity=last_activity,
+                            quiet_members=quiet_members,
+                            quiet_reasons=quiet_reasons,
+                            now=now,
+                            phase_since=phase_since,
+                            task_readings=progress_reader.snapshot(),
+                        ),
                         colour=colour,
-                        unread_since=unread_since,
-                        last_activity=last_activity,
-                        quiet_members=quiet_members,
-                        quiet_reasons=quiet_reasons,
-                        now=now,
-                        phase_since=phase_since,
-                        task_readings=progress_reader.snapshot(),
                     )
             except (KeyError, TypeError) as error:
                 error_message = _unexpected_listing_message(error)
