@@ -711,7 +711,63 @@ def test_task_list_filters_waiting_tasks(tmp_path: Path) -> None:
 	result = store.task_list(status="waiting")
 
 	assert [task["id"] for task in result["items"]] == [waiting["id"]]
+	assert result["items"][0]["unfinished_dependency_ids"] == [TASK_A]
 	assert result["has_more"] is False
+
+
+def test_task_list_names_unfinished_dependencies_in_the_same_and_other_releases(
+	tmp_path: Path,
+) -> None:
+	"""Number unfinished dependencies in the same release and give task IDs for others."""
+	store = _seed_store(tmp_path)
+	writer = WriteStore(store.database, _ProjectStore(store.database))
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE tasks SET release_id = NULL WHERE id = ?", (TASK_B,))
+	same_release = writer.task_add(
+		"same-release",
+		"Same release",
+		overview="Prerequisite",
+		done_when=["Done"],
+		release_id=RELEASE_A,
+	)
+	completed = writer.task_add(
+		"completed",
+		"Completed",
+		overview="Finished prerequisite",
+		done_when=["Done"],
+		release_id=RELEASE_A,
+	)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE tasks SET status = 'done' WHERE id = ?", (completed["id"],)
+		)
+	waiting = writer.task_add(
+		"waiting-on-many",
+		"Waiting on many",
+		overview="Waiting task",
+		done_when=["Done"],
+		release_id=RELEASE_A,
+		depends_on=[TASK_A, TASK_B, same_release["id"], completed["id"]],
+	)
+
+	json_item = store.task_list(status="waiting")["items"][0]
+	human_item = store.task_list(status="waiting", include_queue_numbers=True)["items"][
+		0
+	]
+
+	assert json_item["id"] == waiting["id"]
+	assert json_item["unfinished_dependency_ids"] == [
+		TASK_A,
+		same_release["id"],
+		TASK_B,
+	]
+	assert "waiting_on" not in json_item
+	assert human_item["unfinished_dependency_ids"] == [
+		TASK_A,
+		same_release["id"],
+		TASK_B,
+	]
+	assert human_item["waiting_on"] == ["#1", "#2", TASK_B]
 
 
 def test_task_list_leaves_unassigned_tasks_without_release_titles(

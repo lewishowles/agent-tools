@@ -3563,6 +3563,76 @@ def test_human_task_list_shows_done_counts_and_project_summary() -> None:
 	assert "3 done" in output
 
 
+def test_human_task_list_shows_what_a_waiting_task_waits_on() -> None:
+	"""List every unfinished dependency after "waiting on" in the status column."""
+	data = {
+		"items": [
+			{
+				"id": "tsk_waiting",
+				"title": "Waiting task",
+				"status": "waiting",
+				"queue_number": 3,
+				"release_id": None,
+				"waiting_on": ["#1", "#2", "tsk_other_release"],
+			}
+		],
+		"has_more": False,
+		"release_order": [{"id": None, "title": None}],
+		"done_counts": {},
+		"releases_with_unfinished": {None},
+		"status_counts": {"waiting": 1},
+		"next_task": "Waiting task",
+	}
+
+	output = render_module._render_task_list(data)
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", output)
+
+	assert "waiting on #1, #2, tsk_other_release" in plain_output
+
+
+def test_human_task_list_aligns_titles_across_release_groups() -> None:
+	"""A long waiting label leaves task titles in the same column across releases."""
+	data = {
+		"items": [
+			{
+				"id": "tsk_ready",
+				"title": "Ready task",
+				"status": "ready",
+				"queue_number": 1,
+				"release_id": "rel_first",
+			},
+			{
+				"id": "tsk_waiting",
+				"title": "Waiting task",
+				"status": "waiting",
+				"queue_number": 2,
+				"release_id": "rel_second",
+				"waiting_on": ["#1", "tsk_other_release"],
+			},
+		],
+		"has_more": False,
+		"release_order": [
+			{"id": "rel_first", "title": "First release"},
+			{"id": "rel_second", "title": "Second release"},
+		],
+		"done_counts": {},
+		"releases_with_unfinished": {"rel_first", "rel_second"},
+		"status_counts": {"ready": 1, "waiting": 1},
+		"next_task": "Ready task",
+	}
+
+	output = render_module._render_task_list(data)
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", output)
+	ready_line = next(
+		line for line in plain_output.splitlines() if "Ready task" in line
+	)
+	waiting_line = next(
+		line for line in plain_output.splitlines() if "Waiting task" in line
+	)
+
+	assert ready_line.index("Ready task") == waiting_line.index("Waiting task")
+
+
 @pytest.fixture
 def task_list_pages(tmp_path: Path, monkeypatch) -> Path:
 	"""Create two releases split by a page and one release with only done tasks."""

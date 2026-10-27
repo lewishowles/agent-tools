@@ -256,6 +256,63 @@ def _add_release_titles(
 			item["release_title"] = titles.get(str(release_id))
 
 
+def _add_waiting_dependencies(
+	connection: sqlite3.Connection,
+	items: list[dict[str, object]],
+	queue_numbers: dict[str, int] | None,
+) -> None:
+	"""Add the unfinished tasks each waiting task-list item is waiting on.
+
+	Every waiting item gets the IDs of those tasks as unfinished_dependency_ids.
+	When queue numbers are given, it also gets waiting_on labels for the human
+	list: "#n" for a task in the same release, and the task ID for one in another
+	release, because the list shows numbers inside each release group and a number
+	from another group is hard to find.
+
+	Args:
+		connection: The open database connection.
+		items: Task-list items, changed in place.
+		queue_numbers: Each unfinished task's queue number, or None for JSON output.
+	"""
+	# The waiting items, the only ones with dependencies to name.
+	waiting_items = [item for item in items if item["status"] == "waiting"]
+	if not waiting_items:
+		return
+
+	# One SQL placeholder per waiting item, so the page needs a single query.
+	placeholders = ", ".join("?" for _ in waiting_items)
+	# Each unfinished dependency of the waiting items, in task queue order.
+	rows = connection.execute(
+		"SELECT task_dependencies.task_id, tasks.id, tasks.release_id "
+		"FROM task_dependencies "
+		"JOIN tasks ON tasks.id = task_dependencies.depends_on_task_id "
+		"LEFT JOIN releases ON releases.id = tasks.release_id "
+		"AND releases.project_id = tasks.project_id "
+		f"WHERE task_dependencies.task_id IN ({placeholders}) "
+		"AND tasks.status != 'done' "
+		f"ORDER BY {_TASK_QUEUE_ORDER}",
+		tuple(item["id"] for item in waiting_items),
+	).fetchall()
+	# Each waiting item's unfinished dependencies, keeping the queue order above.
+	dependencies_by_task: dict[str, list[sqlite3.Row]] = {
+		str(item["id"]): [] for item in waiting_items
+	}
+	for row in rows:
+		dependencies_by_task[str(row["task_id"])].append(row)
+
+	for item in waiting_items:
+		dependencies = dependencies_by_task[str(item["id"])]
+		item["unfinished_dependency_ids"] = [row["id"] for row in dependencies]
+
+		if queue_numbers is not None:
+			item["waiting_on"] = [
+				f"#{queue_numbers[row['id']]}"
+				if row["release_id"] == item["release_id"]
+				else row["id"]
+				for row in dependencies
+			]
+
+
 def _task_values_by_id(
 	connection: sqlite3.Connection,
 	task_ids: Sequence[str],
@@ -1180,6 +1237,14 @@ class ReadStore(_StoreBase):
 					for item in items:
 						if item["status"] != "done":
 							item["queue_number"] = queue_numbers[item["id"]]
+			# Name the unfinished tasks each waiting task waits on, in both outputs.
+			items = response["items"]
+			if isinstance(items, list):
+				_add_waiting_dependencies(
+					connection,
+					items,
+					queue_numbers if include_queue_numbers else None,
+				)
 
 			return response
 

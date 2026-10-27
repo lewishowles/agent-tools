@@ -1503,6 +1503,20 @@ def _render_task_list(data: dict[str, object]) -> str:
 		default=0,
 	)
 
+	# The width of the widest status on the page, so titles line up across release
+	# groups even when a waiting task names several dependencies.
+	status_column_width = max(
+		_TASK_STATUS_COLUMN_WIDTH,
+		max(
+			(
+				len(_ANSI_ESCAPE_PATTERN.sub("", _render_queue_status(item)))
+				for _, _, items in task_groups
+				for item in items
+			),
+			default=0,
+		),
+	)
+
 	columns = [
 		{"key": "number", "label": "#"},
 		{"key": "status", "label": "Status"},
@@ -1535,7 +1549,7 @@ def _render_task_list(data: dict[str, object]) -> str:
 				render_table(
 					columns,
 					[
-						_render_queue_item(item, number_width)
+						_render_queue_item(item, number_width, status_column_width)
 						for item in reversed(items)
 					],
 				)
@@ -1615,22 +1629,26 @@ def _group_task_items(
 	return list(groups.values())
 
 
-def _render_queue_item(item: dict[str, object], number_width: int) -> dict[str, str]:
+def _render_queue_item(
+	item: dict[str, object],
+	number_width: int,
+	status_column_width: int = _TASK_STATUS_COLUMN_WIDTH,
+) -> dict[str, str]:
 	"""Build a task or release row, padding the number and status cells to align tables.
 
-	Done rows have a blank number.
+	Done rows have a blank number. The status cell is padded to status_column_width,
+	which defaults to the standard status width for lists without waiting labels.
 	"""
 	title = str(item.get("title") or item.get("id") or "item")
-	status = str(item.get("status", ""))
 	identifier = str(item.get("id", ""))
 	number = str(item.get("queue_number", ""))
-	rendered_status = render_status(_status_result_type(status), status)
+	rendered_status = _render_queue_status(item)
 
 	# Each release group is rendered as its own table, so pad every status cell to
 	# one shared width here to line titles up across groups. Measure the plain
 	# text because the rendered status carries ANSI colour codes.
 	status_width = len(_ANSI_ESCAPE_PATTERN.sub("", rendered_status))
-	padding = " " * max(0, _TASK_STATUS_COLUMN_WIDTH - status_width)
+	padding = " " * max(0, status_column_width - status_width)
 
 	return {
 		"number": number.rjust(number_width),
@@ -1638,6 +1656,16 @@ def _render_queue_item(item: dict[str, object], number_width: int) -> dict[str, 
 		"status": f"{rendered_status}{padding}",
 		"id": render_span(identifier, "muted", weight="normal"),
 	}
+
+
+def _render_queue_status(item: dict[str, object]) -> str:
+	"""Render a task or release status with its waiting dependencies, if any."""
+	status = str(item.get("status", ""))
+	rendered_status = render_status(_status_result_type(status), status)
+	if status == "waiting" and item.get("waiting_on"):
+		rendered_status += f" on {', '.join(item['waiting_on'])}"
+
+	return rendered_status
 
 
 def _status_result_type(status: object) -> str:

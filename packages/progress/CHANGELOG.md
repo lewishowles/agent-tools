@@ -13,6 +13,9 @@ All notable changes to `progress` are documented here. The format is based on [K
 - `chunk edit --review-question` replaces a chunk's review question, and
   `chunk get` and `next` show it.
 - `doctor` reports pending and active chunks that have no review question.
+- `task list` shows what a waiting task waits on, such as `waiting on #2`, using
+  the task ID for a task in another release. `task list --json` gives waiting
+  tasks an `unfinished_dependency_ids` list.
 
 ### Changed
 
