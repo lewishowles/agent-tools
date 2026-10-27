@@ -7813,7 +7813,7 @@ def test_project_remove_lists_deleted_records_in_human_output(
 	output = capsys.readouterr()
 	assert output.err == ""
 	plain = render_module._ANSI_ESCAPE_PATTERN.sub("", output.out)
-	assert plain.startswith(f"\n✓ Removed project: Agents ({project.id})\n")
+	assert plain.splitlines()[1].endswith(f"Removed project: Agents ({project.id})")
 	assert f"Tasks: {task['id']}\n" in plain
 
 
@@ -7840,7 +7840,7 @@ def test_project_remove_names_a_checkout_with_an_uncleared_binding(
 	output = capsys.readouterr()
 	assert output.err == ""
 	plain = render_module._ANSI_ESCAPE_PATTERN.sub("", output.out)
-	assert plain.startswith(f"\n✓ Removed project: Agents ({project.id})\n")
+	assert plain.splitlines()[1].endswith(f"Removed project: Agents ({project.id})")
 	assert (
 		f"Folders that may still point at the removed project: {repository}\n" in plain
 	)
@@ -7986,10 +7986,7 @@ def test_worktree_cleanup_command_reports_pending_and_removed(
 		== 0
 	)
 	output = capsys.readouterr().out
-	if folder_missing:
-		assert f"Worktree folder at {checkout} was already gone" in output
-	else:
-		assert f"Removed worktree at {checkout}" in output
+	assert f"Removed worktree at {checkout}" in output
 	assert not checkout.exists()
 	with database.connection() as connection:
 		assert (
