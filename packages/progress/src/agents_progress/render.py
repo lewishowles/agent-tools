@@ -1659,11 +1659,13 @@ def _render_queue_item(
 
 
 def _render_queue_status(item: dict[str, object]) -> str:
-	"""Render a task or release status with its waiting dependencies, if any."""
+	"""Render a task or release status, with what it waits on or a parallel hint."""
 	status = str(item.get("status", ""))
 	rendered_status = render_status(_status_result_type(status), status)
 	if status == "waiting" and item.get("waiting_on"):
 		rendered_status += f" on {', '.join(item['waiting_on'])}"
+	elif status == "ready" and item.get("can_run_in_parallel"):
+		rendered_status += ", can run in parallel"
 
 	return rendered_status
 

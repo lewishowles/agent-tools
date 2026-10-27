@@ -482,7 +482,6 @@ def test_next_reports_the_earliest_waiting_task_and_its_unfinished_dependency(
 		done_when=["Waiting task check"],
 		release_id=RELEASE_A,
 		depends_on=[TASK_A, TASK_B],
-		position=0,
 	)
 
 	with store.database.transaction() as connection:
@@ -641,6 +640,83 @@ def test_task_list_keeps_unassigned_release_id_in_human_counts(tmp_path: Path) -
 
 	assert result["done_counts"] == {None: 1}
 	assert result["release_order"][-1] == {"id": None, "title": None}
+
+
+def test_task_list_marks_ready_tasks_with_separate_files(tmp_path: Path) -> None:
+	"""Mark ready tasks that share no files with the next task or any task in progress."""
+	store = _seed_store(tmp_path)
+	writer = WriteStore(store.database, _ProjectStore(store.database))
+	separate = writer.task_add(
+		"separate", "Separate", "Separate work.", ["Finish."], ["src/apple.py"]
+	)
+	selected_overlap = writer.task_add(
+		"selected-overlap", "Selected overlap", "Shared work.", ["Finish."], ["src/app"]
+	)
+	active_overlap = writer.task_add(
+		"active-overlap",
+		"Active overlap",
+		"Shared work.",
+		["Finish."],
+		["docs/guide.md"],
+	)
+	active_task = writer.task_add(
+		"active", "Other active task", "Other active work.", ["Finish."], ["docs"]
+	)
+	no_files = writer.task_add("no-files", "No files", "Unknown files.", ["Finish."])
+	waiting = writer.task_add(
+		"waiting",
+		"Waiting",
+		"Dependent work.",
+		["Finish."],
+		["other.py"],
+		depends_on=[TASK_A],
+	)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO task_files (task_id, position, text) VALUES (?, 1, ?)",
+			(TASK_A, "src/app"),
+		)
+		connection.execute(
+			"UPDATE tasks SET status = 'in-progress' WHERE id = ?", (active_task["id"],)
+		)
+
+	items = {item["id"]: item for item in store.task_list(show_all=True)["items"]}
+
+	assert items[separate["id"]]["can_run_in_parallel"] is True
+	assert items[selected_overlap["id"]]["can_run_in_parallel"] is False
+	assert items[active_overlap["id"]]["can_run_in_parallel"] is False
+	assert items[active_task["id"]]["can_run_in_parallel"] is False
+	assert items[no_files["id"]]["can_run_in_parallel"] is False
+	assert items[waiting["id"]]["can_run_in_parallel"] is False
+	assert items[TASK_A]["can_run_in_parallel"] is False
+
+
+def test_task_list_compares_against_the_task_next_would_pick(tmp_path: Path) -> None:
+	"""The next ready task remains unmarked while separate ready work is marked."""
+	store = _seed_store(tmp_path)
+	writer = WriteStore(store.database, _ProjectStore(store.database))
+	separate = writer.task_add(
+		"separate", "Separate", "Separate work.", ["Finish."], ["other.py"]
+	)
+	overlap = writer.task_add(
+		"overlap", "Overlap", "Shared work.", ["Finish."], ["src/file.py"]
+	)
+	with store.database.transaction() as connection:
+		connection.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (TASK_A,))
+		connection.execute(
+			"UPDATE projects SET default_task_id = NULL WHERE id = ?", (PROJECT_ID,)
+		)
+		connection.execute(
+			"INSERT INTO task_files (task_id, position, text) VALUES (?, 1, ?)",
+			(TASK_A, "src"),
+		)
+
+	items = {item["id"]: item for item in store.task_list()["items"]}
+
+	assert store.next()["task"]["id"] == TASK_A
+	assert items[TASK_A]["can_run_in_parallel"] is False
+	assert items[separate["id"]]["can_run_in_parallel"] is True
+	assert items[overlap["id"]]["can_run_in_parallel"] is False
 
 
 def test_chunk_list_collapses_done_chunks_before_paging(tmp_path: Path) -> None:

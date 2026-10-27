@@ -3663,6 +3663,43 @@ def test_human_task_list_shows_what_a_waiting_task_waits_on() -> None:
 	assert "waiting on #1, #2, tsk_other_release" in plain_output
 
 
+def test_human_task_list_marks_a_ready_task_that_can_run_in_parallel() -> None:
+	"""Show the parallel hint in the ready task's status column."""
+	data = {
+		"items": [
+			{
+				"id": "tsk_parallel",
+				"title": "Separate task",
+				"status": "ready",
+				"queue_number": 2,
+				"release_id": None,
+				"can_run_in_parallel": True,
+			},
+			{
+				"id": "tsk_next",
+				"title": "Next task",
+				"status": "ready",
+				"queue_number": 1,
+				"release_id": None,
+				"can_run_in_parallel": False,
+			},
+		],
+		"has_more": False,
+		"release_order": [{"id": None, "title": None}],
+		"done_counts": {},
+		"releases_with_unfinished": {None},
+		"status_counts": {"ready": 2},
+		"next_task": "Next task",
+	}
+
+	output = render_module._ANSI_ESCAPE_PATTERN.sub(
+		"", render_module._render_task_list(data)
+	)
+
+	assert "ready, can run in parallel" in output
+	assert output.count("can run in parallel") == 1
+
+
 def test_human_task_list_aligns_titles_across_release_groups() -> None:
 	"""A long waiting label leaves task titles in the same column across releases."""
 	data = {

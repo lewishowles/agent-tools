@@ -313,6 +313,87 @@ def _add_waiting_dependencies(
 			]
 
 
+def _files_overlap(first: str, second: str) -> bool:
+	"""Tell whether two listed task files overlap.
+
+	They overlap when they are the same path, or one is a folder that
+	contains the other: "src/app" contains "src/app/main.py" but not
+	"src/application.py".
+
+	Args:
+		first: A task's listed file or folder.
+		second: Another task's listed file or folder.
+
+	Returns:
+		True when the paths overlap.
+	"""
+	first = first.rstrip("/")
+	second = second.rstrip("/")
+
+	return (
+		first == second
+		or first.startswith(f"{second}/")
+		or second.startswith(f"{first}/")
+	)
+
+
+def _add_parallel_task_markers(
+	connection: sqlite3.Connection,
+	project: Project,
+	items: list[dict[str, object]],
+) -> None:
+	"""Mark ready tasks that share no files with the next task or work in progress.
+
+	The next task is the one `progress next` would pick. That task is never
+	marked itself, and a ready task with no listed files is never marked,
+	because there is nothing to compare.
+
+	Args:
+		connection: The open database connection.
+		project: The current project.
+		items: Task-list items, each given a `can_run_in_parallel` value in place.
+	"""
+	for item in items:
+		item["can_run_in_parallel"] = False
+
+	# The ready tasks with listed files, the only ones that can be marked.
+	candidates = [item for item in items if item["status"] == "ready" and item["files"]]
+	if not candidates:
+		return
+
+	# Use the same choice as progress next, including the project's default task.
+	_, selected_task, _ = _selected_task_response(connection, project)
+	selected_id = str(selected_task["id"]) if selected_task is not None else None
+
+	# The tasks already in progress, whose files a marked task must avoid.
+	active_rows = connection.execute(
+		"SELECT id FROM tasks WHERE project_id = ? AND status = 'in-progress'",
+		(project.id,),
+	).fetchall()
+	# The in-progress tasks and the next task, whose files a marked task must avoid.
+	comparison_ids = {str(row["id"]) for row in active_rows}
+	if selected_id is not None:
+		comparison_ids.add(selected_id)
+
+	# The stored values of those tasks; only their listed files are used here.
+	comparison_values = _task_values_by_id(connection, sorted(comparison_ids))
+	# Every file listed by those tasks, in one list for the overlap check.
+	comparison_files = [
+		file_path
+		for task_id in comparison_ids
+		for file_path in comparison_values["files"].get(task_id, [])
+	]
+
+	for item in candidates:
+		if item["id"] == selected_id:
+			continue
+		item["can_run_in_parallel"] = not any(
+			_files_overlap(str(file_path), comparison_file)
+			for file_path in item["files"]
+			for comparison_file in comparison_files
+		)
+
+
 def _task_values_by_id(
 	connection: sqlite3.Connection,
 	task_ids: Sequence[str],
@@ -1245,6 +1326,9 @@ class ReadStore(_StoreBase):
 					items,
 					queue_numbers if include_queue_numbers else None,
 				)
+				# Mark ready tasks whose files are separate from the next task and
+				# every task in progress.
+				_add_parallel_task_markers(connection, project, items)
 
 			return response
 

@@ -16,6 +16,10 @@ All notable changes to `progress` are documented here. The format is based on [K
 - `task list` shows what a waiting task waits on, such as `waiting on #2`, using
   the task ID for a task in another release. `task list --json` gives waiting
   tasks an `unfinished_dependency_ids` list.
+- `task list` marks a ready task as `ready, can run in parallel` when none of
+  its files overlap the task `progress next` would pick or any task in
+  progress. Tasks with no listed files are never marked. `task list --json`
+  includes `can_run_in_parallel` for every task.
 
 ### Changed
 

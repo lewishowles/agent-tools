@@ -670,9 +670,14 @@ progress task list [--status <status>] [--all] [--limit <limit>] [--offset <offs
 
 The human list collapses done tasks into a count for each release unless you
 filter by status or pass `--all`. Its page limit counts unfinished tasks, and
-the final line shows project-wide status counts and the next task. JSON keeps
-its usual list order and fields; with `--all`, `limit` is `null` and `has_more`
-is `false`.
+the final line shows project-wide status counts and the next task. Waiting tasks
+show `waiting on #n` for unfinished dependencies in the same release, or the
+task ID for dependencies in another release. Ready tasks show `ready, can run in
+parallel` when their listed files share none with the next task or any task in
+progress. Tasks without listed files never get this hint. JSON gives waiting
+tasks an `unfinished_dependency_ids` list and every task a
+`can_run_in_parallel` value; with `--all`, `limit` is `null` and `has_more` is
+`false`.
 
 See [Listing](#listing) for pagination details.
 
