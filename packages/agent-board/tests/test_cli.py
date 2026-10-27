@@ -53,6 +53,12 @@ def keep_progress_checks_local(monkeypatch) -> None:
     monkeypatch.setattr(cli, "ProgressReader", Reader)
 
 
+@pytest.fixture(autouse=True)
+def turn_colour_off(monkeypatch) -> None:
+    """Give every test plain output, even in a terminal that shows colour."""
+    monkeypatch.setenv("NO_COLOR", "1")
+
+
 def test_team_directories_prefer_orchestrator_and_skip_inactive_members() -> None:
     """Progress uses the same team keys and live members as the board."""
     agents = [
