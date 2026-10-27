@@ -9,7 +9,7 @@ import termios
 
 import pytest
 from agent_board import cli
-from agent_board.board import ANSI_STYLE_PATTERN
+from agent_board.frame import ANSI_STYLE_PATTERN
 from agent_board.progress_lookup import TaskReading
 from agent_board.quota import QuotaSnapshot
 

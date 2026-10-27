@@ -4,9 +4,7 @@ import re
 
 import pytest
 from agent_board.board import (
-    ANSI_STYLE_PATTERN,
     BoardState,
-    frame_lines,
     lists_team,
     place_quota_panel,
     quiet_team_members,
@@ -14,6 +12,7 @@ from agent_board.board import (
     render_error,
 )
 from agent_board.cli import _update_unread_since
+from agent_board.frame import ANSI_STYLE_PATTERN, frame_lines
 from agent_board.progress_lookup import TaskReading
 
 

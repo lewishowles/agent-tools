@@ -4,12 +4,9 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from agent_board.board import (
-    AMBER_STYLE,
     DIM_STYLE,
-    MAX_FRAME_WIDTH,
-    RESET_STYLE,
-    frame_lines,
 )
+from agent_board.frame import AMBER_STYLE, MAX_FRAME_WIDTH, RESET_STYLE, frame_lines
 from agent_board.quota import AccountReading, QuotaSnapshot, QuotaWindow
 
 # The columns the frame takes from the box width: a border and two spaces on

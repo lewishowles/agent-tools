@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 
 import pytest
-from agent_board.board import ANSI_STYLE_PATTERN
+from agent_board.frame import ANSI_STYLE_PATTERN
 from agent_board.quota import AccountReading, QuotaSnapshot, QuotaWindow
 from agent_board.quota_panel import render_quota_panel
 
