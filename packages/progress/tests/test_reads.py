@@ -487,6 +487,11 @@ def test_next_reports_the_earliest_waiting_task_and_its_unfinished_dependency(
 
 	with store.database.transaction() as connection:
 		connection.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (TASK_A,))
+		# Put the waiting task above its dependency. Task add now refuses that
+		# order, but older databases can still hold it.
+		connection.execute(
+			"UPDATE tasks SET position = 0 WHERE id = ?", (waiting["id"],)
+		)
 
 	before = store.task_get(waiting["id"])
 
