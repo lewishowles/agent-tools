@@ -117,6 +117,18 @@ class BoardState:
     task_readings: Mapping[str, TaskReading] = field(default_factory=dict)
 
 
+@dataclass
+class _BoardRows:
+    """Hold the board's two groups of team rows for one refresh."""
+
+    # Rows for teams waiting on the human, each led by its sort key.
+    needs_you: list[tuple] = field(default_factory=list)
+    # Rows for teams still working, each led by its team label for sorting.
+    working: list[tuple] = field(default_factory=list)
+    # When each stuck team last showed activity, so its stuck time counts from then.
+    stuck_since: dict[str, float] = field(default_factory=dict)
+
+
 def lists_team(agents: list[dict]) -> bool:
     """Report whether the board shows at least one team for this listing."""
     return bool(group_teams(agents))
@@ -193,18 +205,29 @@ def render_board(
             working rows and team names after the repository.
     """
     state = state or BoardState()
-    unread_since = state.unread_since
-    last_activity = state.last_activity
-    quiet_members = state.quiet_members
-    quiet_reasons = state.quiet_reasons
-    now = state.now
-    phase_since = state.phase_since
-    task_readings = state.task_readings
     teams = group_teams(agents)
+    rows = _sort_team_rows(teams, state)
+    _add_phase_durations(rows, teams, state)
+    lines = _draw_board_content(rows, state, width=width, colour=colour)
+    return _frame_board(
+        lines, rows, width=width, current_time=current_time, colour=colour
+    )
 
-    needs_you = []
-    working = []
-    stuck_since = {}
+
+def _sort_team_rows(
+    teams: dict[str, list[tuple[dict, str | None]]], state: BoardState
+) -> _BoardRows:
+    """Sort each team into the waiting or working group, in board order.
+
+    Args:
+        teams: The live teams, keyed by team prefix.
+        state: The board's readings for this refresh.
+
+    Returns:
+        The waiting and working rows, each group in board order, with the
+        times stuck teams last showed activity.
+    """
+    rows = _BoardRows()
 
     for prefix, members in teams.items():
         repository, label_rest = _team_label(prefix, members)
@@ -221,7 +244,7 @@ def render_board(
                 for agent, _ in members
                 if agent["status"] == "blocked"
             )
-            needs_you.append(
+            rows.needs_you.append(
                 (
                     (0, -age, label),
                     repository,
@@ -240,43 +263,49 @@ def render_board(
             and session_id not in transcript_path
             for agent, _ in members
         ):
-            needs_you.append(((1, 0, label), repository, label_rest, "stale", prefix))
-        elif (quiet_member := quiet_members.get(prefix)) is not None:
-            reason = quiet_reasons.get(quiet_member)
+            rows.needs_you.append(
+                ((1, 0, label), repository, label_rest, "stale", prefix)
+            )
+        elif (quiet_member := state.quiet_members.get(prefix)) is not None:
+            reason = state.quiet_reasons.get(quiet_member)
             status = f"stuck · {reason}" if reason else "stuck"
-            if all(agent["name"] in last_activity for agent, _ in members):
-                stuck_since[prefix] = max(
-                    last_activity[agent["name"]] for agent, _ in members
+            if all(agent["name"] in state.last_activity for agent, _ in members):
+                rows.stuck_since[prefix] = max(
+                    state.last_activity[agent["name"]] for agent, _ in members
                 )
-            needs_you.append(((2, 0, label), repository, label_rest, status, prefix))
+            rows.needs_you.append(
+                ((2, 0, label), repository, label_rest, status, prefix)
+            )
         elif not any(status in {"active", "launching"} for status in statuses) and (
             old_unread_times := [
-                unread_since[agent["name"]]
+                state.unread_since[agent["name"]]
                 for agent, _ in members
                 if agent["status"] == "listening"
                 and agent["unread_count"] > 0
-                and agent["name"] in unread_since
-                and now - unread_since[agent["name"]] > STUCK_AFTER_SECONDS
+                and agent["name"] in state.unread_since
+                and state.now - state.unread_since[agent["name"]] > STUCK_AFTER_SECONDS
             ]
         ):
-            stuck_since[prefix] = min(old_unread_times)
-            needs_you.append(((2, 0, label), repository, label_rest, "stuck", prefix))
+            rows.stuck_since[prefix] = min(old_unread_times)
+            rows.needs_you.append(
+                ((2, 0, label), repository, label_rest, "stuck", prefix)
+            )
         elif partly_running:
             status = _working_status(members)
 
             if len(members) == 1:
                 label_rest += " (partial team)"
 
-            working.append((label, repository, label_rest, status, prefix))
+            rows.working.append((label, repository, label_rest, status, prefix))
         elif all(
             agent["status"] == "listening" and agent["unread_count"] == 0
             for agent, _ in members
         ):
-            needs_you.append(
+            rows.needs_you.append(
                 ((2, 0, label), repository, label_rest, "needs you", prefix)
             )
         else:
-            working.append(
+            rows.working.append(
                 (
                     label,
                     repository,
@@ -286,114 +315,193 @@ def render_board(
                 )
             )
 
-    if phase_since is not None:
-        for key in list(phase_since):
-            if key not in teams:
-                del phase_since[key]
+    # Blocked teams come first, longest wait first. Stale teams follow, then
+    # stuck and waiting teams, each group by name. Working teams sort by name.
+    rows.needs_you.sort(key=lambda row: row[0])
+    rows.working.sort(key=lambda row: row[0])
+    return rows
 
-    needs_you = [
+
+def _add_phase_durations(
+    rows: _BoardRows, teams: dict[str, list[tuple[dict, str | None]]], state: BoardState
+) -> None:
+    """Add how long each team has been in its current phase to its status.
+
+    When the board keeps timers, this also drops the timers of teams that have
+    gone and records new ones in state.phase_since.
+
+    Args:
+        rows: The sorted rows, whose statuses are replaced.
+        teams: The live teams, keyed by team prefix.
+        state: The board's readings for this refresh.
+    """
+    if state.phase_since is not None:
+        for key in list(state.phase_since):
+            if key not in teams:
+                del state.phase_since[key]
+
+    rows.needs_you = [
         (
             order,
             repository,
             label_rest,
-            _phase_status(status, key, phase_since, now, stuck_since.get(key)),
+            _phase_status(
+                status, key, state.phase_since, state.now, rows.stuck_since.get(key)
+            ),
             key,
         )
-        for order, repository, label_rest, status, key in needs_you
+        for order, repository, label_rest, status, key in rows.needs_you
     ]
-    working = [
+    rows.working = [
         (
             label,
             repository,
             label_rest,
-            _phase_status(status, key, phase_since, now),
+            _phase_status(status, key, state.phase_since, state.now),
             key,
         )
-        for label, repository, label_rest, status, key in working
+        for label, repository, label_rest, status, key in rows.working
     ]
 
-    # Blocked teams come first, longest wait first. Stale teams follow, then
-    # stuck and waiting teams, each group by name. Working teams sort by name.
-    needs_you.sort(key=lambda row: row[0])
-    working.sort(key=lambda row: row[0])
 
-    # The border follows the most urgent team and is amber when none is waiting.
-    if any(status.startswith("blocked") for _, _, _, status, _ in needs_you):
-        frame_style = RED_STYLE
-    elif needs_you:
-        frame_style = MAGENTA_STYLE
-    else:
-        frame_style = AMBER_STYLE
+def _draw_board_content(
+    rows: _BoardRows, state: BoardState, *, width: int, colour: bool
+) -> list[str]:
+    """Draw the waiting and working groups, with a blank line between them.
 
-    # Narrow terminals get plain rows without the frame or headings.
-    framed = width >= MIN_FRAME_WIDTH
-    lines = []
+    Both groups share one status width so the repository names line up.
 
-    if not needs_you and not working:
+    Args:
+        rows: The sorted rows with their phase durations.
+        state: The board's readings for this refresh.
+        width: The terminal width.
+        colour: Whether to style the lines with ANSI colours.
+
+    Returns:
+        The board's lines, or a "No active teams" line, dimmed when colour is on,
+        when no team is live.
+    """
+    if not rows.needs_you and not rows.working:
         line = "No active teams"
-        lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
-        if not framed:
-            return _plain_lines(lines, width)
+        return [f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line]
 
-        return frame_lines(
-            lines,
-            width,
-            current_time,
-            "0 waiting on you · 0 working",
-            frame_style=frame_style if colour else None,
-        )
-
-    shown_statuses = [status for _, _, _, status, _ in needs_you] + [
-        status for _, _, _, status, _ in working
+    shown_statuses = [status for _, _, _, status, _ in rows.needs_you] + [
+        status for _, _, _, status, _ in rows.working
     ]
     status_width = max(len(status) for status in shown_statuses)
+    lines = _draw_section(
+        rows.needs_you,
+        "WAITING ON YOU",
+        state,
+        width=width,
+        status_width=status_width,
+        colour=colour,
+        attention=True,
+    )
 
-    if needs_you and framed:
-        heading = "WAITING ON YOU"
+    if rows.needs_you and rows.working:
+        lines.append("")
+
+    lines.extend(
+        _draw_section(
+            rows.working,
+            "WORKING",
+            state,
+            width=width,
+            status_width=status_width,
+            colour=colour,
+            attention=False,
+        )
+    )
+    return lines
+
+
+def _draw_section(
+    section_rows: list[tuple],
+    heading: str,
+    state: BoardState,
+    *,
+    width: int,
+    status_width: int,
+    colour: bool,
+    attention: bool,
+) -> list[str]:
+    """Draw one group of team rows, each followed by its task line when known.
+
+    Args:
+        section_rows: The group's rows.
+        heading: The heading shown above the group in a framed board.
+        state: The board's readings for this refresh.
+        width: The terminal width.
+        status_width: The width every status is padded to.
+        colour: Whether to style the lines with ANSI colours.
+        attention: Whether the group waits on the human, which colours its
+            statuses and names instead of dimming the whole row.
+
+    Returns:
+        The group's lines, or an empty list when the group has no rows.
+    """
+    lines = []
+    # Narrow terminals get plain rows without the frame, headings or task lines.
+    framed = width >= MIN_FRAME_WIDTH
+
+    if section_rows and framed:
         lines.append(f"{DIM_STYLE}{heading}{RESET_STYLE}" if colour else heading)
 
-    for _, repository, label_rest, status, key in needs_you:
+    for _, repository, label_rest, status, key in section_rows:
         symbol = STATUS_SYMBOLS[status.partition(" · ")[0]]
         padded_status = f"{status:<{status_width}}"
 
-        if colour:
+        if attention and colour:
             status_style = RED_STYLE if status.startswith("blocked") else MAGENTA_STYLE
             styled_rest = f"{DIM_STYLE}{label_rest}{RESET_STYLE}" if label_rest else ""
             lines.append(
                 f"{status_style}{symbol} {padded_status}{RESET_STYLE}  "
-                f"{BRIGHT_WHITE_STYLE}{repository}{RESET_STYLE}"
-                f"{styled_rest}"
+                f"{BRIGHT_WHITE_STYLE}{repository}{RESET_STYLE}{styled_rest}"
             )
         else:
-            lines.append(f"{symbol} {padded_status}  {repository}{label_rest}")
+            line = f"{symbol} {padded_status}  {repository}{label_rest}"
+            lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
 
-        if framed and (reading := task_readings.get(key)) is not None:
+        if framed and (reading := state.task_readings.get(key)) is not None:
             line = _render_task_line(reading.task, reading.chunk, width)
             lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
 
-    if working and framed:
-        if needs_you:
-            lines.append("")
+    return lines
 
-        heading = "WORKING"
-        lines.append(f"{DIM_STYLE}{heading}{RESET_STYLE}" if colour else heading)
-    elif working and needs_you:
-        # Without headings, a blank line keeps the two groups apart.
-        lines.append("")
 
-    for _, repository, label_rest, status, key in working:
-        symbol = STATUS_SYMBOLS[status.partition(" · ")[0]]
-        line = f"{symbol} {status:<{status_width}}  {repository}{label_rest}"
-        lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
+def _frame_board(
+    lines: list[str],
+    rows: _BoardRows,
+    *,
+    width: int,
+    current_time: str,
+    colour: bool,
+) -> list[str]:
+    """Frame the board with its team counts, or return plain rows when too narrow.
 
-        if framed and (reading := task_readings.get(key)) is not None:
-            line = _render_task_line(reading.task, reading.chunk, width)
-            lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
+    Args:
+        lines: The drawn board content.
+        rows: The sorted rows, used for the counts and border colour.
+        width: The terminal width.
+        current_time: The local time for the top edge, formatted as HH:MM:SS.
+        colour: Whether to colour the border.
 
-    if not framed:
+    Returns:
+        The framed board, or plain lines shortened to the width on a narrow terminal.
+    """
+    if width < MIN_FRAME_WIDTH:
         return _plain_lines(lines, width)
 
-    bottom_text = f"{len(needs_you)} waiting on you · {len(working)} working"
+    # The border follows the most urgent team and is amber when none is waiting.
+    if any(status.startswith("blocked") for _, _, _, status, _ in rows.needs_you):
+        frame_style = RED_STYLE
+    elif rows.needs_you:
+        frame_style = MAGENTA_STYLE
+    else:
+        frame_style = AMBER_STYLE
+
+    bottom_text = f"{len(rows.needs_you)} waiting on you · {len(rows.working)} working"
     return frame_lines(
         lines,
         width,
