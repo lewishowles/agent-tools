@@ -292,7 +292,7 @@ def test_redirected_output_prints_one_plain_snapshot(monkeypatch, width: int) ->
         assert "╯\n\n╭─ Quota " in output.getvalue()
     else:
         assert "─╮  ╭─ Quota " in output.getvalue()
-    assert "Not checked yet" in output.getvalue()
+    assert "checking…" in output.getvalue()
     assert "\x1b[" not in output.getvalue()
 
 

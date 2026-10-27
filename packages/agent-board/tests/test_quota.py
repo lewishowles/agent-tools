@@ -127,6 +127,31 @@ def test_successful_check_replaces_accounts_that_disappear(monkeypatch) -> None:
     assert list(old_snapshot.accounts) == [("claude", "default")]
 
 
+def test_account_error_uses_short_message_without_detail() -> None:
+    """Raw provider detail in agent-quota JSON stays out of a board reading."""
+    output = json.dumps(
+        {
+            "ok": True,
+            "data": {
+                "accounts": [
+                    {
+                        "provider": "codex",
+                        "account": "default",
+                        "checked_at": None,
+                        "error": "Codex rejected the quota request",
+                        "error_detail": "request 2; response: private provider reply",
+                    }
+                ]
+            },
+        }
+    )
+
+    reading = quota._parse_accounts(output)[("codex", "default")]
+
+    assert reading.error == "Codex rejected the quota request"
+    assert "private provider reply" not in repr(reading)
+
+
 @pytest.mark.parametrize(
     "failure",
     [

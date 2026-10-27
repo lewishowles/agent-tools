@@ -5,6 +5,7 @@ import re
 import pytest
 from agent_board.board import (
     ANSI_STYLE_PATTERN,
+    frame_lines,
     lists_team,
     place_quota_panel,
     quiet_team_members,
@@ -71,6 +72,17 @@ def board_content(
         rows.append(content.rstrip())
 
     return rows
+
+
+@pytest.mark.parametrize("frame_style", [None, "\x1b[33m"])
+def test_frame_has_unbroken_top_edge_without_right_text(
+    frame_style: str | None,
+) -> None:
+    """An empty status leaves no spaces before the frame's top-right corner."""
+    lines = frame_lines([], 30, "", None, frame_style=frame_style, title="Quota")
+    top = ANSI_STYLE_PATTERN.sub("", lines[1])
+
+    assert top == "╭─ Quota " + "─" * 20 + "╮"
 
 
 def test_listed_team_matches_the_board_grouping() -> None:
@@ -1256,7 +1268,7 @@ def test_quota_stacks_below_frame_without_changing_compact_rows(width: int) -> N
     def render_panel(panel_width: int) -> list[str]:
         """Record the width selected for the quota panel."""
         panel_widths.append(panel_width)
-        return ["Quota", "Not checked yet"]
+        return ["Quota", "checking…"]
 
     combined = place_quota_panel(board_lines, render_panel, width=width)
 
@@ -1264,7 +1276,7 @@ def test_quota_stacks_below_frame_without_changing_compact_rows(width: int) -> N
         assert combined == board_lines
         assert panel_widths == []
     else:
-        assert combined == [*board_lines, "", "Quota", "Not checked yet"]
+        assert combined == [*board_lines, "", "Quota", "checking…"]
         assert panel_widths == [width]
 
 
@@ -1333,7 +1345,7 @@ def test_quota_heading_lines_up_beside_an_hcom_error() -> None:
 
 def test_quota_layout_switches_when_the_terminal_crosses_162_columns() -> None:
     """Every redraw places the same panel according to the current width."""
-    panel_lines = ["Quota", "Not checked yet"]
+    panel_lines = ["Quota", "checking…"]
     layouts = []
 
     for width in [161, 162, 161]:

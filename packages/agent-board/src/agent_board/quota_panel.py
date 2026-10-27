@@ -97,7 +97,7 @@ def render_quota_panel(
         key=lambda reading: (reading.provider, reading.account),
     )
 
-    # The heading, account rows and any error shown inside the box.
+    # The rows shown inside the box: the account table, any error, or "checking…".
     lines = _build_rows(snapshot, accounts, panel_width, current_time, colour)
     # The reading age or check status for the box's top-right edge.
     age = _age_text(snapshot, accounts, current_time)
@@ -121,7 +121,12 @@ def _build_rows(
     current_time: datetime,
     colour: bool,
 ) -> list[str]:
-    """Build the box content: the heading, a row per account, and any check error."""
+    """Build the box content: a row per account, then any whole-check error.
+
+    The column heading appears above the account rows only when there are
+    accounts to show. Before the first result arrives, the box shows
+    "checking…" instead.
+    """
     # The table label for each account, in row order.
     labels = [_account_label(reading) for reading in accounts]
     # The label column width, the level of detail, and each window column's width.
@@ -135,11 +140,14 @@ def _build_rows(
         else f"{'':{label_width}}{LABEL_SEPARATOR}"
         f"{'5h used':{window_width}}{WINDOW_SEPARATOR}week used"
     )
-    # The box content, starting with the heading, dimmed when the board uses colour.
-    lines = [f"{DIM_STYLE}{heading}{RESET_STYLE}" if colour else heading]
+    # The rows shown inside the box, from top to bottom.
+    lines = []
+
+    if accounts:
+        lines.append(f"{DIM_STYLE}{heading}{RESET_STYLE}" if colour else heading)
 
     if not accounts and snapshot.error is None:
-        lines.append("Not checked yet")
+        lines.append("checking…")
 
     for reading, label in zip(accounts, labels):
         if reading.error is not None:
@@ -171,7 +179,13 @@ def _build_rows(
 def _age_text(
     snapshot: QuotaSnapshot, accounts: list[AccountReading], current_time: datetime
 ) -> str:
-    """Say how long ago the newest reading was taken, or that a check is running."""
+    """Choose the status shown in the box's top edge.
+
+    The status is "checking…" while a check runs or before the first result
+    arrives. Otherwise it says how long ago the newest dated check happened, or
+    is empty when the finished check gave no time, as when every account failed
+    or the whole check failed.
+    """
     if snapshot.checking:
         return "checking…"
 
@@ -181,11 +195,10 @@ def _age_text(
         for reading in accounts
         if (checked := _parse_time(reading.checked_at)) is not None
     ]
-    return (
-        _reading_age(max(checked_times), current_time)
-        if checked_times
-        else "not checked yet"
-    )
+    if checked_times:
+        return _reading_age(max(checked_times), current_time)
+
+    return "checking…" if not accounts and snapshot.error is None else ""
 
 
 def _account_label(reading: AccountReading) -> str:

@@ -509,7 +509,8 @@ def frame_lines(
         lines: The content to show inside the frame.
         width: The terminal's width for this refresh. The frame is never wider
             than MAX_FRAME_WIDTH.
-        top_right_text: The board clock or the quota reading age for the top edge.
+        top_right_text: The board clock or the quota reading age for the top
+            edge. When it is empty, the top edge runs unbroken to the corner.
         bottom_text: The text set into the bottom edge, or None for a plain edge.
         frame_style: The terminal colour for the border and the bottom-edge
             text, or None to draw the frame without colour.
@@ -518,8 +519,9 @@ def frame_lines(
     width = min(width, MAX_FRAME_WIDTH)
     # The left corner and the title at the start of the top edge.
     top_start = f"╭─ {title} "
-    # The clock or reading age and the right corner at the end of the top edge.
-    top_end = f" {top_right_text} ─╮"
+    # The clock or reading age, when there is one, and the right corner at the
+    # end of the top edge.
+    top_end = f" {top_right_text} ─╮" if top_right_text else "╮"
     # The dashes that fill the top edge between the title and the right-hand text.
     top_dashes = "─" * max(0, width - len(top_start) - len(top_end))
     # The whole top edge, redrawn with colours below when the frame has a style.
@@ -528,9 +530,15 @@ def frame_lines(
     if frame_style:
         top = (
             f"{frame_style}╭─ {RESET_STYLE}{AMBER_STYLE}{title}{RESET_STYLE}"
-            f"{frame_style} {top_dashes} {RESET_STYLE}{AMBER_STYLE}{top_right_text}"
-            f"{RESET_STYLE}{frame_style} ─╮{RESET_STYLE}"
+            f"{frame_style} {top_dashes}"
         )
+        if top_right_text:
+            top += (
+                f" {RESET_STYLE}{AMBER_STYLE}{top_right_text}"
+                f"{RESET_STYLE}{frame_style} ─╮{RESET_STYLE}"
+            )
+        else:
+            top += f"╮{RESET_STYLE}"
 
     # The corners, the dashes beside the text and the spaces around it use six
     # columns.

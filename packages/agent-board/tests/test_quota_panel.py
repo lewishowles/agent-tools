@@ -29,8 +29,8 @@ def _account(
 
 
 @pytest.mark.parametrize("width", [30, 60, 80])
-def test_box_shows_unchecked_and_checking_states(width: int) -> None:
-    """The border reports a running check even before readings appear."""
+def test_box_shows_checking_before_first_result(width: int) -> None:
+    """Before any readings, the box says "checking…" and has no column headings."""
     unchecked = QuotaSnapshot(accounts={}, error=None, checking=False)
     checking = QuotaSnapshot(accounts={}, error=None, checking=True)
 
@@ -38,9 +38,12 @@ def test_box_shows_unchecked_and_checking_states(width: int) -> None:
     checking_lines = render_quota_panel(checking, width=width, now=NOW)
 
     assert "Quota" in unchecked_lines[0]
-    assert "not checked yet" in unchecked_lines[0]
+    assert "checking…" in unchecked_lines[0]
     assert "checking…" in checking_lines[0]
-    assert "Not checked yet" in unchecked_lines[3]
+    assert "checking…" in unchecked_lines[2]
+    assert "checking…" in checking_lines[2]
+    assert "5h" not in "".join(unchecked_lines)
+    assert "5h" not in "".join(checking_lines)
     assert all(len(line) == width for line in unchecked_lines)
     assert all(len(line) == width for line in checking_lines)
 
@@ -133,6 +136,41 @@ def test_account_and_whole_check_errors_have_their_own_rows() -> None:
     assert "unavailable: Provider unavailable" in lines[3]
     assert "Error: agent-quota isn't installed" in lines[4]
     assert all(len(line) == 80 for line in lines)
+
+
+def test_whole_check_error_has_no_empty_table_heading() -> None:
+    """A failed check without account results shows its error without column labels."""
+    snapshot = QuotaSnapshot(accounts={}, error="provider unavailable", checking=False)
+
+    lines = render_quota_panel(snapshot, width=80, now=NOW)
+
+    assert "checking…" not in lines[0]
+    assert lines[0].endswith("─────╮")
+    assert "Error: provider unavailable" in lines[2]
+    assert "5h used" not in "".join(lines)
+    assert "week used" not in "".join(lines)
+    assert all(len(line) == 80 for line in lines)
+
+
+def test_failed_account_has_no_checking_status_after_check_finishes() -> None:
+    """A failed account with no check time leaves the top edge without a status."""
+    reading = AccountReading(
+        provider="codex",
+        account="1",
+        checked_at=None,
+        session=None,
+        week=None,
+        error="Codex rejected the quota request",
+    )
+    snapshot = QuotaSnapshot(
+        accounts={("codex", "1"): reading}, error=None, checking=False
+    )
+
+    lines = render_quota_panel(snapshot, width=80, now=NOW)
+
+    assert "checking…" not in lines[0]
+    assert lines[0].endswith("─────╮")
+    assert "5h used" in lines[2] and "week used" in lines[2]
 
 
 def test_long_error_and_provider_stay_inside_a_narrow_box() -> None:
