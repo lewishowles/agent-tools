@@ -2518,6 +2518,222 @@ def test_adding_a_dependency_refreshes_a_waiting_tasks_reason(tmp_path: Path) ->
 	)
 
 
+def test_task_add_places_a_dependent_after_its_dependency(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first", "First")
+	dependency = _add_task(store, "dependency", "Dependency")
+
+	dependent = _add_task(
+		store, "dependent", "Dependent", depends_on=[dependency["id"]], position=99
+	)
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list()[
+		"items"
+	]
+
+	assert [item["id"] for item in items] == [
+		first["id"],
+		dependency["id"],
+		dependent["id"],
+	]
+
+
+def test_task_add_refuses_an_explicit_position_before_a_dependency(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	dependency = _add_task(store, "dependency", "Dependency")
+
+	with pytest.raises(InvalidDependencyError, match=dependency["id"]):
+		_add_task(
+			store, "dependent", "Dependent", depends_on=[dependency["id"]], position=1
+		)
+
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list()[
+		"items"
+	]
+	assert [item["id"] for item in items] == [dependency["id"]]
+
+
+def test_dependency_add_reorders_a_dependent_and_its_children(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	dependent = _add_task(store, "dependent", "Dependent")
+	child = _add_task(store, "child", "Child", depends_on=[dependent["id"]])
+	dependency = _add_task(store, "dependency", "Dependency")
+
+	store.task_dependency_add(dependent["id"], dependency["id"])
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list()[
+		"items"
+	]
+
+	assert [item["id"] for item in items] == [
+		dependency["id"],
+		dependent["id"],
+		child["id"],
+	]
+
+
+def test_dependency_add_orders_an_uneven_diamond(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first", "First")
+	second = _add_task(store, "second", "Second", depends_on=[first["id"]])
+	third = _add_task(store, "third", "Third", depends_on=[second["id"]])
+	fourth = _add_task(store, "fourth", "Fourth", depends_on=[first["id"], third["id"]])
+	fifth = _add_task(store, "fifth", "Fifth")
+	sixth = _add_task(store, "sixth", "Sixth")
+
+	store.task_dependency_add(first["id"], sixth["id"])
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list()[
+		"items"
+	]
+	assert [item["id"] for item in items] == [
+		fifth["id"],
+		sixth["id"],
+		first["id"],
+		second["id"],
+		third["id"],
+		fourth["id"],
+	]
+
+
+def test_dependency_add_refuses_a_long_cycle(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first", "First")
+	second = _add_task(store, "second", "Second", depends_on=[first["id"]])
+	third = _add_task(store, "third", "Third", depends_on=[second["id"]])
+
+	with pytest.raises(InvalidDependencyError) as error:
+		store.task_dependency_add(first["id"], third["id"])
+
+	assert error.value.details["chain"] == [
+		first["id"],
+		third["id"],
+		second["id"],
+		first["id"],
+	]
+	assert _dependency_ids(store, first["id"]) == []
+
+
+def test_task_move_carries_dependents_but_refuses_moving_above_a_dependency(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first", "First")
+	child = _add_task(store, "child", "Child", depends_on=[first["id"]])
+	second = _add_task(store, "second", "Second")
+
+	store.task_move(first["id"], after_task_id=second["id"])
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list()[
+		"items"
+	]
+	assert [item["id"] for item in items] == [second["id"], first["id"], child["id"]]
+
+	with pytest.raises(InvalidDependencyError, match=first["id"]):
+		store.task_move(child["id"], before_task_id=first["id"])
+
+
+def test_task_move_orders_an_uneven_diamond(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first", "First")
+	second = _add_task(store, "second", "Second", depends_on=[first["id"]])
+	third = _add_task(store, "third", "Third", depends_on=[second["id"]])
+	fourth = _add_task(store, "fourth", "Fourth", depends_on=[first["id"], third["id"]])
+
+	store.task_move(first["id"], after_task_id=fourth["id"])
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list()[
+		"items"
+	]
+	assert [item["id"] for item in items] == [
+		first["id"],
+		second["id"],
+		third["id"],
+		fourth["id"],
+	]
+
+
+def test_task_move_keeps_carried_siblings_in_order(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first", "First")
+	second = _add_task(store, "second", "Second", depends_on=[first["id"]])
+	third = _add_task(store, "third", "Third", depends_on=[first["id"]])
+	other = _add_task(store, "other", "Other")
+
+	store.task_move(first["id"], after_task_id=other["id"])
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list()[
+		"items"
+	]
+	assert [item["id"] for item in items] == [
+		other["id"],
+		first["id"],
+		second["id"],
+		third["id"],
+	]
+
+
+def test_task_move_keeps_a_dependent_below_another_dependency(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first = _add_task(store, "first", "First")
+	dependent = _add_task(store, "dependent", "Dependent", depends_on=[first["id"]])
+	other = _add_task(store, "other", "Other")
+	lower = _add_task(store, "lower", "Lower")
+	store.task_dependency_add(dependent["id"], lower["id"])
+
+	store.task_move(first["id"], after_task_id=other["id"])
+	items = ReadStore(store.database, _ProjectStore(store.database)).task_list()[
+		"items"
+	]
+	assert [item["id"] for item in items] == [
+		other["id"],
+		first["id"],
+		lower["id"],
+		dependent["id"],
+	]
+
+
+@pytest.mark.parametrize("target", [None, "before", "after"])
+def test_task_move_into_release_carries_its_dependents(
+	tmp_path: Path, target: str | None
+) -> None:
+	store = _seed_store(tmp_path)
+	release = store.release_add("target", "Target", overview="Target release")
+	first = _add_task(store, "first", "First")
+	dependent = _add_task(store, "dependent", "Dependent", release_id=release["id"])
+	other = _add_task(store, "other", "Other", release_id=release["id"])
+	store.task_dependency_add(dependent["id"], first["id"])
+
+	arguments = {"release_id": release["id"]}
+	if target == "before":
+		arguments["before_task_id"] = other["id"]
+	elif target == "after":
+		arguments["after_task_id"] = other["id"]
+	store.task_move(first["id"], **arguments)
+	reader = ReadStore(store.database, _ProjectStore(store.database))
+	assert (
+		reader.task_get(dependent["id"])["position"]
+		> reader.task_get(first["id"])["position"]
+	)
+
+
+def test_cross_release_dependency_keeps_each_release_order(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	first_release = store.release_add("first", "First", overview="First release")
+	second_release = store.release_add("second", "Second", overview="Second release")
+	dependent = _add_task(
+		store, "dependent", "Dependent", release_id=first_release["id"]
+	)
+	other = _add_task(store, "other", "Other", release_id=first_release["id"])
+	dependency = _add_task(
+		store, "dependency", "Dependency", release_id=second_release["id"]
+	)
+
+	store.task_dependency_add(dependent["id"], dependency["id"])
+	reader = ReadStore(store.database, _ProjectStore(store.database))
+	assert reader.task_get(dependent["id"])["position"] == 1
+	assert reader.task_get(other["id"])["position"] == 2
+	assert reader.task_get(dependency["id"])["position"] == 1
+	assert reader.task_get(dependent["id"])["release_id"] == first_release["id"]
+	assert reader.task_get(dependency["id"])["release_id"] == second_release["id"]
+
+
 def test_task_add_lists_unfinished_dependencies_in_task_id_order(
 	tmp_path: Path,
 ) -> None:

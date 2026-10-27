@@ -19,6 +19,9 @@ All notable changes to `progress` are documented here. The format is based on [K
 
 ### Changed
 
+- Adding, linking and moving tasks now keeps each task after the tasks it
+  depends on within one release. Dependency loops, and moves that would put a
+  task above one of its dependencies, are refused.
 - Breaking: `chunk add` requires `--review-question`, the one question a
   reviewer answers about the chunk. Upgrading the database leaves existing
   chunks without one.

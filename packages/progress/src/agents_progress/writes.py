@@ -28,6 +28,7 @@ from .ids import (
 	validate_object_id,
 )
 from .models import Chunk, Context, Note, Release, Task
+from .ordering import TaskAboveDependencyError, dependency_cycle, order_task_queue
 from .projects import _StoreBase
 from .reads import (
 	_TASK_COLUMNS,
@@ -397,8 +398,10 @@ class WriteStore(_StoreBase):
 		At a taken position, the new task goes before the task there, and a
 		position past the last task places it last. Every add renumbers the queue
 		from 1 with no gaps, so the returned position can be lower than requested
-		and a position of 0 becomes 1. The task starts ready, or blocked while any
-		dependency is unresolved.
+		and a position of 0 becomes 1. Without a position, the task goes after any
+		dependency in the same queue; a requested position above one of them is
+		refused. The task starts ready, or blocked while any dependency is
+		unresolved.
 		"""
 		_require_text(slug, "task slug")
 		_require_text(title, "task title")
@@ -536,6 +539,18 @@ class WriteStore(_StoreBase):
 					"INSERT INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)",
 					(task_id, dependency_id),
 				)
+			try:
+				ordered_ids = order_task_queue(
+					connection,
+					ordered_ids,
+					task_id,
+					refuse_above_dependency=position is not None,
+				)
+			except TaskAboveDependencyError as error:
+				raise InvalidDependencyError(
+					f"task {task_id} cannot be placed before dependency {error.dependency_id}",
+					{"task_id": task_id, "depends_on_task_id": error.dependency_id},
+				) from error
 
 			_write_task_values(connection, "done_when", task_id, done_when_checks)
 			_write_task_values(connection, "files", task_id, file_paths)
@@ -939,6 +954,8 @@ class WriteStore(_StoreBase):
 		"""Move a task within its queue or reassign it to another queue.
 
 		A task placed before or after a task in another queue joins that queue.
+		A move above one of its dependencies is refused. Dependents in the
+		target queue follow the moved task.
 		"""
 		validate_object_id(task_id, TASK_PREFIX)
 		release_reassignment = release_id is not None
@@ -1028,10 +1045,16 @@ class WriteStore(_StoreBase):
 						task_id,
 						target_task_id,
 						before_task_id,
-						after_task_id,
+						carry_dependents=True,
 					)
 				else:
-					_renumber_task_queue(connection, project.id, release_id)
+					_order_task_after_dependencies(
+						connection,
+						project.id,
+						release_id,
+						task_id,
+						carry_dependents=True,
+					)
 
 				_renumber_task_queue(connection, project.id, task["release_id"])
 
@@ -1044,7 +1067,6 @@ class WriteStore(_StoreBase):
 				task_id,
 				target_task_id,
 				before_task_id,
-				after_task_id,
 			)
 			connection.execute(
 				"UPDATE tasks SET updated_at = ? WHERE id = ?",
@@ -1059,7 +1081,12 @@ class WriteStore(_StoreBase):
 		depends_on_task_id: str,
 		path: str | Path | None = None,
 	) -> dict[str, object]:
-		"""Add one same-project dependency and update a ready task if needed."""
+		"""Add one same-project dependency and update a ready task if needed.
+
+		A link that would form a loop is refused. When both tasks share a queue
+		and the task sits above its new dependency, the task and its dependents
+		move down to follow it.
+		"""
 		validate_object_id(task_id, TASK_PREFIX)
 		validate_object_id(depends_on_task_id, TASK_PREFIX)
 		if task_id == depends_on_task_id:
@@ -1089,6 +1116,16 @@ class WriteStore(_StoreBase):
 					f"task {task_id} already depends on {depends_on_task_id}",
 					{"task_id": task_id, "depends_on_task_id": depends_on_task_id},
 				)
+			cycle = dependency_cycle(connection, task_id, depends_on_task_id)
+			if cycle is not None:
+				raise InvalidDependencyError(
+					f"dependency loop: {' -> '.join(cycle)}",
+					{
+						"task_id": task_id,
+						"depends_on_task_id": depends_on_task_id,
+						"chain": list(cycle),
+					},
+				)
 
 			if dependency["status"] != "done" and task["status"] in {
 				"in-progress",
@@ -1103,6 +1140,10 @@ class WriteStore(_StoreBase):
 				"INSERT INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)",
 				(task_id, depends_on_task_id),
 			)
+			if task["release_id"] == dependency["release_id"]:
+				_order_task_after_dependencies(
+					connection, project.id, task["release_id"], task_id
+				)
 			_refresh_dependency_status(connection, task_id, project.id)
 			updated_task = _task_row(connection, task_id, project.id)
 			# The refresh already sets updated_at when the status or reason changes.
@@ -2909,9 +2950,67 @@ def _reorder_task_queue(
 	task_id: str,
 	target_task_id: str,
 	before_task_id: str | None,
-	after_task_id: str | None,
+	*,
+	carry_dependents: bool = False,
 ) -> None:
-	"""Place one task before or after another task in the selected queue."""
+	"""Move a task before or after another task in the same queue.
+
+	Raises ``InvalidDependencyError`` when the new spot is above one of the
+	task's own dependencies. Moving a task down or into this queue brings its
+	dependents along so they stay after it.
+	"""
+	queue_rows = _task_queue_rows(connection, project_id, release_id)
+	ordered_ids = [row["id"] for row in queue_rows]
+	old_index = ordered_ids.index(task_id)
+	ordered_ids.remove(task_id)
+	target_index = ordered_ids.index(target_task_id)
+	insert_index = target_index if before_task_id is not None else target_index + 1
+	ordered_ids.insert(insert_index, task_id)
+	try:
+		ordered_ids = order_task_queue(
+			connection,
+			ordered_ids,
+			task_id,
+			refuse_above_dependency=True,
+			carry_dependents=carry_dependents or insert_index > old_index,
+		)
+	except TaskAboveDependencyError as error:
+		raise InvalidDependencyError(
+			f"task {task_id} cannot move before dependency {error.dependency_id}",
+			{"task_id": task_id, "depends_on_task_id": error.dependency_id},
+		) from error
+	_write_task_positions(connection, queue_rows, ordered_ids)
+
+
+def _order_task_after_dependencies(
+	connection: sqlite3.Connection,
+	project_id: str,
+	release_id: str | None,
+	task_id: str,
+	*,
+	carry_dependents: bool = False,
+) -> None:
+	"""Move a task below its dependencies when it sits above any of them.
+
+	The task's dependents move with it. With ``carry_dependents``, they are
+	brought after the task even when the task stays put, as after it joins the
+	end of another release's queue.
+	"""
+	queue_rows = _task_queue_rows(connection, project_id, release_id)
+	ordered_ids = [row["id"] for row in queue_rows]
+	ordered_ids = order_task_queue(
+		connection, ordered_ids, task_id, carry_dependents=carry_dependents
+	)
+	_write_task_positions(connection, queue_rows, ordered_ids)
+
+
+def _task_queue_rows(
+	connection: sqlite3.Connection, project_id: str, release_id: str | None
+) -> list[sqlite3.Row]:
+	"""Return the tasks in one release's queue, in queue order.
+
+	A ``release_id`` of ``None`` returns the queue of tasks with no release.
+	"""
 	if release_id is None:
 		queue_filter = "release_id IS NULL"
 		queue_parameters = (project_id,)
@@ -2919,16 +3018,27 @@ def _reorder_task_queue(
 		queue_filter = "release_id = ?"
 		queue_parameters = (project_id, release_id)
 
-	_reorder_queue(
-		connection,
-		"tasks",
-		f"project_id = ? AND {queue_filter}",
+	return connection.execute(
+		f"SELECT id, position FROM tasks WHERE project_id = ? AND {queue_filter} ORDER BY position, id",
 		queue_parameters,
-		task_id,
-		target_task_id,
-		before_task_id,
-		after_task_id,
-	)
+	).fetchall()
+
+
+def _write_task_positions(
+	connection: sqlite3.Connection,
+	queue_rows: list[sqlite3.Row],
+	ordered_ids: list[str],
+) -> None:
+	"""Save a queue order as positions 1, 2, 3 and so on.
+
+	Only tasks whose position changes are written.
+	"""
+	positions = {row["id"]: row["position"] for row in queue_rows}
+	for index, ordered_id in enumerate(ordered_ids, start=1):
+		if positions[ordered_id] != index:
+			connection.execute(
+				"UPDATE tasks SET position = ? WHERE id = ?", (index, ordered_id)
+			)
 
 
 def _task_row(

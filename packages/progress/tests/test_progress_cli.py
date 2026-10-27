@@ -2614,6 +2614,79 @@ def test_rejected_task_move_keeps_its_update_time(complete_records, capsys) -> N
 	)
 
 
+def test_task_move_json_names_the_dependency_that_blocks_it(
+	complete_records, capsys
+) -> None:
+	"""Name the blocking dependency in JSON when a move puts a task above it."""
+	database_path, dependency, _chunk = complete_records
+	writer = WriteStore(Database(database_path))
+	dependent = writer.task_add(
+		"dependent",
+		"Dependent",
+		overview="Follow the first task.",
+		done_when=["Finish dependent work."],
+		depends_on=[dependency["id"]],
+	)
+
+	result = cli.main(
+		[
+			"task",
+			"move",
+			dependent["id"],
+			"--before",
+			dependency["id"],
+			"--database",
+			str(database_path),
+			"--json",
+		]
+	)
+	output = json.loads(capsys.readouterr().out)
+
+	assert result == 1
+	assert output["error"]["code"] == "invalid-dependency"
+	assert dependency["id"] in output["error"]["message"]
+
+
+def test_dependency_add_json_names_the_loop_chain(complete_records, capsys) -> None:
+	"""Name every task in a refused dependency loop in the JSON error."""
+	database_path, first, _chunk = complete_records
+	writer = WriteStore(Database(database_path))
+	second = writer.task_add(
+		"second",
+		"Second",
+		overview="Second work.",
+		done_when=["Finish it."],
+		depends_on=[first["id"]],
+	)
+	third = writer.task_add(
+		"third",
+		"Third",
+		overview="Third work.",
+		done_when=["Finish it."],
+		depends_on=[second["id"]],
+	)
+
+	result = cli.main(
+		[
+			"task",
+			"dependency",
+			"add",
+			first["id"],
+			third["id"],
+			"--database",
+			str(database_path),
+			"--json",
+		]
+	)
+	output = json.loads(capsys.readouterr().out)
+	chain = [first["id"], third["id"], second["id"], first["id"]]
+
+	assert result == 1
+	assert output["error"]["code"] == "invalid-dependency"
+	assert output["error"]["details"]["chain"] == chain
+	assert " -> ".join(chain) in output["error"]["message"]
+
+
 @pytest.mark.parametrize("operation", ["add", "remove"])
 @pytest.mark.parametrize("prerequisite_done", [False, True])
 def test_dependency_change_updates_only_the_dependent_task(
