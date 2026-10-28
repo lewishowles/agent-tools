@@ -46,7 +46,12 @@ def board_content(
     now: float = 0,
     phase_since: dict[str, tuple[str, float, bool]] | None = None,
 ) -> list[str]:
-    """Return the content rows as drawn inside the frame, including headings."""
+    """Return the rows inside the frame, with plain rows' padding cut to two spaces.
+
+    This lets tests compare a name and its status without counting columns.
+    Coloured rows come back as drawn, so tests can check exactly where colour
+    codes start and stop.
+    """
     quiet_members = (
         quiet_team_members(agents, last_activity, now)
         if last_activity is not None
@@ -71,7 +76,9 @@ def board_content(
     for row in framed[3:-2]:
         content = re.sub(r"^(?:\x1b\[[0-9;]*m)?│(?:\x1b\[[0-9;]*m)?  ", "", row)
         content = re.sub(r"  (?:\x1b\[[0-9;]*m)?│(?:\x1b\[[0-9;]*m)?$", "", content)
-        rows.append(content.rstrip())
+        rows.append(
+            re.sub(r" {2,}", "  ", content).rstrip() if not colour else content.rstrip()
+        )
 
     return rows
 
@@ -105,19 +112,19 @@ def test_phase_timer_starts_as_an_estimate_and_resets_when_the_status_changes() 
     ]
 
     assert board_content(waiting, now=100, phase_since=phase_since)[1] == (
-        "● needs you · 0s+  Agent-Tools"
+        "● Agent-Tools  needs you · 0s+"
     )
     assert board_content(waiting, now=172, phase_since=phase_since)[1] == (
-        "● needs you · 1m+  Agent-Tools"
+        "● Agent-Tools  needs you · 1m+"
     )
     assert board_content(checking, now=180, phase_since=phase_since)[1] == (
-        "◌ checking · 0s  Agent-Tools"
+        "◌ Agent-Tools  checking · 0s"
     )
     assert board_content(checking, now=245, phase_since=phase_since)[1] == (
-        "◌ checking · 1m  Agent-Tools"
+        "◌ Agent-Tools  checking · 1m"
     )
     assert board_content(waiting, now=250, phase_since=phase_since)[1] == (
-        "● needs you · 0s  Agent-Tools"
+        "● Agent-Tools  needs you · 0s"
     )
 
 
@@ -127,11 +134,11 @@ def test_disappearing_team_gets_a_new_estimated_baseline() -> None:
     members = [agent("Agent-Tools", "scout", status="active")]
 
     assert board_content(members, now=100, phase_since=phase_since)[1] == (
-        "◌ checking · 0s+  Agent-Tools (partial team)"
+        "◌ Agent-Tools (partial team)  checking · 0s+"
     )
     assert board_content([], now=120, phase_since=phase_since) == ["No active teams"]
     assert board_content(members, now=200, phase_since=phase_since)[1] == (
-        "◌ checking · 0s+  Agent-Tools (partial team)"
+        "◌ Agent-Tools (partial team)  checking · 0s+"
     )
 
 
@@ -140,7 +147,7 @@ def test_blocked_row_uses_hcom_age_instead_of_a_phase_timer() -> None:
     members = [agent("Agent-Tools", "scout", status="blocked", age=240)]
 
     assert board_content(members, now=100, phase_since={})[1] == (
-        "✕ blocked · 4m  Agent-Tools"
+        "✕ Agent-Tools  blocked · 4m"
     )
 
 
@@ -161,7 +168,7 @@ def test_quiet_team_stuck_timer_starts_at_its_last_event() -> None:
         board_content(
             members, last_activity=last_activity, now=300, phase_since=phase_since
         )[1]
-        == "● stuck · 5m  Agent-Tools"
+        == "● Agent-Tools  stuck · 5m"
     )
 
 
@@ -180,7 +187,7 @@ def test_unread_team_stuck_timer_starts_at_its_first_old_unread_message() -> Non
         board_content(
             members, unread_since=unread_since, now=61, phase_since=phase_since
         )[1]
-        == "● stuck · 1m  Agent-Tools"
+        == "● Agent-Tools  stuck · 1m"
     )
 
 
@@ -202,7 +209,7 @@ def test_changing_a_stuck_reason_does_not_reset_the_timer() -> None:
             now=300,
             phase_since=phase_since,
         )[1]
-        == "● stuck · model at capacity · 5m+  Agent-Tools"
+        == "● Agent-Tools  stuck · model at capacity · 5m+"
     )
     assert (
         board_content(
@@ -212,7 +219,7 @@ def test_changing_a_stuck_reason_does_not_reset_the_timer() -> None:
             now=362,
             phase_since=phase_since,
         )[1]
-        == "● stuck · rate limited · 6m+  Agent-Tools"
+        == "● Agent-Tools  stuck · rate limited · 6m+"
     )
 
 
@@ -232,10 +239,12 @@ def test_frame_shows_mixed_groups_and_counts_at_full_width() -> None:
     assert lines[1].endswith(" 12:34:56 ─╮")
     assert lines[2] == "│" + " " * 58 + "│"
     assert lines[3] == "│  WAITING ON YOU" + " " * 40 + "  │"
-    assert lines[4].startswith("│  ● needs you")
+    assert lines[4].startswith("│  ● Agent-Tools")
+    assert lines[4].endswith("needs you  │")
     assert lines[5] == lines[2]
     assert lines[6] == "│  WORKING" + " " * 47 + "  │"
-    assert lines[7].startswith("│  ○ coordinating")
+    assert lines[7].startswith("│  ○ Agent-Tools")
+    assert lines[7].endswith("coordinating  │")
     assert lines[-2] == lines[2]
     assert lines[-1].startswith("╰─ 1 waiting on you · 1 working ")
     assert lines[-1].endswith("─╯")
@@ -397,44 +406,94 @@ def test_80_column_terminal_keeps_its_existing_frame() -> None:
 
 
 def test_wide_terminal_shortens_a_long_row_at_the_frame_cap() -> None:
-    """A long team name ends inside the capped frame with an ellipsis."""
+    """A long team name shortens while the status stays at the capped edge."""
     agents = [agent("Agent-Tools-" + "long-" * 20, "scout", status="active")]
 
     lines = render_board(agents, width=200, current_time="12:34:56")
 
-    assert lines[4].endswith("…  │")
+    assert "…" in lines[4]
+    assert lines[4].endswith("checking  │")
     assert all(len(line) == 80 for line in lines[1:])
 
 
-@pytest.mark.parametrize(
-    ("colour", "expected_rows"),
-    [
-        (
-            False,
-            [
-                "WAITING ON YOU",
-                "✕ blocked · 2m  Agent-Tools · blocked",
-                "",
-                "WORKING",
-                "◌ checking      Agent-Tools · working (partial team)",
-            ],
+@pytest.mark.parametrize("colour", [False, True])
+def test_long_names_shorten_and_keep_full_status_in_both_groups(colour: bool) -> None:
+    """Waiting and working rows keep the full status when names are long."""
+    agents = [
+        agent("Agent-Tools-" + "blocked-" * 8, "scout", status="blocked"),
+        agent("Agent-Tools-" + "working-" * 8, "scout", status="active"),
+    ]
+
+    lines = render_board(agents, width=42, current_time="12:34:56", colour=colour)
+    plain_lines = [ANSI_STYLE_PATTERN.sub("", line) for line in lines]
+
+    assert plain_lines[4].startswith("│  ✕ Agent-Tools")
+    assert "…  blocked · 1m  │" in plain_lines[4]
+    assert plain_lines[7].startswith("│  ◌ Agent-Tools")
+    assert "…" in plain_lines[7]
+    assert plain_lines[7].endswith("checking  │")
+    assert all(len(line) == 42 for line in plain_lines[1:])
+
+
+@pytest.mark.parametrize("colour", [False, True])
+def test_long_status_keeps_start_of_team_name_at_40_columns(colour: bool) -> None:
+    """A long status loses its end while the team name keeps three letters."""
+    worker = agent("Agent-Tools", "scout", status="active")
+    lines = render_board(
+        [worker],
+        BoardState(
+            last_activity={worker["name"]: 0},
+            quiet_members=quiet_team_members([worker], {worker["name"]: 0}, 300),
+            quiet_reasons={worker["name"]: "model at capacity"},
+            now=300,
+            phase_since={},
         ),
-        (
-            True,
-            [
-                "\x1b[2mWAITING ON YOU\x1b[0m",
-                "\x1b[31m✕ blocked · 2m\x1b[0m  \x1b[97mAgent-Tools\x1b[0m\x1b[2m · blocked\x1b[0m",
-                "",
-                "\x1b[2mWORKING\x1b[0m",
-                "\x1b[2m◌ checking      Agent-Tools · working (partial team)\x1b[0m",
-            ],
+        width=40,
+        current_time="12:34:56",
+        colour=colour,
+    )
+    plain_lines = [ANSI_STYLE_PATTERN.sub("", line) for line in lines]
+
+    assert plain_lines[4].startswith("│  ● Age…")
+    assert "stuck · model at capacity" in plain_lines[4]
+    assert len(plain_lines[4]) == 40
+
+
+@pytest.mark.parametrize("colour", [False, True])
+def test_short_status_keeps_full_name_beside_long_status(colour: bool) -> None:
+    """Each team name uses the space left by its own right-aligned status."""
+    worker = agent("Agent-Tools-long-name", "scout", status="active")
+    waiting = [
+        agent("Agent-Tools-agent-board", "orchestrator"),
+        agent("Agent-Tools-agent-board", "scout"),
+    ]
+    lines = render_board(
+        [worker, *waiting],
+        BoardState(
+            last_activity={worker["name"]: 0},
+            quiet_members=quiet_team_members([worker], {worker["name"]: 0}, 300),
+            quiet_reasons={worker["name"]: "model at capacity"},
+            now=300,
+            phase_since={},
         ),
-    ],
-)
-def test_frame_pads_coloured_and_plain_rows_to_the_same_width(
-    colour: bool, expected_rows: list[str]
-) -> None:
-    """Colour codes do not move the right edge of a blocked or working row."""
+        width=50,
+        current_time="12:34:56",
+        colour=colour,
+    )
+    plain_lines = [ANSI_STYLE_PATTERN.sub("", line) for line in lines]
+
+    assert any(
+        "Agent-Tools · agent-board" in line and line.endswith("needs you · 0s+  │")
+        for line in plain_lines
+    )
+    assert any(
+        line.endswith("stuck · model at capacity · 5m+  │") for line in plain_lines
+    )
+
+
+@pytest.mark.parametrize("colour", [False, True])
+def test_frame_pads_coloured_and_plain_rows_to_the_same_width(colour: bool) -> None:
+    """Both groups end their statuses at the same edge in either colour mode."""
     agents = [
         agent("Agent-Tools-blocked", "scout", status="blocked", age=120),
         agent("Agent-Tools-working", "scout", status="active"),
@@ -442,7 +501,12 @@ def test_frame_pads_coloured_and_plain_rows_to_the_same_width(
 
     lines = render_board(agents, width=70, current_time="01:02:03", colour=colour)
 
-    assert board_content(agents, colour=colour) == expected_rows
+    plain_lines = [ANSI_STYLE_PATTERN.sub("", line) for line in lines]
+
+    assert plain_lines[4].startswith("│  ✕ Agent-Tools · blocked")
+    assert plain_lines[4].endswith("blocked · 2m  │")
+    assert plain_lines[7].startswith("│  ◌ Agent-Tools · working (partial team)")
+    assert plain_lines[7].endswith("checking  │")
     assert all(len(ANSI_STYLE_PATTERN.sub("", line)) == 70 for line in lines[1:])
 
 
@@ -528,15 +592,14 @@ def test_tight_frame_shortens_rows_and_bottom_text(colour: bool) -> None:
 
     assert plain_lines[1].startswith("╭─ ✻ agent board ")
     assert plain_lines[1].endswith(" 12:34:56 ─╮")
-    assert plain_lines[4].startswith("│  ✕ blocked · 1m")
-    assert plain_lines[4].endswith("…  │")
-    assert plain_lines[7].endswith("…  │")
+    assert plain_lines[4].startswith("│  ✕ Agent-T…")
+    assert plain_lines[4].endswith("blocked · 1m  │")
+    assert plain_lines[7].endswith("checking  │")
     assert plain_lines[-1] == "╰─ 1 waiting on you · 1 wo… ─╯"
     assert all(len(line) == 30 for line in plain_lines[1:])
 
     if colour:
         assert "…\x1b[0m" in lines[4]
-        assert "…\x1b[0m" in lines[7]
     else:
         assert all("\x1b[" not in line for line in lines)
 
@@ -566,15 +629,15 @@ def test_narrow_board_uses_plain_rows_with_a_gap_between_groups(colour: bool) ->
 
     assert plain_lines == [
         "",
-        "✕ blocked · 1m  Agent-Tools …",
+        "✕ Agent-Tools …  blocked · 1m",
         "",
-        "◌ checking      Agent-Tools …",
+        "◌ Agent-Tools · wo…  checking",
     ]
     assert all(len(line) <= 29 for line in plain_lines)
 
     if colour:
-        assert lines[1].endswith("…\x1b[0m")
-        assert lines[3].endswith("…\x1b[0m")
+        assert lines[1].endswith("blocked · 1m\x1b[0m")
+        assert lines[3].endswith("checking\x1b[0m")
     else:
         assert all("\x1b[" not in line for line in lines)
 
@@ -627,8 +690,8 @@ def test_single_group_uses_only_its_heading(
     assert lines[-1].startswith(totals)
 
 
-def test_attention_and_working_groups_use_priority_and_align_statuses() -> None:
-    """Blocked teams come first, and every row shares a status column."""
+def test_attention_and_working_groups_use_priority_order() -> None:
+    """Blocked teams lead the waiting group, and teams still working go under it."""
     agents = [
         agent("Agent-Tools-partial", "orchestrator", age=70),
         agent("Agent-Tools-idle", "orchestrator", age=90),
@@ -642,11 +705,11 @@ def test_attention_and_working_groups_use_priority_and_align_statuses() -> None:
 
     assert lines == [
         "WAITING ON YOU",
-        "✕ blocked · 2m  Agent-Tools · blocked",
-        "● needs you     Agent-Tools · idle",
+        "✕ Agent-Tools · blocked  blocked · 2m",
+        "● Agent-Tools · idle  needs you",
         "",
         "WORKING",
-        "○ working       Agent-Tools · partial (partial team)",
+        "○ Agent-Tools · partial (partial team)  working",
     ]
 
 
@@ -663,12 +726,12 @@ def test_blocked_waits_sort_before_waiting_team_names() -> None:
 
     assert board_content(agents) == [
         "WAITING ON YOU",
-        "✕ blocked · 2m   Agent-Tools · z-blocked",
-        "✕ blocked · 30s  Agent-Tools · a-blocked",
-        "● needs you      Agent-Tools · z-idle",
+        "✕ Agent-Tools · z-blocked  blocked · 2m",
+        "✕ Agent-Tools · a-blocked  blocked · 30s",
+        "● Agent-Tools · z-idle  needs you",
         "",
         "WORKING",
-        "○ working        Agent-Tools · a-workers",
+        "○ Agent-Tools · a-workers  working",
     ]
 
 
@@ -688,7 +751,7 @@ def test_active_and_unread_teams_remain_working_rows() -> None:
         now=61,
     )
 
-    assert lines == ["WORKING", "○ coordinating  Agent-Tools", "◌ checking      Custom"]
+    assert lines == ["WORKING", "○ Agent-Tools  coordinating", "◌ Custom  checking"]
 
 
 def test_active_team_becomes_stuck_after_five_minutes_without_events() -> None:
@@ -701,11 +764,11 @@ def test_active_team_becomes_stuck_after_five_minutes_without_events() -> None:
 
     assert board_content(workers, last_activity=last_activity, now=299) == [
         "WORKING",
-        "◌ checking  Agent-Tools",
+        "◌ Agent-Tools  checking",
     ]
     assert board_content(workers, last_activity=last_activity, now=300) == [
         "WAITING ON YOU",
-        "● stuck  Agent-Tools",
+        "● Agent-Tools  stuck",
     ]
 
 
@@ -720,12 +783,12 @@ def test_recent_teammate_event_or_missing_event_keeps_team_working() -> None:
         workers,
         last_activity={workers[0]["name"]: 250, workers[1]["name"]: 0},
         now=300,
-    ) == ["WORKING", "◌ checking  Agent-Tools"]
+    ) == ["WORKING", "◌ Agent-Tools  checking"]
     assert board_content(
         workers,
         last_activity={workers[1]["name"]: 0},
         now=300,
-    ) == ["WORKING", "◌ checking  Agent-Tools"]
+    ) == ["WORKING", "◌ Agent-Tools  checking"]
 
 
 def test_quiet_team_shows_a_known_terminal_reason() -> None:
@@ -737,7 +800,7 @@ def test_quiet_team_shows_a_known_terminal_reason() -> None:
         last_activity={worker["name"]: 0},
         quiet_reasons={worker["name"]: "model at capacity"},
         now=300,
-    ) == ["WAITING ON YOU", "● stuck · model at capacity  Agent-Tools"]
+    ) == ["WAITING ON YOU", "● Agent-Tools  stuck · model at capacity"]
 
 
 def test_blocked_and_stale_rows_take_priority_over_quiet() -> None:
@@ -748,7 +811,7 @@ def test_blocked_and_stale_rows_take_priority_over_quiet() -> None:
 
     assert board_content(
         [orchestrator, scout], last_activity=last_activity, now=300
-    ) == ["WAITING ON YOU", "✕ blocked · 1m  Agent-Tools"]
+    ) == ["WAITING ON YOU", "✕ Agent-Tools  blocked · 1m"]
 
     orchestrator["status"] = "active"
     orchestrator.update(
@@ -758,7 +821,7 @@ def test_blocked_and_stale_rows_take_priority_over_quiet() -> None:
 
     assert board_content(
         [orchestrator, scout], last_activity=last_activity, now=300
-    ) == ["WAITING ON YOU", "● stale  Agent-Tools"]
+    ) == ["WAITING ON YOU", "● Agent-Tools  stale"]
 
 
 def test_mismatched_active_session_needs_attention() -> None:
@@ -771,7 +834,7 @@ def test_mismatched_active_session_needs_attention() -> None:
 
     assert board_content([orchestrator, agent("Agent-Tools", "scout")]) == [
         "WAITING ON YOU",
-        "● stale  Agent-Tools",
+        "● Agent-Tools  stale",
     ]
 
 
@@ -792,7 +855,7 @@ def test_active_session_needs_both_fields_and_a_mismatch(
 
     assert board_content([orchestrator, agent("Agent-Tools", "scout")]) == [
         "WORKING",
-        "○ coordinating  Agent-Tools",
+        "○ Agent-Tools  coordinating",
     ]
 
 
@@ -806,7 +869,7 @@ def test_listening_agent_with_mismatched_session_keeps_team_unchanged() -> None:
         transcript_path="/transcripts/other-session.jsonl",
     )
 
-    assert without_session == ["WAITING ON YOU", "● needs you  Agent-Tools"]
+    assert without_session == ["WAITING ON YOU", "● Agent-Tools  needs you"]
     assert board_content(agents) == without_session
 
 
@@ -820,7 +883,7 @@ def test_blocked_team_takes_priority_over_stale_agent() -> None:
 
     assert board_content(
         [orchestrator, agent("Agent-Tools", "scout", status="blocked")]
-    ) == ["WAITING ON YOU", "✕ blocked · 1m  Agent-Tools"]
+    ) == ["WAITING ON YOU", "✕ Agent-Tools  blocked · 1m"]
 
 
 def test_stale_team_sorts_before_stuck_team() -> None:
@@ -844,8 +907,8 @@ def test_stale_team_sorts_before_stuck_team() -> None:
         now=61,
     ) == [
         "WAITING ON YOU",
-        "● stale  Agent-Tools · z-stale",
-        "● stuck  Agent-Tools · a-stuck",
+        "● Agent-Tools · z-stale  stale",
+        "● Agent-Tools · a-stuck  stuck",
     ]
 
 
@@ -859,11 +922,11 @@ def test_unread_team_becomes_stuck_after_the_grace_period() -> None:
 
     assert board_content(agents, unread_since=unread_since, now=70) == [
         "WORKING",
-        "○ working  Agent-Tools",
+        "○ Agent-Tools  working",
     ]
     assert board_content(agents, unread_since=unread_since, now=71) == [
         "WAITING ON YOU",
-        "● stuck  Agent-Tools",
+        "● Agent-Tools  stuck",
     ]
 
 
@@ -875,7 +938,7 @@ def test_lone_listening_agent_with_old_unread_messages_is_stuck() -> None:
         agents,
         unread_since={"Agent-Tools-scout": 0},
         now=61,
-    ) == ["WAITING ON YOU", "● stuck  Agent-Tools"]
+    ) == ["WAITING ON YOU", "● Agent-Tools  stuck"]
 
 
 def test_stuck_team_sorts_with_attention_and_uses_attention_colour() -> None:
@@ -899,8 +962,10 @@ def test_stuck_team_sorts_with_attention_and_uses_attention_colour() -> None:
     )
 
     assert lines[0] == "\x1b[2mWAITING ON YOU\x1b[0m"
-    assert lines[1].startswith("\x1b[31m✕ blocked")
-    assert lines[2].startswith("\x1b[35m● stuck")
+    assert lines[1].startswith("\x1b[31m✕\x1b[0m ")
+    assert "\x1b[31mblocked" in lines[1]
+    assert lines[2].startswith("\x1b[35m●\x1b[0m ")
+    assert lines[2].endswith("\x1b[35mstuck\x1b[0m")
     assert lines[4] == "\x1b[2mWORKING\x1b[0m"
 
 
@@ -913,21 +978,21 @@ def test_unread_tracking_resets_when_messages_clear_or_agent_activates() -> None
     _update_unread_since([listener, partner], unread_since, 10)
     assert board_content([listener, partner], unread_since=unread_since, now=71)[
         1
-    ].startswith("● stuck")
+    ].startswith("● Agent-Tools  stuck")
 
     listener["unread_count"] = 0
     _update_unread_since([listener, partner], unread_since, 72)
     assert unread_since == {}
     assert board_content([listener, partner], unread_since=unread_since, now=72) == [
         "WAITING ON YOU",
-        "● needs you  Agent-Tools",
+        "● Agent-Tools  needs you",
     ]
 
     listener["unread_count"] = 1
     _update_unread_since([listener, partner], unread_since, 73)
     assert board_content([listener, partner], unread_since=unread_since, now=73) == [
         "WORKING",
-        "○ working  Agent-Tools",
+        "○ Agent-Tools  working",
     ]
 
     listener["status"] = "active"
@@ -935,7 +1000,7 @@ def test_unread_tracking_resets_when_messages_clear_or_agent_activates() -> None
     assert unread_since == {}
     assert board_content([listener, partner], unread_since=unread_since, now=74) == [
         "WORKING",
-        "○ coordinating  Agent-Tools",
+        "○ Agent-Tools  coordinating",
     ]
 
 
@@ -950,7 +1015,7 @@ def test_launching_team_stays_working_with_old_unread_messages() -> None:
         agents,
         unread_since={"Agent-Tools-orchestrator": 0},
         now=61,
-    ) == ["WORKING", "◇ starting  Agent-Tools"]
+    ) == ["WORKING", "◇ Agent-Tools  starting"]
 
 
 @pytest.mark.parametrize(
@@ -971,7 +1036,7 @@ def test_active_role_names_working_team(
         agent("Agent-Tools", partner_role, status="listening"),
     ]
 
-    assert board_content(agents)[1] == f"{symbol} {label}  Agent-Tools"
+    assert board_content(agents)[1] == f"{symbol} Agent-Tools  {label}"
 
 
 @pytest.mark.parametrize(
@@ -988,7 +1053,7 @@ def test_active_role_priority_names_working_team(
     """The highest-priority active role names a team with concurrent work."""
     agents = [agent("Agent-Tools", role, status="active") for role in roles]
 
-    assert board_content(agents)[1] == f"{symbol} {label}  Agent-Tools"
+    assert board_content(agents)[1] == f"{symbol} Agent-Tools  {label}"
 
 
 def test_launching_team_is_starting_without_active_members() -> None:
@@ -998,7 +1063,7 @@ def test_launching_team_is_starting_without_active_members() -> None:
         agent("Agent-Tools", "scout", status="listening"),
     ]
 
-    assert board_content(agents)[1] == "◇ starting  Agent-Tools"
+    assert board_content(agents)[1] == "◇ Agent-Tools  starting"
 
 
 def test_active_role_takes_priority_over_launching_member() -> None:
@@ -1008,7 +1073,7 @@ def test_active_role_takes_priority_over_launching_member() -> None:
         agent("Agent-Tools", "scout", status="active"),
     ]
 
-    assert board_content(agents)[1] == "◌ checking  Agent-Tools"
+    assert board_content(agents)[1] == "◌ Agent-Tools  checking"
 
 
 def test_unrecognised_active_role_keeps_working_fallback() -> None:
@@ -1021,14 +1086,14 @@ def test_unrecognised_active_role_keeps_working_fallback() -> None:
         untagged_agent,
     ]
 
-    assert board_content(agents)[1] == "○ working  Agent-Tools"
+    assert board_content(agents)[1] == "○ Agent-Tools  working"
 
 
 def test_active_partial_team_keeps_suffix() -> None:
     """A lone active agent shows its work and remains marked as partial."""
     agents = [agent("Agent-Tools", "implementer", status="active")]
 
-    assert board_content(agents)[1] == "▶ implementing  Agent-Tools (partial team)"
+    assert board_content(agents)[1] == "▶ Agent-Tools (partial team)  implementing"
 
 
 def test_labelled_learner_team_shares_one_complete_row() -> None:
@@ -1040,7 +1105,7 @@ def test_labelled_learner_team_shares_one_complete_row() -> None:
 
     assert board_content(agents) == [
         "WORKING",
-        "◌ checking  Agent-Tools · learn-claude",
+        "◌ Agent-Tools · learn-claude  checking",
     ]
 
 
@@ -1050,7 +1115,7 @@ def test_lone_labelled_learner_scout_is_partial() -> None:
 
     assert board_content(agents) == [
         "WORKING",
-        "◌ checking  Agent-Tools · learn-claude (partial team)",
+        "◌ Agent-Tools · learn-claude (partial team)  checking",
     ]
 
 
@@ -1063,7 +1128,7 @@ def test_standard_team_with_learner_in_its_label_stays_complete() -> None:
 
     assert board_content(agents) == [
         "WAITING ON YOU",
-        "● needs you  Agent-Tools · learner-ui",
+        "● Agent-Tools · learner-ui  needs you",
     ]
 
 
@@ -1076,7 +1141,7 @@ def test_repository_name_containing_learner_keeps_standard_team_rule() -> None:
 
     assert board_content(agents) == [
         "WAITING ON YOU",
-        "● needs you  e-learner-app · board",
+        "● e-learner-app · board  needs you",
     ]
 
 
@@ -1090,13 +1155,11 @@ def test_single_live_agent_joins_dimmed_working_group() -> None:
 
     lines = board_content(agents, colour=True)
 
-    assert lines == [
-        "\x1b[2mWAITING ON YOU\x1b[0m",
-        "\x1b[35m● needs you\x1b[0m  \x1b[97mAgent-Tools\x1b[0m\x1b[2m · idle\x1b[0m",
-        "",
-        "\x1b[2mWORKING\x1b[0m",
-        "\x1b[2m○ working    Agent-Tools · alone (partial team)\x1b[0m",
-    ]
+    assert ANSI_STYLE_PATTERN.sub("", lines[1]).startswith("● Agent-Tools · idle")
+    assert lines[1].startswith("\x1b[35m●\x1b[0m \x1b[97mAgent-Tools")
+    assert "\x1b[2m · idle\x1b[0m" in lines[1]
+    assert lines[4].startswith("\x1b[2m○ Agent-Tools · alone (partial team)")
+    assert lines[4].endswith("working\x1b[0m")
 
 
 def test_directory_normalisation_without_idle_age() -> None:
@@ -1106,7 +1169,7 @@ def test_directory_normalisation_without_idle_age() -> None:
         agent("Lew-Timer", "reviewer", directory="/work/Lew Timer!", age=40),
     ]
 
-    assert board_content(agents)[1] == "● needs you  Lew-Timer"
+    assert board_content(agents)[1] == "● Lew-Timer  needs you"
 
 
 def test_workers_in_nested_directory_share_the_team() -> None:
@@ -1123,7 +1186,7 @@ def test_workers_in_nested_directory_share_the_team() -> None:
 
     assert board_content(agents) == [
         "WAITING ON YOU",
-        "● needs you  Agent-Tools · board",
+        "● Agent-Tools · board  needs you",
     ]
 
 
@@ -1145,7 +1208,7 @@ def test_worktree_members_use_the_main_checkout_folder() -> None:
     for member in agents:
         member["main_checkout"] = "/work/Agents"
 
-    assert board_content(agents)[1] == "● needs you  Agents · quick-library-update"
+    assert board_content(agents)[1] == "● Agents · quick-library-update  needs you"
 
 
 def test_longest_matching_folder_names_the_repo() -> None:
@@ -1159,7 +1222,7 @@ def test_longest_matching_folder_names_the_repo() -> None:
         agent("Agent-Tools-board", "orchestrator"),
     ]
 
-    assert board_content(agents)[1] == "● needs you  Agent-Tools · board"
+    assert board_content(agents)[1] == "● Agent-Tools · board  needs you"
 
 
 def test_workers_without_orchestrator_are_working() -> None:
@@ -1169,8 +1232,8 @@ def test_workers_without_orchestrator_are_working() -> None:
         agent("Agent-Tools-workers", "reviewer", age=80),
     ]
 
-    assert board_content(agents, colour=True)[1] == (
-        "\x1b[2m○ working  Agent-Tools · workers\x1b[0m"
+    assert board_content(agents, colour=True)[1].startswith(
+        "\x1b[2m○ Agent-Tools · workers"
     )
 
 
@@ -1185,8 +1248,8 @@ def test_distinct_prefixes_with_the_same_label_are_both_shown() -> None:
 
     assert board_content(agents) == [
         "WORKING",
-        "○ working  Agent-Tools · a-b",
-        "○ working  Agent-Tools · a-b",
+        "○ Agent-Tools · a-b  working",
+        "○ Agent-Tools · a-b  working",
     ]
 
 
@@ -1200,12 +1263,12 @@ def test_lone_blocked_agent_keeps_age_order_and_red_status() -> None:
 
     lines = board_content(agents, colour=True)
 
-    assert lines[1] == (
-        "\x1b[31m✕ blocked · 2m\x1b[0m  \x1b[97mAgent-Tools\x1b[0m\x1b[2m · blocked\x1b[0m"
-    )
-    assert lines[2] == (
-        "\x1b[35m● needs you   \x1b[0m  \x1b[97mAgent-Tools\x1b[0m\x1b[2m · idle\x1b[0m"
-    )
+    assert lines[1].startswith("\x1b[31m✕\x1b[0m \x1b[97mAgent-Tools")
+    assert "\x1b[2m · blocked\x1b[0m" in lines[1]
+    assert lines[1].endswith("\x1b[31mblocked · 2m\x1b[0m")
+    assert lines[2].startswith("\x1b[35m●\x1b[0m \x1b[97mAgent-Tools")
+    assert "\x1b[2m · idle\x1b[0m" in lines[2]
+    assert lines[2].endswith("\x1b[35mneeds you\x1b[0m")
 
 
 def test_working_rows_are_fully_dimmed_when_colour_is_on() -> None:
@@ -1219,12 +1282,16 @@ def test_working_rows_are_fully_dimmed_when_colour_is_on() -> None:
         agent("Agent-Tools-workers", "reviewer"),
     ]
 
-    assert board_content(agents, colour=True) == [
-        "\x1b[2mWORKING\x1b[0m",
-        "\x1b[2m○ coordinating  Agent-Tools · active\x1b[0m",
-        "\x1b[2m○ working       Agent-Tools · unread\x1b[0m",
-        "\x1b[2m○ working       Agent-Tools · workers\x1b[0m",
-    ]
+    lines = board_content(agents, colour=True)
+
+    assert lines[0] == "\x1b[2mWORKING\x1b[0m"
+    # The team label from each row: the text between the repository and the status.
+    assert [
+        ANSI_STYLE_PATTERN.sub("", line).split(" · ")[1].split("  ")[0]
+        for line in lines[1:]
+    ] == ["active", "unread", "workers"]
+    assert all(line.startswith("\x1b[2m○ Agent-Tools") for line in lines[1:])
+    assert all(line.endswith("\x1b[0m") for line in lines[1:])
 
 
 def test_no_active_teams_shows_one_message_inside_the_frame() -> None:
@@ -1240,7 +1307,7 @@ def test_unfamiliar_tag_without_role_keeps_raw_prefix() -> None:
     """An unfamiliar tag remains on the board as its own team."""
     entry = agent("CustomTag", None, status="active", age=30)
 
-    assert board_content([entry])[1] == "○ working  CustomTag (partial team)"
+    assert board_content([entry])[1] == "○ CustomTag (partial team)  working"
 
 
 def test_missing_tag_uses_agent_name_as_team_prefix() -> None:
@@ -1251,7 +1318,7 @@ def test_missing_tag_uses_agent_name_as_team_prefix() -> None:
         entry["tag"] = missing_tag
 
         assert board_content([entry])[1] == (
-            "○ working  Agent-Tools · standalone-lamo (partial team)"
+            "○ Agent-Tools · standalone-lamo (partial team)  working"
         )
 
     entry = agent("Agent-Tools-standalone-lamo", None, age=30)
@@ -1259,7 +1326,7 @@ def test_missing_tag_uses_agent_name_as_team_prefix() -> None:
     del entry["tag"]
 
     assert board_content([entry])[1] == (
-        "○ working  Agent-Tools · standalone-lamo (partial team)"
+        "○ Agent-Tools · standalone-lamo (partial team)  working"
     )
 
 

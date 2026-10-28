@@ -61,6 +61,10 @@ DIM_STYLE = "\x1b[2m"
 # plain rows, because the title and clock alone need 29 columns.
 MIN_FRAME_WIDTH = 30
 
+# The fewest columns a team name keeps (three letters and an ellipsis), so a row
+# still shows which team it belongs to when a long status fills it.
+MIN_TEAM_NAME_WIDTH = 4
+
 # The quota box only goes beside the teams frame at its full width, so the side
 # layout starts at 162 columns.
 _MIN_SIDE_PANEL_WIDTH = MAX_FRAME_WIDTH
@@ -359,8 +363,6 @@ def _draw_board_content(
 ) -> list[str]:
     """Draw the waiting and working groups, with a blank line between them.
 
-    Both groups share one status width so the repository names line up.
-
     Args:
         rows: The sorted rows with their phase durations.
         state: The board's readings for this refresh.
@@ -375,16 +377,11 @@ def _draw_board_content(
         line = "No active teams"
         return [f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line]
 
-    shown_statuses = [status for _, _, _, status, _ in rows.needs_you] + [
-        status for _, _, _, status, _ in rows.working
-    ]
-    status_width = max(len(status) for status in shown_statuses)
     lines = _draw_section(
         rows.needs_you,
         "WAITING ON YOU",
         state,
         width=width,
-        status_width=status_width,
         colour=colour,
         attention=True,
     )
@@ -398,7 +395,6 @@ def _draw_board_content(
             "WORKING",
             state,
             width=width,
-            status_width=status_width,
             colour=colour,
             attention=False,
         )
@@ -412,18 +408,19 @@ def _draw_section(
     state: BoardState,
     *,
     width: int,
-    status_width: int,
     colour: bool,
     attention: bool,
 ) -> list[str]:
     """Draw one group of team rows, each followed by its task line when known.
+
+    Each row keeps as much of its team name as its own status allows, and every
+    status ends at the right edge of the row.
 
     Args:
         section_rows: The group's rows.
         heading: The heading shown above the group in a framed board.
         state: The board's readings for this refresh.
         width: The terminal width.
-        status_width: The width every status is padded to.
         colour: Whether to style the lines with ANSI colours.
         attention: Whether the group waits on the human, which colours its
             statuses and names instead of dimming the whole row.
@@ -434,23 +431,41 @@ def _draw_section(
     lines = []
     # Narrow terminals get plain rows without the frame, headings or task lines.
     framed = width >= MIN_FRAME_WIDTH
+    # The width team rows fill: the space inside the frame, or the full plain
+    # terminal width.
+    row_width = min(width, MAX_FRAME_WIDTH) - 6 if framed else width
 
     if section_rows and framed:
         lines.append(f"{DIM_STYLE}{heading}{RESET_STYLE}" if colour else heading)
 
     for _, repository, label_rest, status, key in section_rows:
         symbol = STATUS_SYMBOLS[status.partition(" · ")[0]]
-        padded_status = f"{status:<{status_width}}"
+        # The full team name: the repository followed by any team label.
+        name = repository + label_rest
+        # The space this row's own status leaves for the team name, after the symbol,
+        # its space and the two-space gap before the status. A status that fills the
+        # row still leaves the first letters of the name.
+        name_width = max(MIN_TEAM_NAME_WIDTH, row_width - len(status) - 4)
+        # The team name as it fits in the row.
+        short_name = shorten_visible(name, name_width)
+        # The spaces that push the status to the right edge of the row, so every
+        # status ends at the same column. The symbol and its space take two columns.
+        gap = " " * max(2, row_width - len(short_name) - len(status) - 2)
 
         if attention and colour:
             status_style = RED_STYLE if status.startswith("blocked") else MAGENTA_STYLE
             styled_rest = f"{DIM_STYLE}{label_rest}{RESET_STYLE}" if label_rest else ""
+            # The shortened name with the repository bright and the label dimmed.
+            styled_name = shorten_visible(
+                f"{BRIGHT_WHITE_STYLE}{repository}{RESET_STYLE}{styled_rest}",
+                name_width,
+            )
             lines.append(
-                f"{status_style}{symbol} {padded_status}{RESET_STYLE}  "
-                f"{BRIGHT_WHITE_STYLE}{repository}{RESET_STYLE}{styled_rest}"
+                f"{status_style}{symbol}{RESET_STYLE} {styled_name}{gap}"
+                f"{status_style}{status}{RESET_STYLE}"
             )
         else:
-            line = f"{symbol} {padded_status}  {repository}{label_rest}"
+            line = f"{symbol} {short_name}{gap}{status}"
             lines.append(f"{DIM_STYLE}{line}{RESET_STYLE}" if colour else line)
 
         if framed and (reading := state.task_readings.get(key)) is not None:
@@ -510,7 +525,7 @@ def _render_task_line(task: str, chunk: str | None, width: int) -> str:
         width: The terminal width; the frame never grows past MAX_FRAME_WIDTH.
 
     Returns:
-        One line, indented to sit under the team's status, shortened to fit
+        One line, indented to sit under the team's name, shortened to fit
         inside the frame.
     """
     # The task label, with the chunk added when the task has one.

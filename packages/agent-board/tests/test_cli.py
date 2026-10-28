@@ -829,10 +829,13 @@ def test_refreshes_keep_the_phase_timer_until_the_displayed_status_changes(
     frames = output.getvalue().split(cli.CLEAR_SCREEN)[1:]
     plain_frames = [ANSI_STYLE_PATTERN.sub("", frame) for frame in frames]
 
-    assert "● needs you · 0s+" in plain_frames[0]
-    assert "◌ checking · 0s" in plain_frames[1]
-    assert "● needs you · 0s" in plain_frames[2]
-    assert "● needs you · 0s+" not in plain_frames[2]
+    assert "● Agent-Tools" in plain_frames[0]
+    assert "needs you · 0s+  │" in plain_frames[0]
+    assert "◌ Agent-Tools" in plain_frames[1]
+    assert "checking · 0s  │" in plain_frames[1]
+    assert "● Agent-Tools" in plain_frames[2]
+    assert "needs you · 0s  │" in plain_frames[2]
+    assert "needs you · 0s+  │" not in plain_frames[2]
 
 
 def test_latest_event_time_becomes_a_monotonic_time(monkeypatch) -> None:
