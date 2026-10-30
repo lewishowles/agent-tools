@@ -1048,6 +1048,67 @@ class ReadStore(_StoreBase):
 
 			return results
 
+	def export(self, path: str | Path | None = None) -> dict[str, object]:
+		"""Return every record for the current project as one shareable document.
+
+		The document has project, releases, tasks, chunks, discoveries,
+		decisions, inbox_notes and context keys. Done and skipped work is
+		included. Notes attached to a release keep their release_id. Checkout
+		and worktree paths are left out, because they describe this machine
+		rather than the project.
+
+		Args:
+			path: A path in the project, or the current directory when omitted.
+
+		Returns:
+			The project's records in the same public shapes as other read commands.
+		"""
+		project = self.current_project(path)
+
+		with self.database.connection() as connection:
+			release_rows = connection.execute(
+				f"SELECT {_RELEASE_COLUMNS} FROM releases "
+				"WHERE project_id = ? ORDER BY position, id",
+				(project.id,),
+			).fetchall()
+			tasks = _export_tasks(connection, project.id)
+			chunk_rows = connection.execute(
+				f"SELECT {_CHUNK_COLUMNS} FROM chunks "
+				"WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?) "
+				"ORDER BY task_id, position, id",
+				(project.id,),
+			).fetchall()
+			note_rows = connection.execute(
+				f"SELECT {_NOTE_COLUMNS} FROM notes "
+				"WHERE project_id = ? ORDER BY created_at, id",
+				(project.id,),
+			).fetchall()
+			inbox_rows = connection.execute(
+				"SELECT id, project_id, text, created_at FROM inbox_notes "
+				"WHERE project_id = ? ORDER BY created_at, id",
+				(project.id,),
+			).fetchall()
+			context = _export_context(connection, project.id)
+
+		return {
+			"project": project.to_dict(),
+			"releases": [Release.from_row(row).to_dict() for row in release_rows],
+			"tasks": tasks,
+			"chunks": [Chunk.from_row(row).to_dict() for row in chunk_rows],
+			"discoveries": [
+				Note.from_row(row).to_dict()
+				for row in note_rows
+				if row["type"] == "discovery"
+			],
+			"decisions": [
+				Note.from_row(row).to_dict()
+				for row in note_rows
+				if row["type"] == "decision"
+			],
+			"inbox_notes": [dict(row) for row in inbox_rows],
+			"context": context,
+		}
+
 	def doctor(self, path: str | Path | None = None) -> dict[str, object]:
 		"""Report records with blank required-in-practice fields, including unfinished chunks without a review question."""
 		# Bounded-list loader for each record type, used by the checks below.
@@ -1906,3 +1967,42 @@ class ReadStore(_StoreBase):
 		if chunk is not None:
 			return f"progress chunk complete {chunk.id}"
 		return f"progress task complete {task.id}"
+
+
+def _export_tasks(
+	connection: sqlite3.Connection, project_id: str
+) -> list[dict[str, object]]:
+	"""Return the project's tasks in plan position order, each with its dependency IDs."""
+	rows = connection.execute(
+		f"SELECT {_TASK_COLUMNS} FROM tasks WHERE project_id = ? ORDER BY position, id",
+		(project_id,),
+	).fetchall()
+	values = _task_values_by_id(connection, [str(row["id"]) for row in rows])
+	tasks = []
+	for row in rows:
+		task = Task.from_row(_task_public_row(connection, row, values)).to_dict()
+		task["dependency_ids"] = _dependency_ids(connection, str(task["id"]))
+		tasks.append(task)
+
+	return tasks
+
+
+def _export_context(
+	connection: sqlite3.Connection, project_id: str
+) -> list[dict[str, object]]:
+	"""Return the stored project handoff followed by its task handoffs."""
+	project_row = connection.execute(
+		f"SELECT {_CONTEXT_COLUMNS} FROM context WHERE project_id = ?",
+		(project_id,),
+	).fetchone()
+	task_rows = connection.execute(
+		f"SELECT {_TASK_CONTEXT_COLUMNS} FROM task_context "
+		"JOIN tasks ON tasks.id = task_context.task_id "
+		"WHERE tasks.project_id = ? ORDER BY task_context.task_id",
+		(project_id,),
+	).fetchall()
+	context = [Context.from_row(row).to_dict() for row in task_rows]
+	if project_row is not None:
+		context.insert(0, Context.from_row(project_row).to_dict())
+
+	return context

@@ -318,6 +318,7 @@ _COMMAND_SPECS = (
 		arguments=(_argument("--task", dest="task_id"),),
 	),
 	_CommandSpec("summary", "show current work across every stored project"),
+	_CommandSpec("export", "print every record for the current project as JSON"),
 	_CommandSpec(
 		"show",
 		"show a project, release, task, chunk, discovery, decision, or "
@@ -1355,7 +1356,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
 	"""Parse arguments, run the matching command, and return the process exit status."""
 	arguments = list(sys.argv[1:] if argv is None else argv)
-	json_mode = "--json" in arguments
+	# Everything after `--` is a plain value, such as note text, so a literal
+	# "--json" there must not switch the output to JSON.
+	json_mode = "--json" in (
+		arguments[: arguments.index("--")] if "--" in arguments else arguments
+	)
 
 	# A bare `progress inbox` lists notes, so a quick look needs no subcommand.
 	# Adding `list` to the arguments lets the list options, such as --limit,
@@ -1377,9 +1382,15 @@ def main(argv: list[str] | None = None) -> int:
 		# show the root usage. Checking them here lets the error handler show
 		# the matched command's usage, with the same message argparse uses.
 		args, unrecognised = parser.parse_known_args(arguments)
+		# Decide the error format before rejecting unknown arguments. A --json
+		# seen before parsing still counts, because a group command parses the
+		# flag as False, and export reports errors as JSON because it only
+		# prints JSON.
+		json_mode = (
+			json_mode or bool(getattr(args, "json", False)) or args.command == "export"
+		)
 		if unrecognised:
 			raise CliUsageError(f"unrecognized arguments: {' '.join(unrecognised)}")
-		json_mode = bool(getattr(args, "json", json_mode))
 		if (
 			getattr(args, "_all_unpaged", False)
 			and args.all
@@ -1703,6 +1714,7 @@ def _run_command(
 			"next",
 		),
 		("summary", None): lambda: (ReadStore(database).summary(), "summary"),
+		("export", None): lambda: (ReadStore(database).export(), "export"),
 		("checkout", "detach"): lambda: (
 			ProjectStore(database).detach_checkouts(args.paths, stale=args.stale),
 			"checkout detach",

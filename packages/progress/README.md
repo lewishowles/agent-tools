@@ -35,7 +35,7 @@ the database and another Git checkout needs to use it.
 The complete command shape is:
 
 ```text
-progress [--json] [--database <path>] {next,summary,show,checkout,worktree,complete,commands,doctor,search,project,release,task,chunk,inbox,discovery,decision,context}
+progress [--json] [--database <path>] {next,summary,export,show,checkout,worktree,complete,commands,doctor,search,project,release,task,chunk,inbox,discovery,decision,context}
 ```
 
 Throughout this reference, commands use:
@@ -98,6 +98,22 @@ command.
 
 ```bash
 progress summary
+```
+
+### `progress export`
+
+Print one JSON document for the current project. It contains the project,
+releases, tasks with their dependency IDs, files and contract steps (`done_when`), chunks,
+discoveries, decisions, inbox notes, and stored project and task handoff context.
+Release notes appear in discoveries and decisions with their release IDs. Done
+and skipped work remains in the export. Recorded checkout and worktree paths are
+excluded, so the document can be shared for an outside review.
+
+The output uses the standard `{"ok": true, "data": ...}` envelope with or
+without `--json`. The record arrays are empty when the project has no records.
+
+```bash
+progress export --json
 ```
 
 ### `progress show`

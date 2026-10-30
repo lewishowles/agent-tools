@@ -142,6 +142,137 @@ def _seed_store(tmp_path: Path) -> ReadStore:
 	return ReadStore(database, _ProjectStore(database))
 
 
+def test_export_includes_finished_work_and_project_context(tmp_path: Path) -> None:
+	"""Export every project record, including finished work, without local paths."""
+	store = _seed_store(tmp_path)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE releases SET status = 'done' WHERE id = ?", (RELEASE_A,)
+		)
+		connection.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (TASK_A,))
+		connection.execute(
+			"UPDATE chunks SET status = 'skipped' WHERE id = ?", (CHUNK_A,)
+		)
+		connection.execute(
+			"INSERT INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)",
+			(TASK_B, TASK_A),
+		)
+		connection.execute(
+			"INSERT INTO task_files (task_id, position, text) VALUES (?, ?, ?)",
+			(TASK_A, 1, "src/first.py"),
+		)
+		connection.execute(
+			"INSERT INTO inbox_notes (id, project_id, text, created_at) VALUES (?, ?, ?, ?)",
+			(INBOX_A, PROJECT_ID, "Review later", "2026-01-01T00:00:04+00:00"),
+		)
+		connection.execute(
+			"INSERT INTO context (project_id, current_goal, updated_at) VALUES (?, ?, ?)",
+			(PROJECT_ID, "Project goal", "2026-01-01T00:00:00+00:00"),
+		)
+		connection.execute(
+			"INSERT INTO task_context (task_id, current_goal, updated_at) VALUES (?, ?, ?)",
+			(TASK_A, "Task goal", "2026-01-01T00:00:00+00:00"),
+		)
+		connection.execute(
+			"INSERT INTO notes (id, project_id, release_id, type, body, created_at) "
+			"VALUES (?, ?, ?, ?, ?, ?)",
+			(
+				"nte_" + "d" * 22,
+				PROJECT_ID,
+				RELEASE_A,
+				"decision",
+				"Release choice",
+				"2026-01-01T00:00:05+00:00",
+			),
+		)
+		connection.execute(
+			"INSERT INTO checkouts (project_id, path, last_seen_at) VALUES (?, ?, ?)",
+			(PROJECT_ID, "/private/local/checkout", "2026-01-01T00:00:00+00:00"),
+		)
+		connection.execute(
+			"INSERT INTO task_worktrees (task_id, project_id, path, branch, common_dir, created_at) "
+			"VALUES (?, ?, ?, ?, ?, ?)",
+			(
+				TASK_A,
+				PROJECT_ID,
+				"/private/local/worktree",
+				"task",
+				"/private/local/repository",
+				"2026-01-01T00:00:00+00:00",
+			),
+		)
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			("prj_" + "z" * 22, "other", "Other project", "2026-01-01T00:00:00+00:00"),
+		)
+		connection.execute(
+			"INSERT INTO inbox_notes (id, project_id, text, created_at) VALUES (?, ?, ?, ?)",
+			(
+				"inb_" + "z" * 22,
+				"prj_" + "z" * 22,
+				"Other note",
+				"2026-01-01T00:00:00+00:00",
+			),
+		)
+
+	result = store.export()
+
+	assert result["project"] == {
+		"id": PROJECT_ID,
+		"slug": "agents",
+		"name": "Agent configuration",
+	}
+	assert [release["id"] for release in result["releases"]] == [RELEASE_A]
+	assert result["releases"][0]["status"] == "done"
+	assert [task["id"] for task in result["tasks"]] == [TASK_A, TASK_B]
+	assert result["tasks"][0]["done_when"] == ["first passes its check."]
+	assert result["tasks"][0]["files"] == ["src/first.py"]
+	assert result["tasks"][1]["dependency_ids"] == [TASK_A]
+	assert result["chunks"][0]["status"] == "skipped"
+	assert (
+		result["chunks"][0]["review_question"]
+		== "Do the read queries return the stored records?"
+	)
+	assert [note["id"] for note in result["discoveries"]] == [DISCOVERY_A, DISCOVERY_B]
+	assert [note["id"] for note in result["decisions"]] == [
+		DECISION_A,
+		"nte_" + "d" * 22,
+	]
+	assert result["decisions"][1]["release_id"] == RELEASE_A
+	assert [note["id"] for note in result["inbox_notes"]] == [INBOX_A]
+	assert [item["current_goal"] for item in result["context"]] == [
+		"Project goal",
+		"Task goal",
+	]
+	assert "/private/local/checkout" not in str(result)
+	assert "/private/local/worktree" not in str(result)
+
+
+def test_export_empty_project_has_empty_record_arrays(tmp_path: Path) -> None:
+	"""Export an empty project with a record array for every supported kind."""
+	database = Database(tmp_path / "progress.db")
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(PROJECT_ID, "agents", "Agent configuration", "2026-01-01T00:00:00+00:00"),
+		)
+	store = ReadStore(database, _ProjectStore(database))
+
+	result = store.export()
+
+	assert result["project"]["id"] == PROJECT_ID
+	for key in (
+		"releases",
+		"tasks",
+		"chunks",
+		"discoveries",
+		"decisions",
+		"inbox_notes",
+		"context",
+	):
+		assert result[key] == []
+
+
 def test_next_returns_the_task_chunk_and_next_command(tmp_path: Path) -> None:
 	store = _seed_store(tmp_path)
 

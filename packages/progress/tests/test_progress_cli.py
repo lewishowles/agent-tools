@@ -27,6 +27,40 @@ from agents_progress.repository import GitRepository
 from agents_progress.writes import WriteStore
 
 
+@pytest.mark.parametrize("json_mode", [False, True], ids=["plain", "json"])
+def test_export_prints_the_standard_json_envelope(
+	tmp_path: Path, monkeypatch, capsys, json_mode: bool
+) -> None:
+	"""Print the same JSON envelope with or without the --json option."""
+	data = {"project": {"id": "prj_test"}, "tasks": []}
+
+	class _ReadStore:
+		"""Return a small export without opening a project database."""
+
+		def __init__(self, database: Database) -> None:
+			"""Accept the database chosen by the command."""
+
+		def export(self) -> dict[str, object]:
+			"""Return the example project export."""
+			return data
+
+	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
+	arguments = ["export", "--database", str(tmp_path / "db")]
+	if json_mode:
+		arguments.append("--json")
+
+	assert cli.main(arguments) == 0
+	output = capsys.readouterr()
+	assert output.err == ""
+	assert (
+		output.out
+		== json.dumps(
+			{"ok": True, "data": data}, ensure_ascii=False, separators=(",", ":")
+		)
+		+ "\n"
+	)
+
+
 def test_cli_import_does_not_load_prompt_libraries() -> None:
 	"""Importing the CLI must not load the prompt libraries, which slow every command's start-up."""
 	subprocess.run(
@@ -649,6 +683,20 @@ def test_usage_errors_show_the_failing_command(
 	assert usage.endswith("\n")
 
 
+def test_export_usage_error_is_json_without_json_flag(capsys) -> None:
+	"""Show export argument errors in the same JSON envelope as its output."""
+	assert cli.main(["export", "--bogus"]) == 2
+
+	output = capsys.readouterr()
+	response = json.loads(output.out)
+
+	assert output.err == ""
+	assert response["ok"] is False
+	assert response["error"]["code"] == "usage"
+	assert response["error"]["message"] == "unrecognized arguments: --bogus"
+	assert response["error"]["details"]["usage"].startswith("usage: progress export ")
+
+
 def test_top_level_help_lists_commands_without_a_redundant_metavar() -> None:
 	help_text = cli.build_parser().format_help()
 	usage_line = help_text.splitlines()[0]
@@ -698,6 +746,10 @@ def test_commands_json_lists_the_registry_with_required_flags(
 	commands = {item["path"]: item for item in manifest}
 
 	assert response["ok"] is True
+	assert commands["export"]["flags"] == [
+		{"names": ["--json"], "required": False},
+		{"names": ["--database"], "required": False},
+	]
 	assert all(not path.endswith(" update") for path in commands)
 	assert commands["task"]["help"] == "read task records"
 	assert commands["task"]["flags"] == []
@@ -4057,6 +4109,37 @@ def test_inbox_add_shows_the_new_id_and_preserves_json(
 
 	assert cli.main([*arguments, "--json"]) == 0
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": note}
+
+
+def test_inbox_add_treats_json_after_separator_as_human_text(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	"""Keep a quoted --json note in human output when it follows --."""
+
+	class _WriteStore:
+		"""Check the note text and return it without writing to a project database."""
+
+		def __init__(self, database: Database) -> None:
+			"""Accept the database chosen by the command."""
+
+		def inbox_add(self, text: str) -> dict[str, str]:
+			"""Return the note so the human renderer can show it."""
+			assert text == "--json"
+			return {"id": "ibx_test", "text": text}
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(["inbox", "add", "--database", str(tmp_path / "db"), "--", "--json"])
+		== 0
+	)
+
+	output = capsys.readouterr()
+
+	assert output.err == ""
+	assert "Added inbox note" in output.out
+	assert "ibx_test" in output.out
+	assert not output.out.startswith("{")
 
 
 def test_inbox_dismiss_shows_the_id_and_preserves_json(
