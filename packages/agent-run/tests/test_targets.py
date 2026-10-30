@@ -1,11 +1,11 @@
-"""Tests for resolving named-command file targets."""
+"""Tests for resolving and escaping named-command file targets."""
 
 import subprocess
 from pathlib import Path
 
 import pytest
 from agent_run.repository import Repository
-from agent_run.targets import TargetError, resolve_file_targets
+from agent_run.targets import TargetError, escape_file_pattern, resolve_file_targets
 
 
 def _initialise_repository(path: Path) -> Path:
@@ -176,3 +176,12 @@ def test_resolve_file_targets_deduplicates_files_and_globs(
     )
 
     assert targets == ("src/one.py", "src/two.py")
+
+
+def test_escape_file_pattern_uses_javascript_regex_characters() -> None:
+    """Regex operators are escaped and ordinary path characters are left unchanged."""
+    path = r"src/a-b #1 (x)[y].*+?^${z}|\file.js"
+
+    assert escape_file_pattern(path) == (
+        r"src/a-b #1 \(x\)\[y\]\.\*\+\?\^\$\{z\}\|\\file\.js"
+    )

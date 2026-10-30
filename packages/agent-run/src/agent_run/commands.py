@@ -16,6 +16,12 @@ DEFAULT_CAPABILITY = "none"
 FILE_LIST_CAPABILITY = "file-list"
 # Every capability a stored command may hold, offered as argparse choices.
 COMMAND_CAPABILITIES: tuple[str, ...] = (DEFAULT_CAPABILITY, FILE_LIST_CAPABILITY)
+# File format of a command that receives appended files as plain paths.
+DEFAULT_FILE_FORMAT = "path"
+# File format of a command that reads each file argument as a regular expression.
+PATTERN_FILE_FORMAT = "pattern"
+# Every file format a stored command may hold, offered as argparse choices.
+FILE_FORMATS: tuple[str, ...] = (DEFAULT_FILE_FORMAT, PATTERN_FILE_FORMAT)
 
 # Browser test runners that a person must start; agents never run them.
 _BROWSER_RUNNERS: tuple[str, ...] = ("playwright", "cypress")
@@ -68,6 +74,7 @@ class Command:
         created_at: UTC timestamp recorded when the command was added.
         timeout_seconds: Optional timeout override, or `None` to use the default.
         capability: Inputs that a named run may append to the command.
+        file_format: How appended file paths are passed to the command.
         manual: Whether the command must be run manually instead of automatically.
     """
 
@@ -77,6 +84,7 @@ class Command:
     created_at: str
     timeout_seconds: float | None = None
     capability: str = DEFAULT_CAPABILITY
+    file_format: str = DEFAULT_FILE_FORMAT
     manual: bool = False
 
 
@@ -144,6 +152,25 @@ def _validate_capability(capability: str) -> str:
     return capability
 
 
+def _validate_file_format(file_format: str) -> str:
+    """Check that a command file format is one agent-run knows how to pass.
+
+    Args:
+        file_format: The requested format, such as `path` or `pattern`.
+
+    Returns:
+        The same file format, unchanged.
+
+    Raises:
+        CommandError: The format is not one of the supported file formats.
+    """
+    if file_format not in FILE_FORMATS:
+        formats = ", ".join(FILE_FORMATS)
+        raise CommandError(f"Command file format must be one of: {formats}.")
+
+    return file_format
+
+
 def _command_from_row(row: sqlite3.Row | tuple[object, ...]) -> Command:
     """Decode one database row into a stored command."""
     (
@@ -154,6 +181,7 @@ def _command_from_row(row: sqlite3.Row | tuple[object, ...]) -> Command:
         timeout_seconds,
         capability,
         manual,
+        file_format,
     ) = row
     return Command(
         name=str(name),
@@ -162,6 +190,7 @@ def _command_from_row(row: sqlite3.Row | tuple[object, ...]) -> Command:
         created_at=str(created_at),
         timeout_seconds=(None if timeout_seconds is None else float(timeout_seconds)),
         capability=str(capability),
+        file_format=str(file_format),
         manual=bool(manual),
     )
 
@@ -182,7 +211,7 @@ def find_command(
     row = connection.execute(
         """
         SELECT name, argv, working_directory, created_at, timeout_seconds, capability,
-               manual
+               manual, file_format
         FROM commands
         WHERE repository_id = ? AND name = ?
         """,
@@ -204,6 +233,7 @@ def add_command(
     timeout_seconds: float | None = None,
     capability: str = DEFAULT_CAPABILITY,
     manual: bool = False,
+    file_format: str = DEFAULT_FILE_FORMAT,
 ) -> Command:
     """Add a named command for a repository and return the stored command.
 
@@ -216,6 +246,7 @@ def add_command(
         timeout_seconds: Optional positive timeout override for the command.
         capability: Inputs that a named run may append to the command.
         manual: Whether the command must be run manually instead of automatically.
+        file_format: Whether appended files are paths or regular expressions.
 
     Raises:
         CommandError: If the arguments, directory, or name are invalid.
@@ -224,6 +255,7 @@ def add_command(
 
     timeout_seconds = validate_timeout(timeout_seconds)
     capability = _validate_capability(capability)
+    file_format = _validate_file_format(file_format)
 
     relative_working_directory = normalise_working_directory(repository, cwd)
 
@@ -240,8 +272,9 @@ def add_command(
                 created_at,
                 timeout_seconds,
                 capability,
-                manual
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                manual,
+                file_format
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 repository.id,
@@ -252,6 +285,7 @@ def add_command(
                 timeout_seconds,
                 capability,
                 manual,
+                file_format,
             ),
         )
     except sqlite3.IntegrityError as error:
@@ -266,6 +300,7 @@ def add_command(
         created_at=created_at,
         timeout_seconds=timeout_seconds,
         capability=capability,
+        file_format=file_format,
         manual=manual,
     )
 
@@ -282,7 +317,7 @@ def list_commands(
     rows = connection.execute(
         """
         SELECT name, argv, working_directory, created_at, timeout_seconds, capability,
-               manual
+               manual, file_format
         FROM commands
         WHERE repository_id = ?
         ORDER BY name
@@ -302,6 +337,7 @@ def edit_command(
     timeout_seconds: float | None = None,
     capability: str | None = None,
     manual: bool | None = None,
+    file_format: str | None = None,
 ) -> Command:
     """Change the stored settings of a named command.
 
@@ -316,6 +352,7 @@ def edit_command(
         manual: Optional replacement for the command's manual-only mark. When it is
             left out and the new arguments start Playwright or Cypress, the
             command is marked manual-only.
+        file_format: Optional replacement for how the command receives file paths.
 
     Raises:
         CommandNotFoundError: If the command is not registered for the repository.
@@ -331,10 +368,11 @@ def edit_command(
         and timeout_seconds is None
         and capability is None
         and manual is None
+        and file_format is None
     ):
         raise CommandError(
-            "Edit must change arguments, working directory, timeout, capability, or "
-            "manual mark."
+            "Edit must change arguments, working directory, timeout, capability, "
+            "manual mark, or file format."
         )
 
     command_arguments = (
@@ -353,6 +391,11 @@ def edit_command(
     command_capability = (
         command.capability if capability is None else _validate_capability(capability)
     )
+    command_file_format = (
+        command.file_format
+        if file_format is None
+        else _validate_file_format(file_format)
+    )
     command_manual = command.manual if manual is None else manual
 
     # New arguments that start a browser runner make the command manual-only, unless
@@ -363,7 +406,8 @@ def edit_command(
     connection.execute(
         """
         UPDATE commands
-        SET argv = ?, working_directory = ?, timeout_seconds = ?, capability = ?, manual = ?
+        SET argv = ?, working_directory = ?, timeout_seconds = ?, capability = ?,
+            manual = ?, file_format = ?
         WHERE repository_id = ? AND name = ?
         """,
         (
@@ -372,6 +416,7 @@ def edit_command(
             command_timeout_seconds,
             command_capability,
             command_manual,
+            command_file_format,
             repository.id,
             name,
         ),
@@ -384,6 +429,7 @@ def edit_command(
         created_at=command.created_at,
         timeout_seconds=command_timeout_seconds,
         capability=command_capability,
+        file_format=command_file_format,
         manual=command_manual,
     )
 
@@ -432,6 +478,7 @@ def rename_command(
         created_at=command.created_at,
         timeout_seconds=command.timeout_seconds,
         capability=command.capability,
+        file_format=command.file_format,
         manual=command.manual,
     )
 

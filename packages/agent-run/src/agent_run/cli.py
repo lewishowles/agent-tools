@@ -19,7 +19,10 @@ from uuid import uuid4
 from agent_run.commands import (
     COMMAND_CAPABILITIES,
     DEFAULT_CAPABILITY,
+    DEFAULT_FILE_FORMAT,
+    FILE_FORMATS,
     FILE_LIST_CAPABILITY,
+    PATTERN_FILE_FORMAT,
     Command,
     CommandError,
     CommandNotFoundError,
@@ -96,7 +99,7 @@ from agent_run.runs import (
     start_run,
 )
 from agent_run.schema import NewerSchemaError
-from agent_run.targets import resolve_file_targets
+from agent_run.targets import escape_file_pattern, resolve_file_targets
 
 # How a detected command compares with the saved command of the same name.
 CANDIDATE_NEW = "new"
@@ -278,7 +281,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "add",
         help="Register a named project command.",
         description="Register a named project command.",
-        usage="agent-run add NAME [--cwd DIR] [--timeout SECONDS] [--capability CAPABILITY] [--manual] [--json] -- ARGV...",
+        usage="agent-run add NAME [--cwd DIR] [--timeout SECONDS] [--capability CAPABILITY] [--file-format FORMAT] [--manual] [--json] -- ARGV...",
         add_help=False,
         json_mode=json_mode,
     )
@@ -321,6 +324,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Allow named runs to append file paths with `--file` or `--glob`.",
     )
     add_parser.add_argument(
+        "--file-format",
+        choices=FILE_FORMATS,
+        default=DEFAULT_FILE_FORMAT,
+        help="Pass file targets as paths (default) or escaped regular expressions.",
+    )
+    add_parser.add_argument(
         "--manual",
         action="store_true",
         help="Mark this command as manual-only; named runs will not execute it.",
@@ -331,7 +340,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "edit",
         help="Change a named project command.",
         description="Change a named project command.",
-        usage="agent-run edit NAME [--cwd DIR] [--timeout SECONDS] [--capability CAPABILITY] [--manual | --no-manual] [--json] [-- ARGV...]",
+        usage="agent-run edit NAME [--cwd DIR] [--timeout SECONDS] [--capability CAPABILITY] [--file-format FORMAT] [--manual | --no-manual] [--json] [-- ARGV...]",
         add_help=False,
         json_mode=json_mode,
     )
@@ -369,6 +378,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=COMMAND_CAPABILITIES,
         default=None,
         help="Change whether named runs may append file paths with `--file` or `--glob`.",
+    )
+    edit_parser.add_argument(
+        "--file-format",
+        choices=FILE_FORMATS,
+        default=None,
+        help="Change whether file targets are paths or escaped regular expressions.",
     )
     edit_parser.add_argument(
         "--manual",
@@ -1072,6 +1087,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     parsed.timeout,
                     parsed.capability,
                     parsed.manual or starts_browser_runner(command_arguments),
+                    parsed.file_format,
                 )
             finally:
                 connection.close()
@@ -1121,6 +1137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     parsed.timeout,
                     parsed.capability,
                     parsed.manual,
+                    parsed.file_format,
                 )
             finally:
                 connection.close()
@@ -1926,7 +1943,14 @@ def _perform_run(
                     globs,
                 )
 
-            command_arguments = command.argv + resolved_file_paths
+            # Escape paths for pattern commands so characters such as ( and . match
+            # themselves instead of acting as regular-expression syntax.
+            file_arguments = (
+                tuple(escape_file_pattern(path) for path in resolved_file_paths)
+                if command.file_format == PATTERN_FILE_FORMAT
+                else resolved_file_paths
+            )
+            command_arguments = command.argv + file_arguments
             manual_run = command.manual
 
             if manual_run:
@@ -2269,6 +2293,7 @@ def _format_command(command: Command) -> str:
             {"label": "name", "value": command.name},
             {"label": "working directory", "value": command.working_directory},
             {"label": "capability", "value": command.capability},
+            {"label": "file format", "value": command.file_format},
             {"label": "manual", "value": str(command.manual).lower()},
             {"label": "timeout", "value": timeout},
             {"label": "argv", "value": json.dumps(list(command.argv))},
@@ -2280,7 +2305,7 @@ def _format_list_command(command: Command) -> str:
     """Format one command for `agent-run list`.
 
     The name and command line always appear. The folder, file support, manual
-    flag and timeout only appear when they differ from the defaults.
+    flag, file format, and timeout only appear when they differ from the defaults.
     """
     lines = [
         render_span(command.name, tone="info"),
@@ -2296,6 +2321,8 @@ def _format_list_command(command: Command) -> str:
     settings = []
     if command.manual:
         settings.append("manual")
+    if command.file_format != DEFAULT_FILE_FORMAT:
+        settings.append(f"file format: {command.file_format}")
     if command.timeout_seconds is not None:
         settings.append(f"{command.timeout_seconds:g}s timeout")
     if settings:
@@ -2664,6 +2691,7 @@ def _command_record(command: Command) -> dict[str, object]:
         "name": command.name,
         "working_directory": command.working_directory,
         "capability": command.capability,
+        "file_format": command.file_format,
         "manual": command.manual,
         "timeout_seconds": command.timeout_seconds,
         "argv": list(command.argv),

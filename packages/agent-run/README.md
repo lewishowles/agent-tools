@@ -58,9 +58,12 @@ pass `--cwd` to choose another directory inside it and `--timeout` to set the
 timeout used by named runs. If you leave out `--timeout`, named runs use the
 120-second default. Set `--capability file-list` when the command accepts file
 paths appended with `--file` or `--glob`; commands use the `none` capability by
-default. Add `--manual` when only a person should run a command: agents are
-refused and given the command to hand over, and a person running it from their
-own terminal sees it start straight away.
+default. Use `--file-format pattern` when the command reads file arguments as
+regular expressions, as Playwright does. The default is `path`, including for
+commands registered before this option was added. Add `--manual` when only a
+person should run a command: agents are refused and given the command to hand
+over, and a person running it from their own terminal sees it start straight
+away.
 
 Agent-run also marks commands that start Playwright or Cypress as manual-only.
 This includes commands run through `npx`, `pnpm exec`, `yarn`, `bunx`, or
@@ -72,17 +75,19 @@ agent-run add test --timeout 30 -- pytest
 agent-run add lint --cwd tools --json -- ruff check
 agent-run add lint-changed --capability file-list -- ruff check
 agent-run add shell-syntax --capability file-list -- zsh -n
+agent-run add browser-files --capability file-list --file-format pattern -- npx playwright test
 agent-run add browser-check --manual -- npm run browser-check
 ```
 
-Change a command's working directory, arguments, or timeout. Anything you leave
-out stays as it is:
+Change a command's working directory, arguments, timeout, or file format.
+Anything you leave out stays as it is:
 
 ```sh
 agent-run edit lint --cwd scripts
 agent-run edit lint -- ruff check --fix
 agent-run edit lint --timeout 10
 agent-run edit lint-changed --capability none
+agent-run edit browser-files --file-format pattern
 agent-run edit browser-check --no-manual
 ```
 
@@ -220,6 +225,14 @@ patterns are resolved from the repository root through Git, so ignored files
 and tracked files deleted from disk are excluded. Each pattern's matches are
 sorted, all targets must be regular files inside the repository, and targets
 are reported relative to the command's working directory.
+
+For a command registered with `--file-format pattern`, agent-run checks that
+each target is a real file, then escapes regular-expression characters in the
+path before passing it to the command. The command shown in run results, saved
+runs, and the printed command for manual-only runs uses the escaped arguments;
+only the list of file targets shows ordinary paths. Pattern runners usually match
+the escaped path anywhere in a test file's path, so a short path can also select
+other files that contain it.
 
 A successful pytest, Ruff, Vitest, Playwright, `vp check`, or xcodebuild run
 shows its final passing totals or confirmation in one or two lines. Other

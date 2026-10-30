@@ -236,6 +236,59 @@ def test_add_and_edit_command_store_capability(tmp_path: Path) -> None:
     assert edited.capability == "none"
 
 
+def test_add_and_edit_command_store_file_format(tmp_path: Path) -> None:
+    """Commands keep their file format when other settings are edited."""
+    root = _initialise_repository(tmp_path / "repository")
+    repository = _repository(root)
+    connection = connect_database(tmp_path / "agent-run.db")
+    try:
+        added = add_command(
+            connection, repository, "check", ["echo"], file_format="pattern"
+        )
+        stored = list_commands(connection, repository)[0]
+        edited = edit_command(connection, repository, "check", capability="file-list")
+        reset = edit_command(connection, repository, "check", file_format="path")
+
+        with pytest.raises(CommandError, match="path, pattern"):
+            edit_command(connection, repository, "check", file_format="unknown")
+    finally:
+        connection.close()
+
+    assert added.file_format == "pattern"
+    assert stored.file_format == "pattern"
+    assert edited.file_format == "pattern"
+    assert reset.file_format == "path"
+
+
+def test_migration_keeps_existing_commands_in_path_format(tmp_path: Path) -> None:
+    """A command saved before the new column is read as a path command."""
+    database_path = tmp_path / "agent-run.db"
+    connection = sqlite3.connect(database_path)
+    try:
+        for version, migration in enumerate(schema.MIGRATIONS[:-1], start=1):
+            migration(connection)
+            connection.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                (version, "2026-01-01T00:00:00+00:00"),
+            )
+
+        connection.execute(
+            "INSERT INTO commands (repository_id, name, argv, working_directory, "
+            "created_at, capability, manual) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("repository-id", "check", '["echo"]', ".", "created", "file-list", 0),
+        )
+        connection.commit()
+
+        schema.migrate(connection)
+        command = list_commands(
+            connection, Repository(root=tmp_path, id="repository-id")
+        )[0]
+    finally:
+        connection.close()
+
+    assert command.file_format == "path"
+
+
 def test_add_and_edit_command_store_manual_mark(tmp_path: Path) -> None:
     """Adding and editing stores whether a command must be run manually."""
     root = _initialise_repository(tmp_path / "repository")
@@ -383,6 +436,7 @@ def test_cli_add_and_list_support_text_and_json(
                     "name": "build",
                     "working_directory": "scripts",
                     "capability": "none",
+                    "file_format": "path",
                     "manual": True,
                     "timeout_seconds": None,
                     "argv": ["make", "all"],
@@ -540,6 +594,7 @@ def test_cli_edit_rename_and_remove_support_text_and_json(
             "name": "build",
             "working_directory": "scripts",
             "capability": "none",
+            "file_format": "path",
             "manual": False,
             "timeout_seconds": 3.0,
             "argv": ["make", "all"],
@@ -602,7 +657,7 @@ def test_cli_mutations_report_unknown_names_as_not_found(
         (
             ["edit", "build", "--json"],
             ["build"],
-            "Edit must change arguments, working directory, timeout, capability, or manual mark.",
+            "Edit must change arguments, working directory, timeout, capability, manual mark, or file format.",
             False,
         ),
         (

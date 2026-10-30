@@ -1,4 +1,4 @@
-"""Resolve file targets for commands that accept a file list."""
+"""Resolve and escape file targets for commands that accept a file list."""
 
 import os
 import subprocess
@@ -10,6 +10,28 @@ from agent_run.repository import Repository
 
 class TargetError(ValueError):
     """Report a file target that cannot be passed to a command."""
+
+
+def escape_file_pattern(path: str) -> str:
+    """Escape a file path so a JavaScript regular expression matches it literally.
+
+    Playwright and similar runners read file arguments as regular expressions. An
+    unescaped `.` matches any character, and a folder such as `(app)` is read as a
+    group, so the path would no longer match its own file.
+
+    Args:
+        path: A file target that has already been checked to exist.
+
+    Returns:
+        The path with every regular-expression operator preceded by a backslash.
+    """
+    # Characters with special meaning in a JavaScript regular expression.
+    metacharacters = r"\^$.*+?()[]{}|"
+
+    return "".join(
+        f"\\{character}" if character in metacharacters else character
+        for character in path
+    )
 
 
 def resolve_file_targets(

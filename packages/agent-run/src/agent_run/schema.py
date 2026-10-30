@@ -146,6 +146,19 @@ def _add_run_provenance(connection: sqlite3.Connection) -> None:
     connection.execute("ALTER TABLE runs ADD COLUMN targets TEXT")
 
 
+def _add_command_file_format(connection: sqlite3.Connection) -> None:
+    """Add the setting that says how a command receives appended file targets.
+
+    Commands registered before this migration keep receiving plain paths.
+
+    Args:
+        connection: The open database connection the migration runs in.
+    """
+    connection.execute(
+        "ALTER TABLE commands ADD COLUMN file_format TEXT NOT NULL DEFAULT 'path'"
+    )
+
+
 # Migrations in the order they run. A migration's version is its position,
 # starting at 1, so add new migrations to the end and never reorder them.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -157,6 +170,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _add_command_manual,
     _upgrade_runs,
     _add_run_provenance,
+    _add_command_file_format,
 )
 # Newest schema version this release understands.
 LATEST_SCHEMA_VERSION = len(MIGRATIONS)

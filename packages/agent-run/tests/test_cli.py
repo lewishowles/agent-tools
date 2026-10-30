@@ -2492,6 +2492,117 @@ def test_cli_named_file_list_run_appends_relative_files(
     )
 
 
+def test_cli_pattern_file_list_escapes_checked_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Pattern commands receive escaped arguments after the files are checked."""
+    root = _initialise_repository(tmp_path / "repository")
+    target = root / "src" / "pages" / "(app)" / "page.ct.js"
+    target.parent.mkdir(parents=True)
+    target.write_text("test")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+
+    command = [
+        sys.executable,
+        "-c",
+        "import json, sys; print(json.dumps(sys.argv[1:]))",
+    ]
+    assert (
+        main(
+            [
+                "add",
+                "check",
+                "--capability",
+                "file-list",
+                "--file-format",
+                "pattern",
+                "--",
+                *command,
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert main(["list", "--json"]) == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert listed["data"]["commands"][0]["file_format"] == "pattern"
+
+    assert main(["list"]) == 0
+    assert "file format: pattern" in capsys.readouterr().out
+
+    assert (
+        main(["run", "check", "--file", str(target.relative_to(root)), "--json"]) == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    escaped = r"src/pages/\(app\)/page\.ct\.js"
+
+    assert result["data"]["files"] == ["src/pages/(app)/page.ct.js"]
+    assert result["data"]["argv"] == command + [escaped]
+    assert json.loads(Path(result["data"]["log_path"]).read_text()) == [escaped]
+
+    assert main(["run", "check", "--file", escaped, "--json"]) == 2
+    invalid = json.loads(capsys.readouterr().out)
+    assert "does not exist" in invalid["error"]["message"]
+
+    assert main(["edit", "check", "--file-format", "path", "--json"]) == 0
+    edited = json.loads(capsys.readouterr().out)
+    assert edited["data"]["file_format"] == "path"
+
+    assert (
+        main(["run", "check", "--file", str(target.relative_to(root)), "--json"]) == 0
+    )
+    path_result = json.loads(capsys.readouterr().out)
+    assert path_result["data"]["argv"] == command + ["src/pages/(app)/page.ct.js"]
+
+
+def test_cli_manual_pattern_command_prints_escaped_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """A manual pattern command prints the argument it passes to the runner."""
+    root = _initialise_repository(tmp_path / "repository")
+    target = root / "src" / "(app)" / "page.ct.js"
+    target.parent.mkdir(parents=True)
+    target.write_text("test")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("AGENT_RUN_DATABASE", str(tmp_path / "agent-run.db"))
+    monkeypatch.setenv("NO_COLOR", "1")
+    command = [sys.executable, "-c", "import sys; print(sys.argv[1:])"]
+
+    assert (
+        main(
+            [
+                "add",
+                "browser",
+                "--manual",
+                "--capability",
+                "file-list",
+                "--file-format",
+                "pattern",
+                "--",
+                *command,
+            ]
+        )
+        == 0
+    )
+    capfd.readouterr()
+    _enable_human_terminal(monkeypatch)
+
+    assert main(["run", "browser", "--file", "src/(app)/page.ct.js", "--json"]) == 0
+    captured = capfd.readouterr()
+    result = json.loads(captured.out)
+    escaped = r"src/\(app\)/page\.ct\.js"
+
+    assert f"Command: {shlex.join(command + [escaped])}" in captured.err
+    assert result["data"]["argv"] == command + [escaped]
+    assert result["data"]["files"] == ["src/(app)/page.ct.js"]
+
+
 def test_cli_file_targets_report_usage_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

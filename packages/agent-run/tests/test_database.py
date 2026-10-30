@@ -77,6 +77,7 @@ def test_commands_table_is_created_by_second_migration(tmp_path: Path) -> None:
         "timeout_seconds",
         "capability",
         "manual",
+        "file_format",
     ]
 
 
