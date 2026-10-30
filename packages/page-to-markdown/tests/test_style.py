@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from page_to_markdown import style
+from page_to_markdown.cli import main
 from page_to_markdown.style import _plain_row_group
 
 
@@ -45,3 +46,19 @@ def test_renderers_keep_page_to_markdown_plain_text_when_cli_style_is_missing(
 	assert style.row("Draft", "abc", "success") == "OK Draft  abc"
 	assert style.row_group(rows) == "Source      docs.html\nOK Verdict  high-confidence"
 	assert style.span("saved", "success") == "saved"
+
+
+def test_confidence_report_marks_low_confidence_when_cli_style_is_missing(
+	monkeypatch: pytest.MonkeyPatch,
+	tmp_path: Path,
+	capsys: pytest.CaptureFixture[str],
+) -> None:
+	monkeypatch.setenv("PATH", str(tmp_path))
+
+	exit_code = main(
+		[str(Path(__file__).parents[1] / "fixtures" / "simple.html"), "--confidence"]
+	)
+	captured = capsys.readouterr()
+
+	assert exit_code == 0
+	assert "x Verdict              low-confidence" in captured.out.splitlines()
