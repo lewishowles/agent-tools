@@ -706,6 +706,7 @@ def test_attention_and_working_groups_use_priority_order() -> None:
     assert lines == [
         "WAITING ON YOU",
         "✕ Agent-Tools · blocked  blocked · 2m",
+        "",
         "● Agent-Tools · idle  needs you",
         "",
         "WORKING",
@@ -727,7 +728,9 @@ def test_blocked_waits_sort_before_waiting_team_names() -> None:
     assert board_content(agents) == [
         "WAITING ON YOU",
         "✕ Agent-Tools · z-blocked  blocked · 2m",
+        "",
         "✕ Agent-Tools · a-blocked  blocked · 30s",
+        "",
         "● Agent-Tools · z-idle  needs you",
         "",
         "WORKING",
@@ -751,7 +754,12 @@ def test_active_and_unread_teams_remain_working_rows() -> None:
         now=61,
     )
 
-    assert lines == ["WORKING", "○ Agent-Tools  coordinating", "◌ Custom  checking"]
+    assert lines == [
+        "WORKING",
+        "○ Agent-Tools  coordinating",
+        "",
+        "◌ Custom  checking",
+    ]
 
 
 def test_active_team_becomes_stuck_after_five_minutes_without_events() -> None:
@@ -908,6 +916,7 @@ def test_stale_team_sorts_before_stuck_team() -> None:
     ) == [
         "WAITING ON YOU",
         "● Agent-Tools · z-stale  stale",
+        "",
         "● Agent-Tools · a-stuck  stuck",
     ]
 
@@ -964,9 +973,10 @@ def test_stuck_team_sorts_with_attention_and_uses_attention_colour() -> None:
     assert lines[0] == "\x1b[2mWAITING ON YOU\x1b[0m"
     assert lines[1].startswith("\x1b[31m✕\x1b[0m ")
     assert "\x1b[31mblocked" in lines[1]
-    assert lines[2].startswith("\x1b[35m●\x1b[0m ")
-    assert lines[2].endswith("\x1b[35mstuck\x1b[0m")
-    assert lines[4] == "\x1b[2mWORKING\x1b[0m"
+    assert lines[2] == ""
+    assert lines[3].startswith("\x1b[35m●\x1b[0m ")
+    assert lines[3].endswith("\x1b[35mstuck\x1b[0m")
+    assert lines[5] == "\x1b[2mWORKING\x1b[0m"
 
 
 def test_unread_tracking_resets_when_messages_clear_or_agent_activates() -> None:
@@ -1249,6 +1259,7 @@ def test_distinct_prefixes_with_the_same_label_are_both_shown() -> None:
     assert board_content(agents) == [
         "WORKING",
         "○ Agent-Tools · a-b  working",
+        "",
         "○ Agent-Tools · a-b  working",
     ]
 
@@ -1266,9 +1277,10 @@ def test_lone_blocked_agent_keeps_age_order_and_red_status() -> None:
     assert lines[1].startswith("\x1b[31m✕\x1b[0m \x1b[97mAgent-Tools")
     assert "\x1b[2m · blocked\x1b[0m" in lines[1]
     assert lines[1].endswith("\x1b[31mblocked · 2m\x1b[0m")
-    assert lines[2].startswith("\x1b[35m●\x1b[0m \x1b[97mAgent-Tools")
-    assert "\x1b[2m · idle\x1b[0m" in lines[2]
-    assert lines[2].endswith("\x1b[35mneeds you\x1b[0m")
+    assert lines[2] == ""
+    assert lines[3].startswith("\x1b[35m●\x1b[0m \x1b[97mAgent-Tools")
+    assert "\x1b[2m · idle\x1b[0m" in lines[3]
+    assert lines[3].endswith("\x1b[35mneeds you\x1b[0m")
 
 
 def test_working_rows_are_fully_dimmed_when_colour_is_on() -> None:
@@ -1283,15 +1295,18 @@ def test_working_rows_are_fully_dimmed_when_colour_is_on() -> None:
     ]
 
     lines = board_content(agents, colour=True)
+    # The team rows, without the blank lines between teams.
+    team_rows = lines[1::2]
 
     assert lines[0] == "\x1b[2mWORKING\x1b[0m"
+    assert lines[2::2] == ["", ""]
     # The team label from each row: the text between the repository and the status.
     assert [
         ANSI_STYLE_PATTERN.sub("", line).split(" · ")[1].split("  ")[0]
-        for line in lines[1:]
+        for line in team_rows
     ] == ["active", "unread", "workers"]
-    assert all(line.startswith("\x1b[2m○ Agent-Tools") for line in lines[1:])
-    assert all(line.endswith("\x1b[0m") for line in lines[1:])
+    assert all(line.startswith("\x1b[2m○ Agent-Tools") for line in team_rows)
+    assert all(line.endswith("\x1b[0m") for line in team_rows)
 
 
 def test_no_active_teams_shows_one_message_inside_the_frame() -> None:

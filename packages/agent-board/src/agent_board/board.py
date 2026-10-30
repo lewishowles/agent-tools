@@ -414,7 +414,8 @@ def _draw_section(
     """Draw one group of team rows, each followed by its task line when known.
 
     Each row keeps as much of its team name as its own status allows, and every
-    status ends at the right edge of the row.
+    status ends at the right edge of the row. A framed board leaves a blank line
+    between teams, so each team's row and task line read as one block.
 
     Args:
         section_rows: The group's rows.
@@ -438,7 +439,10 @@ def _draw_section(
     if section_rows and framed:
         lines.append(f"{DIM_STYLE}{heading}{RESET_STYLE}" if colour else heading)
 
-    for _, repository, label_rest, status, key in section_rows:
+    for index, (_, repository, label_rest, status, key) in enumerate(section_rows):
+        if framed and index > 0:
+            lines.append("")
+
         symbol = STATUS_SYMBOLS[status.partition(" · ")[0]]
         # The full team name: the repository followed by any team label.
         name = repository + label_rest
