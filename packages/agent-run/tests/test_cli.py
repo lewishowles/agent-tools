@@ -1100,11 +1100,19 @@ def test_cli_multiple_runs_json_includes_failure_and_timeout_data(
         assert main(["add", name, "--", sys.executable, "-c", script]) == 0
         capsys.readouterr()
 
-    exit_code = main(["run", "passed", "failed", "slow", "--timeout", "0.1", "--json"])
+    # The limit applies to every run, so it leaves room for Python to start the
+    # quick commands on a busy machine while still stopping the ten-second sleep.
+    timeout_seconds = 2.0
+
+    exit_code = main(
+        ["run", "passed", "failed", "slow", "--timeout", str(timeout_seconds), "--json"]
+    )
     captured = capsys.readouterr()
     result = json.loads(captured.out)
 
-    assert exit_code == 1
+    # The JSON names each run's status, or its error code and message when it
+    # could not start, which the exit code alone does not explain.
+    assert exit_code == 1, captured.out
     assert captured.err == ""
     assert result["ok"] is False
     runs = result["data"]["runs"]
@@ -1127,7 +1135,7 @@ def test_cli_multiple_runs_json_includes_failure_and_timeout_data(
     finally:
         connection.close()
 
-    assert timeouts == [0.1, 0.1, 0.1]
+    assert timeouts == [timeout_seconds, timeout_seconds, timeout_seconds]
 
 
 @pytest.mark.parametrize(
