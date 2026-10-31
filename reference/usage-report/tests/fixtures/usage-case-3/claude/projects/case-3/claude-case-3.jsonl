@@ -1,0 +1,6 @@
+{"type":"assistant","timestamp":"2026-08-01T10:00:01Z","cwd":"/fixture/claude/project","message":{"model":"claude-case-3","usage":{"input_tokens":10,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":4},"content":[]}}
+{"type":"assistant","timestamp":"2026-08-01T10:00:02Z","message":
+{"type":"user","timestamp":"2026-08-01T10:00:03Z","cwd":"/fixture/claude/project","message":{"role":"user","content":"[redacted valid message]"}}
+{"type":"future_event","timestamp":"2026-08-01T10:00:04Z","payload":{"value":"[redacted unsupported record]"}}
+{"type":"assistant","timestamp":"2026-08-01T10:00:05Z","cwd":"/fixture/claude/project","message":{"model":"claude-case-3","usage":{"input_tokens":5,"cache_creation_input_tokens":1,"cache_read_input_tokens":1,"output_tokens":2},"content":[]}}
+{"type":"user","timestamp":"2026-08-01T10:00:06Z","cwd":"/fixture/claude/project","message":{"role":"user","content":"[redacted trailing valid message]"}}

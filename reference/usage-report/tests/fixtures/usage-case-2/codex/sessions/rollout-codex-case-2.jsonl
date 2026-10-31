@@ -1,0 +1,5 @@
+{"type":"session_meta","timestamp":"2026-08-01T11:00:00Z","payload":{"id":"codex-case-2","cwd":"/fixture/codex/project"}}
+{"type":"turn_context","timestamp":"2026-08-01T11:00:01Z","payload":{"model":"codex-case-2","cwd":"/fixture/codex/project"}}
+{"type":"response_item","timestamp":"2026-08-01T11:00:02Z","payload":{"type":"function_call","name":"exec_command","call_id":"codex-case-2-bash","arguments":"{\"cmd\":\"rg --files /fixture/codex/project\"}"}}
+{"type":"response_item","timestamp":"2026-08-01T11:00:03Z","payload":{"type":"function_call_output","call_id":"codex-case-2-bash","output":"ERROR: [redacted command failure]"}}
+{"type":"event_msg","timestamp":"2026-08-01T11:00:04Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":12,"cached_input_tokens":3,"reasoning_output_tokens":2,"output_tokens":6,"total_tokens":23},"total_token_usage":{"input_tokens":12,"cached_input_tokens":3,"reasoning_output_tokens":2,"output_tokens":6,"total_tokens":23}}}}

@@ -1,0 +1,7 @@
+{"type":"session_meta","timestamp":"2026-08-01T11:00:00Z","payload":{"id":"codex-case-3","cwd":"/fixture/codex/project"}}
+{"type":"session_meta","timestamp":"2026-08-01T11:00:01Z","payload":
+{"type":"turn_context","timestamp":"2026-08-01T11:00:02Z","payload":{"model":"codex-case-3","cwd":"/fixture/codex/project"}}
+{"type":"event_msg","timestamp":"2026-08-01T11:00:03Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":12,"cached_input_tokens":3,"reasoning_output_tokens":2,"output_tokens":6,"total_tokens":23},"total_token_usage":{"input_tokens":12,"cached_input_tokens":3,"reasoning_output_tokens":2,"output_tokens":6,"total_tokens":23}}}}
+{"type":"future_event","timestamp":"2026-08-01T11:00:04Z","payload":{"value":"[redacted unsupported record]"}}
+{"type":"response_item","timestamp":"2026-08-01T11:00:05Z","payload":{"type":"function_call","name":"exec_command","call_id":"codex-case-3-bash","arguments":"{\"cmd\":\"rg --files /fixture/codex/project\"}"}}
+{"type":"event_msg","timestamp":"2026-08-01T11:00:06Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":8,"cached_input_tokens":2,"reasoning_output_tokens":1,"output_tokens":4,"total_tokens":15},"total_token_usage":{"input_tokens":20,"cached_input_tokens":5,"reasoning_output_tokens":3,"output_tokens":10,"total_tokens":38}}}}
