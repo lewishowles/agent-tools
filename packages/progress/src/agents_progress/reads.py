@@ -1,5 +1,6 @@
 """Read queries shared by the human and JSON progress interfaces."""
 
+import posixpath
 import sqlite3
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -316,9 +317,10 @@ def _add_waiting_dependencies(
 def _files_overlap(first: str, second: str) -> bool:
 	"""Tell whether two listed task files overlap.
 
-	They overlap when they are the same path, or one is a folder that
-	contains the other: "src/app" contains "src/app/main.py" but not
-	"src/application.py".
+	Their spellings are tidied before comparison, so "./src/a.ts" and
+	"src/a.ts" are the same path. They overlap when they are the same path,
+	or one is a folder that contains the other: "src/app" contains
+	"src/app/main.py" but not "src/application.py".
 
 	Args:
 		first: A task's listed file or folder.
@@ -327,8 +329,8 @@ def _files_overlap(first: str, second: str) -> bool:
 	Returns:
 		True when the paths overlap.
 	"""
-	first = first.rstrip("/")
-	second = second.rstrip("/")
+	first = _normalise_task_file(first)
+	second = _normalise_task_file(second)
 
 	return (
 		first == second
@@ -418,6 +420,84 @@ def _task_values_by_id(
 			values[field].setdefault(row["task_id"], []).append(row["text"])
 
 	return values
+
+
+def shared_task_files(
+	connection: sqlite3.Connection, task_id: str, project_id: str
+) -> list[dict[str, object]]:
+	"""Find the files a task lists that other in-progress tasks in its project also list.
+
+	Paths match after tidying their spelling, and a folder overlaps the files inside it.
+	For example, `./src/a.ts` and `src/a.ts` match, while `src/app` contains
+	`src/app/main.py` but not `src/application.py`. Done, ready and blocked tasks are
+	ignored, because only work under way can collide at merge.
+
+	Args:
+		connection: An open connection to the progress database.
+		task_id: The task whose file list is checked.
+		project_id: The project the task belongs to.
+
+	Returns:
+		One entry per shared path, sorted by path. Each entry holds the checked
+		task's own tidied `path` and the `id`, `slug` and `title` of every other
+		task whose listed path overlaps it, in queue order. The list is empty when
+		nothing is shared.
+	"""
+	# The checked task's files, in their tidied spelling.
+	selected_files = {
+		_normalise_task_file(row["text"])
+		for row in connection.execute(
+			"SELECT text FROM task_files WHERE task_id = ?", (task_id,)
+		)
+	}
+	if not selected_files:
+		return []
+
+	# Each shared path mapped to the other tasks that list it, keyed by task ID so a task
+	# that lists the same file twice is named once.
+	shared: dict[str, dict[str, dict[str, str]]] = {}
+
+	# Every file listed by the project's other in-progress tasks, in queue order.
+	rows = connection.execute(
+		f"""
+		SELECT task_files.text, tasks.id, tasks.slug, tasks.title
+		FROM task_files JOIN tasks ON tasks.id = task_files.task_id
+		LEFT JOIN releases ON releases.id = tasks.release_id
+		AND releases.project_id = tasks.project_id
+		WHERE tasks.project_id = ? AND tasks.status = 'in-progress' AND tasks.id != ?
+		ORDER BY {_TASK_QUEUE_ORDER}, task_files.position
+		""",
+		(project_id, task_id),
+	)
+
+	for row in rows:
+		for file_path in selected_files:
+			if not _files_overlap(file_path, row["text"]):
+				continue
+
+			shared.setdefault(file_path, {})[row["id"]] = {
+				"id": row["id"],
+				"slug": row["slug"],
+				"title": row["title"],
+			}
+
+	return [
+		{"path": file_path, "tasks": list(shared[file_path].values())}
+		for file_path in sorted(shared)
+	]
+
+
+def _normalise_task_file(file_path: str) -> str:
+	"""Tidy a listed file path so different spellings of the same file compare equal.
+
+	Args:
+		file_path: A path as written in a task's file list.
+
+	Returns:
+		The path without surrounding spaces, a leading `./`, doubled slashes or a trailing
+		slash, with `.` and `..` segments resolved.
+	"""
+	return posixpath.normpath(file_path.strip())
 
 
 def _task_chunks(

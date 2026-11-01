@@ -36,6 +36,7 @@ from .reads import (
 	_default_task_and_chunk,
 	_task_public_row,
 	resolve_identifier,
+	shared_task_files,
 	validate_identifier,
 )
 from .schema import utc_timestamp
@@ -1504,7 +1505,8 @@ class WriteStore(_StoreBase):
 		A plain start makes the task the project's default and is refused while
 		another default task is in progress. A secondary start never changes the
 		default. Other in-progress tasks and their active chunks stay as they are.
-		The result reports the worktree's uncommitted changes, which never prevent
+		The result reports the worktree's uncommitted changes and shared_files for
+		files that overlap those listed by other in-progress tasks. Neither prevents
 		the start.
 		"""
 		task_id = validate_identifier(task_id, TASK_PREFIX)
@@ -1566,6 +1568,7 @@ class WriteStore(_StoreBase):
 				)
 
 			result = _task_dict(connection, task_id, project.id)
+			result["shared_files"] = shared_task_files(connection, task_id, project.id)
 
 		result["uncommitted_changes"] = self.projects.uncommitted_changes(path)
 		return result

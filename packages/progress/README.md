@@ -601,6 +601,14 @@ Staged, unstaged, and untracked files count, while ignored files do not.
 The task still starts when changes exist or the status check fails. Human
 output adds one line when changes exist or Git could not check them.
 
+Every start also reports `shared_files` in JSON. Each `path` is one of this
+task's listed paths, tidied so different spellings, such as `./src/a.ts` and
+`src/a.ts`, match. A folder also overlaps the files inside it. Each entry has a
+`tasks` list containing the `id`, `slug`, and `title` of other in-progress tasks
+in the same project that list an overlapping path. The list is empty when there
+is no overlap. Human output adds one warning line per shared path, naming the
+other tasks. These warnings do not prevent the task from starting.
+
 ### `progress complete`
 
 Complete one task or chunk by ID:
@@ -691,7 +699,8 @@ the final line shows project-wide status counts and the next task. Waiting tasks
 show `waiting on #n` for unfinished dependencies in the same release, or the
 task ID for dependencies in another release. Ready tasks show `ready, can run in
 parallel` when their listed files share none with the next task or any task in
-progress. Tasks without listed files never get this hint. JSON gives waiting
+progress. Paths are tidied before comparison, and a folder overlaps the files
+inside it. Tasks without listed files never get this hint. JSON gives waiting
 tasks an `unfinished_dependency_ids` list and every task a
 `can_run_in_parallel` value; with `--all`, `limit` is `null` and `has_more` is
 `false`.

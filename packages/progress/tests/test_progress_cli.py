@@ -904,6 +904,314 @@ def test_next_task_flag_selects_the_named_task(
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 
+@pytest.mark.parametrize(
+	"selected_files, other_files, other_status, expected_path",
+	[
+		(["src/a.ts"], ["src/a.ts"], "in-progress", "src/a.ts"),
+		([" ./src//a.ts/ "], ["src/a.ts"], "in-progress", "src/a.ts"),
+		(["src/a.ts"], ["src/b.ts"], "in-progress", None),
+		(["src/a.ts"], ["src/a.ts"], "done", None),
+		(["src/a.ts"], ["src/a.ts"], "ready", None),
+		(["src/a.ts"], ["src/a.ts"], "blocked", None),
+		(["src/app"], ["src/app/main.py"], "in-progress", "src/app"),
+		(["src/app/main.py"], ["src/app"], "in-progress", "src/app/main.py"),
+		(["src/app"], ["src/application.py"], "in-progress", None),
+	],
+)
+def test_task_start_reports_shared_files_without_blocking(
+	tmp_path: Path,
+	monkeypatch,
+	capsys,
+	selected_files: list[str],
+	other_files: list[str],
+	other_status: str,
+	expected_path: str | None,
+) -> None:
+	"""List only normalised files shared with other in-progress tasks."""
+	database_path = tmp_path / "progress.db"
+	project = Project(
+		"prj_" + "p" * 22,
+		"agents",
+		"Agent configuration",
+		"2026-01-01T00:00:00+00:00",
+	)
+	database = Database(database_path)
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(project.id, project.slug, project.name, project.created_at),
+		)
+
+	monkeypatch.setattr(ProjectStore, "current", lambda self, path=None: project)
+	writer = WriteStore(database)
+	other = writer.task_add(
+		"other-task",
+		"Other task",
+		overview="Other work.",
+		done_when=["Finish other work."],
+		files=other_files,
+	)
+	selected = writer.task_add(
+		"selected-task",
+		"Selected task",
+		overview="Selected work.",
+		done_when=["Finish selected work."],
+		files=selected_files,
+	)
+	if other_status != "ready":
+		writer.task_start(other["id"])
+	if other_status == "done":
+		writer.task_complete(other["id"])
+	if other_status == "blocked":
+		writer.task_block(other["id"], "Waiting for another task.")
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"start",
+				selected["id"],
+				"--secondary",
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 0
+	)
+	result = json.loads(capsys.readouterr().out)["data"]
+
+	assert result["status"] == "in-progress"
+	assert result["shared_files"] == (
+		[
+			{
+				"path": expected_path,
+				"tasks": [
+					{"id": other["id"], "slug": other["slug"], "title": other["title"]}
+				],
+			}
+		]
+		if expected_path
+		else []
+	)
+
+
+def test_task_start_names_each_other_task_once_for_a_shared_path(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	"""Name each other task once when it lists the same file twice."""
+	database_path = tmp_path / "progress.db"
+	project = Project(
+		"prj_" + "p" * 22,
+		"agents",
+		"Agent configuration",
+		"2026-01-01T00:00:00+00:00",
+	)
+	database = Database(database_path)
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(project.id, project.slug, project.name, project.created_at),
+		)
+
+	monkeypatch.setattr(ProjectStore, "current", lambda self, path=None: project)
+	writer = WriteStore(database)
+	others = [
+		writer.task_add(
+			f"other-{number}",
+			f"Other {number}",
+			overview="Other work.",
+			done_when=["Finish other work."],
+			files=["src/a.ts", "./src/a.ts"],
+		)
+		for number in (1, 2)
+	]
+	selected = writer.task_add(
+		"selected",
+		"Selected",
+		overview="Selected work.",
+		done_when=["Finish selected work."],
+		files=["./src/a.ts"],
+	)
+	for other in others:
+		writer.task_start(other["id"], secondary=True)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"start",
+				selected["id"],
+				"--secondary",
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 0
+	)
+	result = json.loads(capsys.readouterr().out)["data"]
+
+	assert result["shared_files"] == [
+		{
+			"path": "src/a.ts",
+			"tasks": [
+				{"id": other["id"], "slug": other["slug"], "title": other["title"]}
+				for other in others
+			],
+		}
+	]
+
+
+def test_task_start_lists_shared_tasks_in_release_queue_order(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	"""List tasks in the earlier release first, even when its task is later within that release."""
+	database_path = tmp_path / "progress.db"
+	project = Project(
+		"prj_" + "p" * 22,
+		"agents",
+		"Agent configuration",
+		"2026-01-01T00:00:00+00:00",
+	)
+	database = Database(database_path)
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(project.id, project.slug, project.name, project.created_at),
+		)
+
+	monkeypatch.setattr(ProjectStore, "current", lambda self, path=None: project)
+	writer = WriteStore(database)
+	earlier_release = writer.release_add("earlier", "Earlier", overview="Earlier work.")
+	later_release = writer.release_add("later", "Later", overview="Later work.")
+	writer.task_add(
+		"first-earlier-task",
+		"First earlier task",
+		overview="Other work.",
+		done_when=["Finish other work."],
+		release_id=earlier_release["id"],
+	)
+	earlier_task = writer.task_add(
+		"shared-earlier-task",
+		"Shared earlier task",
+		overview="Other work.",
+		done_when=["Finish other work."],
+		files=["src/a.ts"],
+		release_id=earlier_release["id"],
+	)
+	later_task = writer.task_add(
+		"shared-later-task",
+		"Shared later task",
+		overview="Other work.",
+		done_when=["Finish other work."],
+		files=["src/a.ts"],
+		release_id=later_release["id"],
+	)
+	selected = writer.task_add(
+		"selected",
+		"Selected",
+		overview="Selected work.",
+		done_when=["Finish selected work."],
+		files=["src/a.ts"],
+	)
+	for other in (earlier_task, later_task):
+		writer.task_start(other["id"], secondary=True)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"start",
+				selected["id"],
+				"--secondary",
+				"--database",
+				str(database_path),
+				"--json",
+			]
+		)
+		== 0
+	)
+	result = json.loads(capsys.readouterr().out)["data"]
+
+	assert result["shared_files"] == [
+		{
+			"path": "src/a.ts",
+			"tasks": [
+				{
+					"id": other["id"],
+					"slug": other["slug"],
+					"title": other["title"],
+				}
+				for other in (earlier_task, later_task)
+			],
+		}
+	]
+
+
+def test_task_start_human_output_names_each_shared_file_and_task() -> None:
+	"""Show one warning line per shared path without printing the raw shared_files field."""
+	output = cli._render_human_output(
+		"task start",
+		{
+			"id": "test",
+			"title": "Sample",
+			"status": "in-progress",
+			"uncommitted_changes": {"status": "clean", "count": 0, "paths": []},
+			"shared_files": [
+				{
+					"path": "src/a.ts",
+					"tasks": [
+						{"id": "tsk_one", "title": "First task", "slug": "first"}
+					],
+				},
+				{
+					"path": "src/b.ts",
+					"tasks": [
+						{"id": "tsk_two", "title": "Second task", "slug": "second"}
+					],
+				},
+			],
+		},
+	)
+	plain_lines = render_module._ANSI_ESCAPE_PATTERN.sub("", output).splitlines()
+
+	assert plain_lines[1:] == [
+		"Shared file: src/a.ts, also listed by First task (tsk_one)",
+		"Shared file: src/b.ts, also listed by Second task (tsk_two)",
+	]
+	assert "shared_files" not in output
+
+
+def test_task_list_treats_tidied_file_spellings_as_overlapping(
+	complete_records,
+) -> None:
+	"""Do not mark a ready task parallel when it lists the next task's file."""
+	database_path, next_task, _chunk = complete_records
+	database = Database(database_path)
+	writer = WriteStore(database)
+	other = writer.task_add(
+		"same-file",
+		"Same file",
+		overview="Shared work.",
+		done_when=["Finish shared work."],
+		files=["src/a.ts"],
+	)
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO task_files (task_id, position, text) VALUES (?, 1, ?)",
+			(next_task["id"], "./src/a.ts"),
+		)
+		connection.execute(
+			"UPDATE projects SET default_task_id = ? WHERE id = ?",
+			(next_task["id"], next_task["project_id"]),
+		)
+
+	items = {item["id"]: item for item in ReadStore(database).task_list()["items"]}
+
+	assert items[other["id"]]["can_run_in_parallel"] is False
+
+
 def test_task_start_secondary_flag_reaches_the_write_store(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:

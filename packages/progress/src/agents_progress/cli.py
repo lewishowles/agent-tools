@@ -1530,10 +1530,18 @@ def _render_human_output(
 	):
 		changes = data["uncommitted_changes"]
 		record = {
-			key: value for key, value in data.items() if key != "uncommitted_changes"
+			key: value
+			for key, value in data.items()
+			if key not in {"uncommitted_changes", "shared_files"}
 		}
 		line = _uncommitted_changes_line(changes)
-		return render(command, record) + (f"{line}\n" if line else "")
+		# Start warnings: uncommitted changes first, then one line per shared file.
+		warning_lines = ([line] if line else []) + _shared_file_lines(
+			data.get("shared_files", [])
+		)
+		return render(command, record) + "".join(
+			f"{warning}\n" for warning in warning_lines
+		)
 	if command not in _MULTI_ID_WRITE_COMMANDS:
 		return render(command, data)
 	if isinstance(data, list):
@@ -1661,6 +1669,29 @@ def _uncommitted_changes_line(data: dict[str, object]) -> str:
 	if data["status"] == "unavailable":
 		return f"Uncommitted changes: not checked ({data['reason']})"
 	return ""
+
+
+def _shared_file_lines(shared_files: list[dict[str, object]]) -> list[str]:
+	"""Build the task start warnings for files another in-progress task also lists.
+
+	Args:
+		shared_files: The `shared_files` entries from a task start result.
+
+	Returns:
+		One line per shared path naming the other tasks, or an empty list when nothing
+		is shared.
+	"""
+	# One warning per shared path, in the order the result lists them.
+	lines = []
+
+	for shared_file in shared_files:
+		# The other tasks with overlapping paths, as "Title (ID)" for the human reader.
+		tasks = ", ".join(
+			f"{task['title']} ({task['id']})" for task in shared_file["tasks"]
+		)
+		lines.append(f"Shared file: {shared_file['path']}, also listed by {tasks}")
+
+	return lines
 
 
 def _run_complete(args: argparse.Namespace, database: Database) -> tuple[object, str]:
