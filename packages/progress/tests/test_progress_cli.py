@@ -7179,14 +7179,20 @@ def test_human_task_complete_output_is_concise(
 
 	assert output.startswith("\n")
 	assert output.endswith("\n\nNext: progress next\n")
-	assert len(plain_lines) == 7
+	assert len(plain_lines) == 9
 	assert plain_lines[1].endswith("Completed task Dependency")
 	# Inequality after stripping ANSI proves the line carried styling.
 	assert plain_lines[1] != "Completed task Dependency"
-	assert plain_lines[2] == "Worktree kept at /tmp/task-worktree: checkout is locked"
-	assert plain_lines[3] == "Finish by hand: progress worktree cleanup tsk_test"
-	assert plain_lines[4] == "Release ID: rel_parent"
-	assert plain_lines[6] == "Next: progress next"
+	assert plain_lines[2:6] == [
+		"Worktree kept:",
+		"/tmp/task-worktree",
+		"checkout is locked",
+		"Finish by hand: progress worktree cleanup tsk_test",
+	]
+	assert plain_lines[6] == "Release ID: rel_parent"
+	assert plain_lines[8] == "Next: progress next"
+	assert ("Worktree kept:", "text", "normal") in next_spans
+	assert ("/tmp/task-worktree", "muted", "normal") in next_spans
 	assert ("Release ID: rel_parent", "muted", "normal") in render_spans
 	assert ("Next: progress next", "muted", "normal") in next_spans
 	assert "Finish by hand: progress worktree cleanup tsk_test" in output
@@ -7215,34 +7221,103 @@ def test_task_complete_omits_worktree_line_when_none_was_created(
 	)
 
 
-@pytest.mark.parametrize(
-	("commits", "expected"),
-	[
-		(1, "Merged 1 commit from progress/task/tsk_test into main\n"),
-		(2, "Merged 2 commits from progress/task/tsk_test into main\n"),
-	],
-)
-def test_task_complete_prints_merged_commits_on_their_own_line(
-	commits: int, expected: str
+@pytest.mark.parametrize("commits", [1, 2])
+@pytest.mark.parametrize("command", ["task complete", "worktree cleanup"])
+@pytest.mark.parametrize("under_home", [False, True])
+def test_cleanup_output_separates_merge_and_checkout_details(
+	commits: int, command: str, under_home: bool, tmp_path: Path, monkeypatch
 ) -> None:
-	"""The completion receipt names the task branch, base, and commit count."""
+	"""Both cleanup entry points show the same labelled merge and path lines."""
+	monkeypatch.setenv("NO_COLOR", "1")
+	monkeypatch.setattr(Path, "home", lambda: tmp_path)
+	checkout = tmp_path / "task-worktree" if under_home else Path("/tmp/task-worktree")
+	checkout_label = "~/task-worktree" if under_home else "/tmp/task-worktree"
 	data = {
 		"id": "tsk_test",
 		"title": "Merged task",
 		"status": "done",
 		"worktree_cleanup": {
 			"status": "removed",
-			"path": "/tmp/task-worktree",
+			"path": str(checkout),
 			"branch": "progress/task/tsk_test",
 			"base_branch": "main",
 			"merged_commits": commits,
 		},
 	}
 
-	output = cli._render_human_output("task complete", data)
+	payload = data if command == "task complete" else data["worktree_cleanup"]
+	output = cli._render_human_output(command, payload)
 
-	assert expected in output
-	assert "Removed worktree at /tmp/task-worktree\n" in output
+	assert (
+		f"Merged {commits} {'commit' if commits == 1 else 'commits'} into main:\n"
+		f"progress/task/tsk_test\nRemoved worktree:\n{checkout_label}\n"
+	) in output
+
+
+def test_cleanup_output_uses_bold_accents_and_normal_text(monkeypatch) -> None:
+	"""The count and destination stand out while the branch and labels stay normal."""
+	spans: list[tuple[str, str, str | None]] = []
+	monkeypatch.setattr(
+		cli,
+		"render_span",
+		lambda value, tone="info", weight=None: (
+			spans.append((value, tone, weight)) or value
+		),
+	)
+	data = {
+		"status": "removed",
+		"path": "/tmp/task-worktree",
+		"branch": "progress/task/tsk_test",
+		"base_branch": "main",
+		"merged_commits": 2,
+	}
+
+	assert cli._render_human_output("worktree cleanup", data) == (
+		"Merged 2 commits into main:\nprogress/task/tsk_test\n"
+		"Removed worktree:\n/tmp/task-worktree\n"
+	)
+	assert spans == [
+		("/tmp/task-worktree", "muted", "normal"),
+		("Merged ", "text", "normal"),
+		("2 commits", "accent", "bold"),
+		(" into ", "text", "normal"),
+		("main", "accent", "bold"),
+		(":", "text", "normal"),
+		("progress/task/tsk_test", "text", "normal"),
+		("Removed worktree:", "text", "normal"),
+	]
+
+
+@pytest.mark.parametrize("command", ["task complete", "worktree cleanup"])
+@pytest.mark.parametrize("under_home", [False, True])
+def test_pending_cleanup_puts_the_kept_path_on_its_own_line(
+	command: str, under_home: bool, tmp_path: Path, monkeypatch
+) -> None:
+	"""Pending cleanup keeps its reason and manual command after the path."""
+	monkeypatch.setenv("NO_COLOR", "1")
+	monkeypatch.setattr(Path, "home", lambda: tmp_path)
+	checkout = tmp_path / "task-worktree" if under_home else Path("/tmp/task-worktree")
+	checkout_label = "~/task-worktree" if under_home else "/tmp/task-worktree"
+	cleanup = {
+		"status": "pending",
+		"path": str(checkout),
+		"reason": "checkout is locked",
+		"command": "progress worktree cleanup tsk_test",
+	}
+	task = {
+		"id": "tsk_test",
+		"title": "Pending task",
+		"status": "done",
+		"worktree_cleanup": cleanup,
+	}
+	payload = task if command == "task complete" else cleanup
+
+	output = cli._render_human_output(command, payload)
+
+	assert (
+		f"Worktree kept:\n{checkout_label}\ncheckout is locked\n"
+		"Finish by hand: progress worktree cleanup tsk_test\n"
+	) in output
 
 
 def test_human_chunk_complete_output_is_concise(
@@ -8137,6 +8212,7 @@ def test_worktree_cleanup_command_reports_pending_and_removed(
 	folder_missing: bool,
 ) -> None:
 	repository = committed_repository
+	monkeypatch.setenv("NO_COLOR", "1")
 	monkeypatch.chdir(repository)
 	database = Database(tmp_path / "progress.db")
 	project, _ = ProjectStore(database).init("agents", "Agent configuration")
@@ -8179,7 +8255,7 @@ def test_worktree_cleanup_command_reports_pending_and_removed(
 		== 0
 	)
 	output = capsys.readouterr().out
-	assert f"Removed worktree at {checkout}" in output
+	assert f"Removed worktree:\n{checkout}" in output
 	assert not checkout.exists()
 	with database.connection() as connection:
 		assert (
@@ -8202,6 +8278,7 @@ def test_worktree_cleanup_command_reports_pending_and_removed(
 def test_worktree_cleanup_command_explains_a_conflict_without_git_output(
 	tmp_path: Path, committed_repository: Path, monkeypatch, capsys
 ) -> None:
+	monkeypatch.setenv("NO_COLOR", "1")
 	monkeypatch.chdir(committed_repository)
 	database = Database(tmp_path / "progress.db")
 	ProjectStore(database).init("agents", "Agent configuration")
@@ -8231,7 +8308,7 @@ def test_worktree_cleanup_command_explains_a_conflict_without_git_output(
 
 	assert cli.main(["task", "complete", task["id"], *arguments]) == 0
 	output = capsys.readouterr().out
-	assert f"Worktree kept at {checkout}" in output
+	assert f"Worktree kept:\n{checkout}" in output
 	assert "tracked.txt" in output
 	assert "fix the clashes" in output
 	assert f"Finish by hand: progress worktree cleanup {task['id']}" in output
@@ -8302,6 +8379,7 @@ def test_worktree_cleanup_branch_resumes_a_paused_replay_without_a_task_record(
 def test_worktree_cleanup_branch_finishes_an_orphaned_managed_branch(
 	tmp_path: Path, committed_repository: Path, monkeypatch, capsys, folder_gone: bool
 ) -> None:
+	monkeypatch.setenv("NO_COLOR", "1")
 	monkeypatch.chdir(committed_repository)
 	database = Database(tmp_path / "progress.db")
 	ProjectStore(database).init("agents", "Agent configuration")
@@ -8732,14 +8810,14 @@ def test_summary_checkout_path_shows_home_as_tilde_and_keeps_path_without_home(
 	monkeypatch,
 ) -> None:
 	monkeypatch.setattr(Path, "home", lambda: Path("/work"))
-	assert render_module._summary_checkout_path("/work") == "~"
+	assert render_module.summary_checkout_path("/work") == "~"
 
 	def raise_missing_home() -> Path:
 		"""Fail the way Path.home() does when HOME cannot be found."""
 		raise RuntimeError("Could not determine home directory.")
 
 	monkeypatch.setattr(Path, "home", raise_missing_home)
-	assert render_module._summary_checkout_path("/work/active") == "/work/active"
+	assert render_module.summary_checkout_path("/work/active") == "/work/active"
 
 
 def test_human_summary_shows_active_ready_chunkless_and_idle_projects(

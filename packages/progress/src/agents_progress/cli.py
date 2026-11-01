@@ -23,7 +23,12 @@ from .ids import (
 )
 from .projects import ProjectStore
 from .reads import DEFAULT_LIMIT, MAX_LIMIT, ReadStore
-from .render import render, render_left_checkout, render_removed_checkout
+from .render import (
+	render,
+	render_left_checkout,
+	render_removed_checkout,
+	summary_checkout_path,
+)
 from .style import (
 	labelled_line as render_labelled_line,
 	span as render_span,
@@ -1611,18 +1616,38 @@ def _worktree_cleanup_lines(data: dict[str, object]) -> list[str]:
 	status = data["status"]
 	if status == "none":
 		return ["No managed worktree"]
+
+	# Both outcomes show the checkout path on its own line, shortened to ~ under
+	# the home folder, so a long path never shares a line with its label.
+	checkout_path = render_span(
+		summary_checkout_path(str(data["path"])), "muted", weight="normal"
+	)
 	if status == "pending":
-		lines = [f"Worktree kept at {data['path']}: {data['reason']}"]
-		lines.append(f"Finish by hand: {data['command']}")
-		return lines
+		return [
+			render_span("Worktree kept:", "text", weight="normal"),
+			checkout_path,
+			str(data["reason"]),
+			f"Finish by hand: {data['command']}",
+		]
+
 	lines = []
 	commits = data.get("merged_commits", 0)
 	if commits:
 		lines.append(
-			f"Merged {commits} {'commit' if commits == 1 else 'commits'} "
-			f"from {data['branch']} into {data['base_branch']}"
+			render_span("Merged ", "text", weight="normal")
+			+ render_span(
+				f"{commits} {'commit' if commits == 1 else 'commits'}",
+				"accent",
+				weight="bold",
+			)
+			+ render_span(" into ", "text", weight="normal")
+			+ render_span(str(data["base_branch"]), "accent", weight="bold")
+			+ render_span(":", "text", weight="normal")
 		)
-	lines.append(f"Removed worktree at {data['path']}")
+		lines.append(render_span(str(data["branch"]), "text", weight="normal"))
+	lines.extend(
+		[render_span("Removed worktree:", "text", weight="normal"), checkout_path]
+	)
 	if data.get("reason"):
 		lines.append(str(data["reason"]))
 	return lines

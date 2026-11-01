@@ -966,7 +966,7 @@ def _render_summary(data: object) -> str:
 
 			lines.append(
 				render_span(
-					_summary_checkout_path(row["path"]), "muted", weight="normal"
+					summary_checkout_path(row["path"]), "muted", weight="normal"
 				)
 			)
 
@@ -1051,7 +1051,7 @@ def _render_summary(data: object) -> str:
 	return "\n\n".join(blocks)
 
 
-def _summary_checkout_path(path: str) -> str:
+def summary_checkout_path(path: str) -> str:
 	"""Show a checkout path with `~` in place of the user's home directory.
 
 	Paths outside the home directory, or any path when the home directory
