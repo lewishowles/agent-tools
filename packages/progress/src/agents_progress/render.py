@@ -97,6 +97,7 @@ _CONCISE_WRITE_COMMANDS = {
 	"release add",
 	"release edit",
 	"release move",
+	"release remove",
 	"release rename",
 	"task add",
 	"task block",

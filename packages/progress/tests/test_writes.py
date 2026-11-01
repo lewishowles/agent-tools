@@ -4086,6 +4086,7 @@ def test_release_remove_clears_a_default_task_on_a_repaired_older_schema(
 	result = store.release_remove(release["id"], force=True)
 
 	assert result["id"] == release["id"]
+	assert result["title"] == release["title"]
 	assert result["deleted"]["tasks"] == [task["id"]]
 	with store.database.connection() as connection:
 		assert (
@@ -4358,7 +4359,10 @@ def test_remove_childless_rows_and_dependency_edges(tmp_path: Path) -> None:
 		"id": dependency["id"],
 		"title": dependency["title"],
 	}
-	assert store.release_remove(release["id"]) == {"id": release["id"]}
+	assert store.release_remove(release["id"]) == {
+		"id": release["id"],
+		"title": release["title"],
+	}
 
 	with store.database.connection() as connection:
 		for table, object_id in (

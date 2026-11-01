@@ -7634,7 +7634,10 @@ def test_json_single_record_writes_keep_the_store_envelope(
 		(
 			["release", "remove", "rel_first", "rel_second"],
 			"release_remove",
-			["ID: rel_first", "ID: rel_second"],
+			[
+				"Removed release: First (rel_first)",
+				"Removed release: Second (rel_second)",
+			],
 		),
 		(
 			["release", "complete", "rel_first", "rel_second"],
@@ -7860,9 +7863,42 @@ def test_force_remove_human_output_groups_deleted_records(
 	assert "Unblocked tasks: tsk_ready" in plain_output
 
 
-def test_force_release_remove_human_output_stays_unchanged(
+def test_release_remove_human_output_names_one_release(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
+	"""Removing one release prints its title and ID on a single line."""
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def release_remove(self, release_id, *, force):
+			assert release_id == "rel_test"
+			assert force is False
+			return {"id": release_id, "title": "Sample release"}
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(["release", "remove", "rel_test", "--database", str(tmp_path / "db")])
+		== 0
+	)
+
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert plain_output.splitlines()[1].endswith(
+		"Removed release: Sample release (rel_test)"
+	)
+	assert plain_output.splitlines()[2:] == [""]
+
+
+def test_force_release_remove_human_output_names_release_and_groups_deleted_records(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	"""A forced removal names the release, then lists what it deleted and unblocked.
+
+	The deleted chunks and tasks come first, then the tasks it unblocked.
+	"""
+
 	class _WriteStore:
 		def __init__(self, database) -> None:
 			pass
@@ -7872,6 +7908,7 @@ def test_force_release_remove_human_output_stays_unchanged(
 			assert force is True
 			return {
 				"id": release_id,
+				"title": "Sample release",
 				"deleted": {"chunks": ["chk_test"], "tasks": ["tsk_test"]},
 				"unblocked_tasks": ["tsk_ready"],
 			}
@@ -7892,10 +7929,56 @@ def test_force_release_remove_human_output_stays_unchanged(
 		== 0
 	)
 
-	assert capsys.readouterr().out == (
-		"\nID: rel_test\nChunks: chk_test\nTasks: tsk_test\n"
-		"Unblocked tasks: tsk_ready\n\n"
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert plain_output.splitlines()[1].endswith(
+		"Removed release: Sample release (rel_test)"
 	)
+	assert plain_output.splitlines()[2:] == [
+		"Chunks: chk_test",
+		"Tasks: tsk_test",
+		"Unblocked tasks: tsk_ready",
+		"",
+	]
+
+
+def test_release_remove_human_output_names_each_release(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	"""Removing several releases prints one title-and-ID line per release."""
+
+	class _WriteStore:
+		def __init__(self, database) -> None:
+			pass
+
+		def release_remove(self, release_ids, *, force):
+			assert release_ids == ["rel_first", "rel_second"]
+			assert force is False
+			return [
+				{"id": "rel_first", "title": "First release"},
+				{"id": "rel_second", "title": "Second release"},
+			]
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+
+	assert (
+		cli.main(
+			[
+				"release",
+				"remove",
+				"rel_first",
+				"rel_second",
+				"--database",
+				str(tmp_path / "db"),
+			]
+		)
+		== 0
+	)
+
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	lines = [line for line in plain_output.splitlines() if line.strip()]
+	assert len(lines) == 2
+	assert lines[0].endswith("Removed release: First release (rel_first)")
+	assert lines[1].endswith("Removed release: Second release (rel_second)")
 
 
 def test_human_task_complete_output_omits_null_release_id(

@@ -2165,9 +2165,14 @@ def _remove_release(
 
 	Without ``force`` the release must own no tasks or notes. With ``force`` every
 	task in the release is force-removed first, then release-owned notes, and the
-	result lists what was deleted by type.
+	result lists what was deleted by type. The result always includes the release
+	title so the confirmation can name it.
 	"""
 	_require_release(connection, release_id, project_id)
+	# The title is read before the delete so the confirmation can still show it.
+	title = connection.execute(
+		"SELECT title FROM releases WHERE id = ?", (release_id,)
+	).fetchone()["title"]
 
 	references = _release_references(connection, release_id)
 	task_ids = references.get("tasks", [])
@@ -2181,7 +2186,7 @@ def _remove_release(
 		)
 		connection.execute("DELETE FROM releases WHERE id = ?", (release_id,))
 
-		return {"id": release_id}
+		return {"id": release_id, "title": title}
 
 	# Collect every row deleted by the forced removal, including release notes added
 	# after the task loop.
@@ -2223,6 +2228,7 @@ def _remove_release(
 
 	return {
 		"id": release_id,
+		"title": title,
 		"deleted": deleted,
 		"unblocked_tasks": unblocked_tasks,
 	}
