@@ -162,6 +162,10 @@ def test_export_includes_finished_work_and_project_context(tmp_path: Path) -> No
 			(TASK_A, 1, "src/first.py"),
 		)
 		connection.execute(
+			"INSERT INTO task_areas (task_id, position, text) VALUES (?, ?, ?)",
+			(TASK_A, 1, "progress"),
+		)
+		connection.execute(
 			"INSERT INTO inbox_notes (id, project_id, text, created_at) VALUES (?, ?, ?, ?)",
 			(INBOX_A, PROJECT_ID, "Review later", "2026-01-01T00:00:04+00:00"),
 		)
@@ -227,6 +231,8 @@ def test_export_includes_finished_work_and_project_context(tmp_path: Path) -> No
 	assert [task["id"] for task in result["tasks"]] == [TASK_A, TASK_B]
 	assert result["tasks"][0]["done_when"] == ["first passes its check."]
 	assert result["tasks"][0]["files"] == ["src/first.py"]
+	assert result["tasks"][0]["areas"] == ["progress"]
+	assert result["tasks"][1]["areas"] == []
 	assert result["tasks"][1]["dependency_ids"] == [TASK_A]
 	assert result["chunks"][0]["status"] == "skipped"
 	assert (
@@ -1179,11 +1185,13 @@ def test_task_reads_return_done_when_files_and_split_rationale_in_order(
 		overview="Ordered task overview",
 		done_when=["First step", "Second step"],
 		files=["src/first.py", "src/second.py"],
+		areas=["progress", "CLI"],
 		split_rationale="Keep each step reviewable",
 	)
 
 	assert store.task_get(task["id"])["done_when"] == ["First step", "Second step"]
 	assert store.task_get(task["id"])["files"] == ["src/first.py", "src/second.py"]
+	assert store.task_get(task["id"])["areas"] == ["progress", "CLI"]
 	assert store.task_get(task["id"])["split_rationale"] == "Keep each step reviewable"
 	listed = next(
 		item for item in store.task_list()["items"] if item["id"] == task["id"]
@@ -1191,6 +1199,7 @@ def test_task_reads_return_done_when_files_and_split_rationale_in_order(
 
 	assert listed["done_when"] == ["First step", "Second step"]
 	assert listed["files"] == ["src/first.py", "src/second.py"]
+	assert listed["areas"] == ["progress", "CLI"]
 	assert listed["split_rationale"] == "Keep each step reviewable"
 
 

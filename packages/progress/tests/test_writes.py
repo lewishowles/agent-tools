@@ -4690,6 +4690,7 @@ def test_task_clean_deletes_done_when_and_file_rows(tmp_path: Path) -> None:
 		"Task",
 		done_when=["Task step"],
 		files=["src/task.py"],
+		areas=["progress"],
 	)
 	chunk = _add_chunk(store, task["id"], "Chunk")
 	store.task_start(task["id"])
@@ -4709,6 +4710,12 @@ def test_task_clean_deletes_done_when_and_file_rows(tmp_path: Path) -> None:
 		assert (
 			connection.execute(
 				"SELECT 1 FROM task_files WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_areas WHERE task_id = ?", (task["id"],)
 			).fetchone()
 			is None
 		)
@@ -5426,6 +5433,60 @@ def test_task_edit_clears_task_files(tmp_path: Path) -> None:
 			).fetchone()
 			is None
 		)
+
+
+def test_task_areas_round_trip_replace_and_clear(tmp_path: Path) -> None:
+	"""Store task areas in order and allow them to be replaced or cleared."""
+
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "task", "Task", areas=["progress", "CLI"])
+
+	assert task["areas"] == ["progress", "CLI"]
+	with store.database.connection() as connection:
+		assert [
+			tuple(row)
+			for row in connection.execute(
+				"SELECT position, text FROM task_areas WHERE task_id = ? ORDER BY position",
+				(task["id"],),
+			).fetchall()
+		] == [(1, "progress"), (2, "CLI")]
+
+	updated = store.task_edit(task["id"], areas=["components", "forms"])
+
+	assert updated["areas"] == ["components", "forms"]
+
+	cleared = store.task_edit(task["id"], clear_areas=True)
+
+	assert cleared["areas"] == []
+	with store.database.connection() as connection:
+		assert (
+			connection.execute(
+				"SELECT 1 FROM task_areas WHERE task_id = ?", (task["id"],)
+			).fetchone()
+			is None
+		)
+
+
+def test_task_areas_reject_empty_names_and_conflicting_edit_flags(
+	tmp_path: Path,
+) -> None:
+	"""Reject blank areas and conflicting area or file edit options."""
+
+	store = _seed_store(tmp_path)
+	task = _add_task(store, "task", "Task", areas=["progress"])
+
+	with pytest.raises(ProgressError, match="task area"):
+		store.task_add("empty", "Empty", "Overview", ["Check"], areas=[" "])
+	with pytest.raises(ProgressError, match="task area"):
+		store.task_edit(task["id"], areas=[""])
+	with pytest.raises(ProgressError, match="either --area or --clear-areas"):
+		store.task_edit(task["id"], areas=["new"], clear_areas=True)
+	with pytest.raises(ProgressError, match="either --file or --clear-files"):
+		store.task_edit(task["id"], files=["src/new.py"], clear_files=True)
+
+	assert ReadStore(store.database, _ProjectStore(store.database)).task_get(
+		task["id"]
+	)["areas"] == ["progress"]
 
 
 def test_task_edit_updates_and_clears_split_rationale(tmp_path: Path) -> None:

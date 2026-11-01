@@ -393,7 +393,7 @@ chunks, notes, and dependencies.
 Create a task:
 
 ```text
-progress task add --slug <slug> --title <title> --overview <overview> --done-when <done_when> [--done-when <done_when> ...] [--file <file> ...] [--split-rationale <split_rationale>] [--verification <verification>] [--release <release_id> | --release-id <release_id>] [--depends-on <task_id> | --dependency <task_id>] [--position <position>] [--json] [--database <path>]
+progress task add --slug <slug> --title <title> --overview <overview> --done-when <done_when> [--done-when <done_when> ...] [--file <file> ...] [--area <area> ...] [--split-rationale <split_rationale>] [--verification <verification>] [--release <release_id> | --release-id <release_id>] [--depends-on <task_id> | --dependency <task_id>] [--position <position>] [--json] [--database <path>]
 ```
 
 - `--slug <slug>`: short task name. You can reuse it after earlier tasks with that slug are done, but only one unfinished task in a project can use it. Commands given a slug select the unfinished task, or the most recently completed one if all are done. Use a task ID to select an older completed task.
@@ -401,6 +401,7 @@ progress task add --slug <slug> --title <title> --overview <overview> --done-whe
 - `--overview <overview>`: non-empty task summary
 - `--done-when <done_when>`: one non-empty check that shows the task is done; repeat for each check
 - `--file <file>`: optional file covered by the task; repeat for each file
+- `--area <area>`: optional free-form name for a tool, component or other area the task affects; repeat for each area
 - `--split-rationale <split_rationale>`: reason for splitting the task; doctor expects every task to have one
 - `--verification <verification>`: optional verification instructions
 - `--release <release_id>` or `--release-id <release_id>`: associate the task with a release
@@ -571,7 +572,7 @@ progress task rename <task_id> --title <title> [--json] [--database <path>]
 Update task planning fields:
 
 ```text
-progress task edit <task_id> [--overview <overview>] [--done-when <done_when> ...] [--file <file> ...] [--split-rationale <split_rationale>] [--verification <verification>] [--clear-files] [--clear-split-rationale] [--clear-verification] [--json] [--database <path>]
+progress task edit <task_id> [--overview <overview>] [--done-when <done_when> ...] [--file <file> ...] [--area <area> ...] [--split-rationale <split_rationale>] [--verification <verification>] [--clear-files] [--clear-areas] [--clear-split-rationale] [--clear-verification] [--json] [--database <path>]
 ```
 
 You can use `progress task update` with the same arguments.
@@ -581,6 +582,10 @@ text. `--overview` and `--done-when` are required when creating a task and
 cannot be cleared. Pass replacement values when one needs changing. Use
 `--clear-split-rationale` to remove the rationale. Doctor reports every task
 without one.
+
+Repeat `--area` to replace the task's areas in the given order. Use
+`--clear-areas` to remove them all. Area names must contain text but do not
+have to match a list of known names.
 
 ### `progress task start`
 

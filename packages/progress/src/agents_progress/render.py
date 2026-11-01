@@ -615,9 +615,13 @@ def _render_task(task: dict[str, object]) -> str:
 
 
 def _render_task_details(task: dict[str, object]) -> list[str]:
-	"""Render the task's done-when checks, files and verification blocks."""
+	"""Render the task's done-when checks, files, areas and verification."""
 	blocks = []
-	for label, key in (("Done when", "done_when"), ("Files", "files")):
+	for label, key in (
+		("Done when", "done_when"),
+		("Files", "files"),
+		("Areas", "areas"),
+	):
 		values = task.get(key)
 		if not isinstance(values, list) or not values:
 			continue

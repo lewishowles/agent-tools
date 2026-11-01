@@ -350,6 +350,7 @@ def test_remove_project_refuses_records_and_force_deletes_all_owned_rows(
 		"A task",
 		done_when=["Done"],
 		files=["src/app.py"],
+		areas=["progress"],
 		release_id=release["id"],
 		path=repository,
 	)
@@ -413,6 +414,7 @@ def test_remove_project_refuses_records_and_force_deletes_all_owned_rows(
 		"dependencies",
 		"contract_steps",
 		"task_files",
+		"task_areas",
 		"task_context",
 	}
 	assert set(result["deleted"]["tasks"]) == {task["id"], other_task["id"]}
@@ -434,6 +436,7 @@ def test_remove_project_refuses_records_and_force_deletes_all_owned_rows(
 			"checkouts",
 			"task_contract_steps",
 			"task_files",
+			"task_areas",
 		):
 			assert (
 				connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0

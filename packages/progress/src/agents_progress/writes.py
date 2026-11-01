@@ -48,6 +48,16 @@ if TYPE_CHECKING:
 _RELEASE_STATUSES = frozenset({"planned", "active", "done"})
 # Release columns returned by release write queries.
 _RELEASE_COLUMNS = "id, project_id, slug, title, overview, status, position"
+
+# The command-line options that set and clear each task field that task edit can
+# clear, used to name both options when a command passes them together.
+_TASK_EDIT_OPTION_FLAGS = {
+	"files": ("--file", "--clear-files"),
+	"areas": ("--area", "--clear-areas"),
+	"split_rationale": ("--split-rationale", "--clear-split-rationale"),
+	"verification": ("--verification", "--clear-verification"),
+}
+
 # Qualified chunk columns used by chunk write queries scoped to a task.
 _QUALIFIED_CHUNK_COLUMNS = (
 	"chunks.id, chunks.task_id, chunks.position, chunks.title, chunks.description, "
@@ -387,6 +397,7 @@ class WriteStore(_StoreBase):
 		overview: str,
 		done_when: Sequence[str] = (),
 		files: Sequence[str] | None = None,
+		areas: Sequence[str] | None = None,
 		split_rationale: str | None = None,
 		verification: str = "",
 		release_id: str | None = None,
@@ -411,6 +422,7 @@ class WriteStore(_StoreBase):
 			done_when, "done-when check", required=True
 		)
 		file_paths = _normalise_ordered_values(files, "task file")
+		area_names = _normalise_ordered_values(areas, "task area")
 		if split_rationale is not None:
 			_require_text(split_rationale, "task split rationale")
 		dependency_ids = _normalise_dependencies(depends_on)
@@ -555,6 +567,7 @@ class WriteStore(_StoreBase):
 
 			_write_task_values(connection, "done_when", task_id, done_when_checks)
 			_write_task_values(connection, "files", task_id, file_paths)
+			_write_task_values(connection, "areas", task_id, area_names)
 			for index, ordered_id in enumerate(ordered_ids, start=1):
 				if positions[ordered_id] == index:
 					continue
@@ -839,9 +852,11 @@ class WriteStore(_StoreBase):
 		overview: str | None = None,
 		done_when: Sequence[str] | None = None,
 		files: Sequence[str] | None = None,
+		areas: Sequence[str] | None = None,
 		split_rationale: str | None = None,
 		verification: str | None = None,
 		clear_files: bool = False,
+		clear_areas: bool = False,
 		clear_split_rationale: bool = False,
 		clear_verification: bool = False,
 		path: str | Path | None = None,
@@ -856,16 +871,20 @@ class WriteStore(_StoreBase):
 			)
 		if files is not None:
 			list_values["files"] = _normalise_ordered_values(files, "task file")
+		if areas is not None:
+			list_values["areas"] = _normalise_ordered_values(areas, "task area")
 
 		values = {
 			"overview": overview,
 			"done_when": done_when,
 			"files": files,
+			"areas": areas,
 			"split_rationale": split_rationale,
 			"verification": verification,
 		}
 		clear_fields = {
 			"files": clear_files,
+			"areas": clear_areas,
 			"split_rationale": clear_split_rationale,
 			"verification": clear_verification,
 		}
@@ -888,14 +907,14 @@ class WriteStore(_StoreBase):
 		}
 		for field, value in values.items():
 			if clear_fields.get(field, False) and value is not None:
+				option, clear_option = _TASK_EDIT_OPTION_FLAGS[field]
 				raise ProgressError(
-					f"task edit accepts either --{field.replace('_', '-')} or "
-					f"--clear-{field.replace('_', '-')}, not both",
+					f"task edit accepts either {option} or {clear_option}, not both",
 					{"id": task_id, "field": field},
 				)
 
-			# _normalise_ordered_values has already checked the done-when and file values. They are
-			# lists rather than text, so the text checks below would reject them.
+			# _normalise_ordered_values has already checked the done-when, file and area values.
+			# They are lists rather than text, so the text checks below would reject them.
 			if field in list_values:
 				continue
 
@@ -908,12 +927,14 @@ class WriteStore(_StoreBase):
 				_require_text(value, required_text_labels[field])
 		if clear_files:
 			list_values["files"] = ()
+		if clear_areas:
+			list_values["areas"] = ()
 
 		project = self.current_project(path)
 		updates = []
 		parameters: list[object] = []
 		for field, value in values.items():
-			# Done-when checks and files live in their own tables, so they never join a tasks UPDATE.
+			# Task list fields live in their own tables, so they never join a tasks UPDATE.
 			if field in list_values:
 				continue
 
@@ -2086,6 +2107,12 @@ def _remove_project(
 				WHERE tasks.project_id = ?
 				ORDER BY task_files.task_id, task_files.position
 			""",
+			"task_areas": """
+				SELECT task_areas.task_id || ':' || task_areas.position
+				FROM task_areas JOIN tasks ON tasks.id = task_areas.task_id
+				WHERE tasks.project_id = ?
+				ORDER BY task_areas.task_id, task_areas.position
+			""",
 			"task_context": """
 				SELECT task_context.task_id
 				FROM task_context JOIN tasks ON tasks.id = task_context.task_id
@@ -2774,7 +2801,7 @@ def _write_task_values(
 	task_id: str,
 	values: Sequence[str],
 ) -> None:
-	"""Replace one task's stored done-when checks or files."""
+	"""Replace one task's stored ordered list field."""
 	_write_ordered_values(
 		connection, _TASK_LIST_TABLES[field], "task_id", task_id, values
 	)
@@ -2801,7 +2828,7 @@ def _write_ordered_values(
 
 
 def _delete_task_values(connection: sqlite3.Connection, task_id: str) -> None:
-	"""Remove one task's done-when checks and files before the task row itself is deleted."""
+	"""Remove one task's ordered list fields before the task row itself is deleted."""
 	for table in _TASK_LIST_TABLES.values():
 		connection.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
 

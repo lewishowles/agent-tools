@@ -38,6 +38,7 @@ class Task:
 	overview: str
 	done_when: list[str]
 	files: list[str]
+	areas: list[str]
 	split_rationale: str | None
 	verification: str
 	status: str

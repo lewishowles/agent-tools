@@ -195,6 +195,7 @@ def test_first_connection_creates_the_schema_and_sqlite_safety_settings(
 			"task_dependencies",
 			"task_contract_steps",
 			"task_files",
+			"task_areas",
 			"chunks",
 			"notes",
 			"inbox_notes",
@@ -838,6 +839,39 @@ def test_version_sixteen_migration_leaves_old_worktree_bases_unknown(tmp_path) -
 		)
 
 
+def test_version_eighteen_migration_leaves_existing_tasks_without_areas(
+	tmp_path,
+) -> None:
+	"""Leave existing tasks without areas when migrating to version eighteen."""
+
+	database_path = tmp_path / "progress.db"
+	project_id = generate_object_id(PROJECT_PREFIX)
+	task_id = generate_object_id(TASK_PREFIX)
+	with sqlite3.connect(database_path) as connection:
+		for version in range(1, 18):
+			schema.MIGRATIONS[version](connection)
+
+		connection.execute(
+			"CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+		)
+		connection.execute(
+			"INSERT INTO schema_migrations VALUES (17, '2026-01-01T00:00:00+00:00')"
+		)
+		_insert_project(connection, project_id)
+		_insert_current_task(connection, project_id, task_id, "existing")
+
+	with Database(database_path).connection() as connection:
+		assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+		assert connection.execute("SELECT id FROM tasks").fetchone()[0] == task_id
+		assert connection.execute("SELECT 1 FROM task_areas").fetchone() is None
+		assert (
+			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
+				0
+			]
+			== 18
+		)
+
+
 def test_version_seventeen_migration_keeps_tasks_and_every_task_link(tmp_path) -> None:
 	database_path = tmp_path / "progress.db"
 	project_id = generate_object_id(PROJECT_PREFIX)
@@ -923,7 +957,7 @@ def test_version_seventeen_migration_keeps_tasks_and_every_task_link(tmp_path) -
 			connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[
 				0
 			]
-			== 17
+			== 18
 		)
 
 		_insert_current_task(

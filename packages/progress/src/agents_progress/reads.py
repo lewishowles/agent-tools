@@ -55,6 +55,7 @@ _TASK_COLUMNS_QUALIFIED = ", ".join(
 _TASK_LIST_TABLES = {
 	"done_when": "task_contract_steps",
 	"files": "task_files",
+	"areas": "task_areas",
 }
 
 # Queue order used by `next`. Unassigned tasks land in the final priority bucket,

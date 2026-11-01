@@ -789,7 +789,11 @@ def test_commands_json_lists_the_registry_with_required_flags(
 		"names": ["--done-when"],
 		"required": True,
 	}
-	assert commands["task add"]["flags"][7] == {
+	assert commands["task add"]["flags"][5] == {
+		"names": ["--area"],
+		"required": False,
+	}
+	assert commands["task add"]["flags"][8] == {
 		"names": ["--release", "--release-id"],
 		"required": False,
 	}
@@ -2253,6 +2257,7 @@ def test_task_add_prompts_for_required_and_selected_optional_arguments(
 		"overview": "Task overview",
 		"done_when": ["Task check"],
 		"files": ["src/app.py"],
+		"areas": None,
 		"split_rationale": None,
 		"verification": "Run the progress tests",
 		"release_id": None,
@@ -5683,6 +5688,7 @@ def test_task_get_uses_one_readable_task_view() -> None:
 		"split_rationale": "Keep the two chunks independently reviewable.",
 		"done_when": ["First check.", "Second check."],
 		"files": ["src/task.py", "tests/test_task.py"],
+		"areas": ["progress", "CLI"],
 		"verification": "Run the task tests.",
 		"project": {"id": "prj_task_view", "name": "Task project"},
 		"release": {"id": "rel_task_view", "title": "Task release"},
@@ -5742,7 +5748,10 @@ def test_task_get_uses_one_readable_task_view() -> None:
 	assert plain_output.index("Chunks") < plain_output.index("Split rationale")
 	assert plain_output.index("Split rationale") < plain_output.index("Done when")
 	assert plain_output.index("Done when") < plain_output.index("Files")
-	assert plain_output.index("Files") < plain_output.index("Verification")
+	assert plain_output.index("Files") < plain_output.index("Areas")
+	assert plain_output.index("Areas") < plain_output.index("Verification")
+	assert "- progress" in plain_output
+	assert "- CLI" in plain_output
 	assert plain_output.index("Verification") < plain_output.index("Project ID")
 	assert plain_output.index("Task release") < plain_output.index("Notes")
 	assert plain_output.index("Notes") < plain_output.index("Handoff")
@@ -7089,9 +7098,11 @@ def test_task_edit_dispatches_values_and_optional_clear_flags(
 		"overview": "Updated",
 		"done_when": None,
 		"files": None,
+		"areas": None,
 		"split_rationale": None,
 		"verification": None,
 		"clear_files": False,
+		"clear_areas": False,
 		"clear_split_rationale": False,
 		"clear_verification": False,
 	}
@@ -7133,6 +7144,10 @@ def test_task_add_dispatches_repeatable_done_when_checks_and_files(
 				"src/first.py",
 				"--file",
 				"src/second.py",
+				"--area",
+				"progress",
+				"--area",
+				"CLI",
 				"--split-rationale",
 				"Keep each behaviour slice reviewable",
 				"--database",
@@ -7145,6 +7160,7 @@ def test_task_add_dispatches_repeatable_done_when_checks_and_files(
 
 	assert arguments_seen["done_when"] == ["First step", "Second step"]
 	assert arguments_seen["files"] == ["src/first.py", "src/second.py"]
+	assert arguments_seen["areas"] == ["progress", "CLI"]
 	assert arguments_seen["split_rationale"] == "Keep each behaviour slice reviewable"
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
@@ -7178,6 +7194,10 @@ def test_task_edit_dispatches_repeatable_done_when_checks_and_files(
 				"Updated second",
 				"--file",
 				"src/updated.py",
+				"--area",
+				"components",
+				"--area",
+				"forms",
 				"--split-rationale",
 				"The chunks have separate review questions",
 				"--database",
@@ -7193,9 +7213,11 @@ def test_task_edit_dispatches_repeatable_done_when_checks_and_files(
 		"overview": None,
 		"done_when": ["Updated first", "Updated second"],
 		"files": ["src/updated.py"],
+		"areas": ["components", "forms"],
 		"split_rationale": "The chunks have separate review questions",
 		"verification": None,
 		"clear_files": False,
+		"clear_areas": False,
 		"clear_split_rationale": False,
 		"clear_verification": False,
 	}
@@ -7226,6 +7248,7 @@ def test_task_edit_dispatches_split_rationale_clear_flags(
 				"edit",
 				"tsk_test",
 				"--clear-files",
+				"--clear-areas",
 				"--clear-split-rationale",
 				"--database",
 				str(tmp_path / "db"),
@@ -7236,10 +7259,39 @@ def test_task_edit_dispatches_split_rationale_clear_flags(
 	)
 
 	assert arguments_seen["files"] is None
+	assert arguments_seen["areas"] is None
 	assert arguments_seen["split_rationale"] is None
 	assert arguments_seen["clear_files"] is True
+	assert arguments_seen["clear_areas"] is True
 	assert arguments_seen["clear_split_rationale"] is True
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+@pytest.mark.parametrize("action", ["add", "edit"])
+def test_task_area_rejects_an_empty_name(capsys, action: str) -> None:
+	"""Reject blank area names when adding or editing a task."""
+
+	arguments = ["task", action]
+	if action == "add":
+		arguments.extend(
+			[
+				"--slug",
+				"task",
+				"--title",
+				"Task",
+				"--overview",
+				"Overview",
+				"--done-when",
+				"Check",
+			]
+		)
+	else:
+		arguments.append("tsk_test")
+
+	assert cli.main([*arguments, "--area", " ", "--json"]) == 2
+	response = json.loads(capsys.readouterr().out)
+	assert response["ok"] is False
+	assert "--area" in response["error"]["message"]
 
 
 def test_removed_task_contract_and_files_flags_are_rejected(capsys) -> None:
