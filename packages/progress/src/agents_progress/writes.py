@@ -2322,7 +2322,7 @@ def _remove_task(
 	note_ids = references.get("notes", [])
 
 	# Every link to or from the task, including finished ones that do not block.
-	dependency_edges = _task_dependency_edges(connection, task_id)
+	dependency_edges = _task_dependency_links(connection, task_id)
 
 	if not force:
 		_raise_if_referenced(
@@ -2409,7 +2409,7 @@ def _task_references(
 	if chunk_ids:
 		references["chunks"] = chunk_ids
 
-	dependency_edges = _task_dependency_edges(
+	dependency_edges = _task_dependency_links(
 		connection, task_id, unfinished_prerequisites_only=True
 	)
 
@@ -2428,7 +2428,7 @@ def _task_references(
 	return references
 
 
-def _task_dependency_edges(
+def _task_dependency_links(
 	connection: sqlite3.Connection,
 	task_id: str,
 	*,
@@ -2445,7 +2445,9 @@ def _task_dependency_edges(
 		The links in task, then prerequisite, ID order.
 	"""
 	# Matches every link when unset, and only links still waiting on work when set.
-	status_filter = "AND prerequisite.status != 'done'" if unfinished_prerequisites_only else ""
+	status_filter = (
+		"AND prerequisite.status != 'done'" if unfinished_prerequisites_only else ""
+	)
 	rows = connection.execute(
 		f"""
 		SELECT dependency.task_id, dependency.depends_on_task_id
