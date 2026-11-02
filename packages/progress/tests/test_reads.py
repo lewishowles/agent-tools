@@ -232,6 +232,7 @@ def test_export_includes_finished_work_and_project_context(tmp_path: Path) -> No
 	assert result["tasks"][0]["done_when"] == ["first passes its check."]
 	assert result["tasks"][0]["files"] == ["src/first.py"]
 	assert result["tasks"][0]["areas"] == ["progress"]
+	assert "suggested_areas" not in result["tasks"][0]
 	assert result["tasks"][1]["areas"] == []
 	assert result["tasks"][1]["dependency_ids"] == [TASK_A]
 	assert result["chunks"][0]["status"] == "skipped"
@@ -293,6 +294,66 @@ def test_next_returns_the_task_chunk_and_next_command(tmp_path: Path) -> None:
 	assert [chunk["id"] for chunk in result["task"]["chunks"]] == [CHUNK_A]
 	assert result["chunk"]["id"] == CHUNK_A
 	assert result["hint_command"] == f"progress chunk complete {CHUNK_A}"
+
+
+def test_task_reads_suggest_areas_from_package_and_app_files(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	files = [
+		"README.md",
+		"packages/progress/src/reads.py",
+		"apps/admin/src/main.py",
+		"packages/progress/tests/test_reads.py",
+		"packages/agent-run/src/main.py",
+		"apps/portal/",
+		"./packages/ignored/src/main.py",
+		"packages/",
+		"apps//src/main.py",
+	]
+	with store.database.transaction() as connection:
+		connection.executemany(
+			"INSERT INTO task_files (task_id, position, text) VALUES (?, ?, ?)",
+			[
+				(TASK_A, position, file_path)
+				for position, file_path in enumerate(files, 1)
+			],
+		)
+
+	expected = ["progress", "admin", "agent-run", "portal"]
+	task = store.task_get(TASK_A)
+	listed = next(item for item in store.task_list()["items"] if item["id"] == TASK_A)
+	# The older `current` command shows this same result.
+	next_task = store.next()["task"]
+	chunk_task = store.chunk_get(CHUNK_A)["task"]
+
+	assert task["files"] == files
+	assert task["suggested_areas"] == expected
+	assert listed["suggested_areas"] == expected
+	assert next_task["suggested_areas"] == expected
+	assert chunk_task["suggested_areas"] == expected
+
+
+def test_task_reads_leave_suggestions_empty_with_areas_or_no_matching_files(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO task_files (task_id, position, text) VALUES (?, ?, ?)",
+			(TASK_A, 1, "packages/progress/src/reads.py"),
+		)
+		connection.execute(
+			"INSERT INTO task_areas (task_id, position, text) VALUES (?, ?, ?)",
+			(TASK_A, 1, "chosen"),
+		)
+		connection.execute(
+			"INSERT INTO task_files (task_id, position, text) VALUES (?, ?, ?)",
+			(TASK_B, 1, "src/main.py"),
+		)
+
+	assert store.task_get(TASK_A)["suggested_areas"] == []
+	assert store.next()["task"]["suggested_areas"] == []
+	assert store.task_get(TASK_B)["suggested_areas"] == []
+	assert all(item["suggested_areas"] == [] for item in store.task_list()["items"])
 
 
 def test_next_area_filter_keeps_the_matching_default_then_uses_the_queue(

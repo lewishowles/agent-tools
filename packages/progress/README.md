@@ -678,6 +678,14 @@ progress task get [<task_id>] [--json] [--database <path>]
 ```
 
 If no task is selected, the command returns an error with a recovery hint.
+
+In JSON output, task objects from `task get`, `next`, `task list`, `chunk get`
+and the older `current` command include `suggested_areas`. For a task without
+areas, it lists the folder names from file paths under `packages/<name>/` or
+`apps/<name>/`, in file order without repeats. Other paths suggest nothing, and
+the list is empty when the task already has areas. Suggestions are worked out
+each time the task is read, and are never stored or exported.
+
 With `--json`, the result adds `project` for the current project, `release` for
 the task's release with its notes (or `null` when there is no release), `notes`
 for all task discoveries and decisions in oldest-first order, and `handoff`

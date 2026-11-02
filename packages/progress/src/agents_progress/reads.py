@@ -631,6 +631,56 @@ def _task_public_row(
 	return data
 
 
+def _task_public_data(task: Task) -> dict[str, object]:
+	"""Return a task as shown to users, with suggested areas when it has none.
+
+	The suggestions are worked out on each read and never stored. Task export
+	does not use this shape, so exported tasks have no `suggested_areas`.
+
+	Args:
+		task: The task to show.
+
+	Returns:
+		The task's fields plus `suggested_areas`, which is empty when the task
+		already has areas.
+	"""
+	# The task's stored fields, before the suggestions are added.
+	data = task.to_dict()
+	data["suggested_areas"] = _suggested_areas(task.files) if not task.areas else []
+
+	return data
+
+
+def _suggested_areas(files: list[str]) -> list[str]:
+	"""Return the package and app folders that the task's files sit inside.
+
+	A file such as `packages/progress/README.md` suggests `progress`. Names
+	keep the order of the files and appear once. Files outside a top-level
+	`packages/` or `apps/` folder suggest nothing.
+
+	Args:
+		files: The task's file paths, relative to the repository root.
+
+	Returns:
+		The folder names, in the order their first file appears.
+	"""
+	# The folder names found so far, without repeats.
+	suggestions = []
+
+	for file_path in files:
+		# The top-level folder, the folder inside it, and the rest of the path.
+		parts = file_path.split("/", 2)
+		if len(parts) != 3 or parts[0] not in {"packages", "apps"} or not parts[1]:
+			continue
+
+		if parts[1] in suggestions:
+			continue
+
+		suggestions.append(parts[1])
+
+	return suggestions
+
+
 def _release_public_data(
 	connection: sqlite3.Connection, release_row: object
 ) -> dict[str, object]:
@@ -730,7 +780,7 @@ def _task_plain_data(
 	if task_row is None:
 		raise NotFoundError(f"task {task_id} was not found", {"id": task_id})
 
-	task = Task.from_row(_task_public_row(connection, task_row)).to_dict()
+	task = _task_public_data(Task.from_row(_task_public_row(connection, task_row)))
 	task["chunks"] = _task_chunks(connection, task_id)
 
 	return task
@@ -765,7 +815,7 @@ def _task_response(
 		else None
 	)
 	chunk = Chunk.from_row(chunk_row) if chunk_row is not None else None
-	task_data = task.to_dict() if task is not None else None
+	task_data = _task_public_data(task) if task is not None else None
 	if task_data is not None:
 		task_data["chunks"] = _task_chunks(connection, task.id)
 	release_data = (
@@ -1597,9 +1647,9 @@ class ReadStore(_StoreBase):
 			)
 			response = page_response(
 				[
-					Task.from_row(
-						_task_public_row(connection, row, task_values)
-					).to_dict()
+					_task_public_data(
+						Task.from_row(_task_public_row(connection, row, task_values))
+					)
 					for row in rows
 				],
 				None if show_all else limit,
