@@ -320,7 +320,16 @@ _COMMAND_SPECS = (
 	_CommandSpec(
 		"next",
 		"show the default or a named task and its active chunk",
-		arguments=(_argument("--task", dest="task_id"),),
+		arguments=(
+			_argument("--task", dest="task_id"),
+			_argument(
+				"--area",
+				dest="areas",
+				action="append",
+				default=None,
+				type=_non_empty_text_argument("--area"),
+			),
+		),
 	),
 	_CommandSpec("summary", "show current work across every stored project"),
 	_CommandSpec("export", "print every record for the current project as JSON"),
@@ -397,6 +406,7 @@ _COMMAND_SPECS = (
 					"verification",
 					"done_when",
 					"files",
+					"areas",
 					"description",
 				),
 			),
@@ -733,7 +743,16 @@ _COMMAND_SPECS = (
 			_CommandSpec(
 				"list",
 				"list tasks",
-				arguments=(_argument("--status"),),
+				arguments=(
+					_argument("--status"),
+					_argument(
+						"--area",
+						dest="areas",
+						action="append",
+						default=None,
+						type=_non_empty_text_argument("--area"),
+					),
+				),
 				page_options=True,
 				all_option=True,
 			),
@@ -1415,6 +1434,8 @@ def main(argv: list[str] | None = None) -> int:
 		)
 		if unrecognised:
 			raise CliUsageError(f"unrecognized arguments: {' '.join(unrecognised)}")
+		if args.command == "next" and args.task_id and args.areas:
+			raise CliUsageError("--task and --area cannot be used together")
 		if (
 			getattr(args, "_all_unpaged", False)
 			and args.all
@@ -1784,7 +1805,9 @@ def _run_command(
 		("show", None): lambda: _run_show(args, database),
 		("next", None): lambda: (
 			ReadStore(database).next(
-				task_id=args.task_id, include_position_totals=include_release_titles
+				task_id=args.task_id,
+				areas=args.areas,
+				include_position_totals=include_release_titles,
 			),
 			"next",
 		),
@@ -1922,6 +1945,7 @@ def _run_command(
 				args.status,
 				args.limit,
 				args.offset,
+				areas=args.areas,
 				include_release_titles=include_release_titles,
 				include_queue_numbers=human_output,
 				collapse_done_tasks=human_output,

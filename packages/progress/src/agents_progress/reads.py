@@ -799,20 +799,48 @@ def _task_response(
 	}
 
 
+def _area_match_clause(areas: Sequence[str]) -> tuple[str, tuple[str, ...]]:
+	"""Build the SQL condition for a task in any named area, ignoring case.
+
+	Args:
+		areas: The names to match against a task's stored areas.
+
+	Returns:
+		The " AND ..." clause and its parameters, both empty when no areas are named.
+	"""
+	if not areas:
+		return "", ()
+
+	# One placeholder per name keeps the area values out of the SQL text.
+	placeholders = ", ".join("?" for _ in areas)
+	return (
+		(
+			" AND EXISTS (SELECT 1 FROM task_areas WHERE task_id = tasks.id "
+			f"AND LOWER(text) IN ({placeholders}))"
+		),
+		tuple(area.lower() for area in areas),
+	)
+
+
 def _default_task_and_chunk(
-	connection: sqlite3.Connection, project_id: str
+	connection: sqlite3.Connection,
+	project_id: str,
+	areas: Sequence[str] | None = None,
 ) -> tuple[sqlite3.Row | None, sqlite3.Row | None]:
 	"""Fetch the project's default task and its active chunk.
 
 	Both are None when no default is stored or the default task is no longer
 	in progress, so a finished or blocked default frees the slot.
+	When areas are given, the default must belong to one of them.
 	"""
+	# The default must be in the named areas; empty when none are named.
+	area_clause, area_parameters = _area_match_clause(areas or ())
 	task_row = connection.execute(
 		f"SELECT {_TASK_COLUMNS_QUALIFIED} FROM projects "
 		"JOIN tasks ON tasks.id = projects.default_task_id "
 		"AND tasks.project_id = projects.id "
-		"WHERE projects.id = ? AND tasks.status = 'in-progress'",
-		(project_id,),
+		f"WHERE projects.id = ? AND tasks.status = 'in-progress'{area_clause}",
+		(project_id, *area_parameters),
 	).fetchone()
 	chunk_row = (
 		_active_chunk(connection, task_row["id"]) if task_row is not None else None
@@ -822,26 +850,32 @@ def _default_task_and_chunk(
 
 
 def _selected_task_response(
-	connection: sqlite3.Connection, project: Project
+	connection: sqlite3.Connection,
+	project: Project,
+	areas: Sequence[str] | None = None,
 ) -> tuple[dict[str, object], sqlite3.Row | None, sqlite3.Row | None]:
 	"""Choose the task and chunk that `progress next` shows for a project.
 
 	Returns the `progress next` response along with the chosen task and chunk rows,
 	which are None when the project has nothing in progress or queued. Both
-	`progress next` and `progress summary` use this so they always agree.
+	`progress next` and `progress summary` use this so they always agree. Pass
+	areas to choose only from tasks in those areas; the response then lists them
+	under area_filter.
 	"""
-	task_row, chunk_row = _default_task_and_chunk(connection, project.id)
+	task_row, chunk_row = _default_task_and_chunk(connection, project.id, areas)
 	if task_row is None:
 		# An active release's tasks outrank a planned release's, and
 		# release position breaks ties before falling back to task order.
+		# Only queued tasks in the named areas qualify; empty when none are named.
+		area_clause, area_parameters = _area_match_clause(areas or ())
 		task_row = connection.execute(
 			f"SELECT {_TASK_COLUMNS_QUALIFIED} FROM tasks "
 			"LEFT JOIN releases ON releases.id = tasks.release_id "
 			"AND releases.project_id = tasks.project_id "
 			"WHERE tasks.project_id = ? "
-			"AND tasks.status IN ('ready', 'waiting', 'blocked', 'needs-decision') "
-			f"ORDER BY {_TASK_QUEUE_ORDER} LIMIT 1",
-			(project.id,),
+			"AND tasks.status IN ('ready', 'waiting', 'blocked', 'needs-decision')"
+			f"{area_clause} ORDER BY {_TASK_QUEUE_ORDER} LIMIT 1",
+			(project.id, *area_parameters),
 		).fetchone()
 		if task_row is not None:
 			chunk_row = _active_chunk(connection, task_row["id"])
@@ -852,6 +886,8 @@ def _selected_task_response(
 	response = _task_response(
 		connection, project, task_row, chunk_row, "progress task list", dependency_ids
 	)
+	if areas:
+		response["area_filter"] = list(areas)
 	return response, task_row, chunk_row
 
 
@@ -1089,6 +1125,7 @@ class ReadStore(_StoreBase):
 		path: str | Path | None = None,
 		*,
 		task_id: str | None = None,
+		areas: Sequence[str] | None = None,
 		include_position_totals: bool = False,
 	) -> dict[str, object]:
 		"""Return the default or next queued task, its active chunk, and a next-command hint.
@@ -1098,13 +1135,23 @@ class ReadStore(_StoreBase):
 		Set include_position_totals for human display: the response then
 		also carries task_rank and task_total and, when a chunk is active,
 		chunk_rank and chunk_total.
+
+		Args:
+			path: Checkout used to find the current project.
+			task_id: A named ready or in-progress task to read.
+			areas: Choose only from tasks in any of these areas, ignoring case:
+				the default task if it is in one, otherwise the first queued task.
+			include_position_totals: Include ranks and counts for human output.
+
+		Returns:
+			The selected task, its active chunk and a next-command hint.
 		"""
 		project = self.current_project(path)
 
 		with self.database.connection() as connection:
 			if task_id is None:
 				response, task_row, chunk_row = _selected_task_response(
-					connection, project
+					connection, project, areas
 				)
 			else:
 				task_id = resolve_identifier(
@@ -1483,6 +1530,7 @@ class ReadStore(_StoreBase):
 		offset: int = 0,
 		path: str | Path | None = None,
 		*,
+		areas: Sequence[str] | None = None,
 		include_release_titles: bool = False,
 		include_queue_numbers: bool = False,
 		collapse_done_tasks: bool = False,
@@ -1494,6 +1542,20 @@ class ReadStore(_StoreBase):
 		done tasks out of the page, so the page limit counts unfinished tasks, and it
 		adds the counts the list summary needs. show_all keeps done tasks and returns
 		every matching task without a page limit.
+
+		Args:
+			status: Keep only tasks with this status.
+			limit: Maximum tasks on one page.
+			offset: Tasks to skip before the page.
+			path: Checkout used to find the current project.
+			areas: Keep tasks in any named area, ignoring case.
+			include_release_titles: Add release names for human output.
+			include_queue_numbers: Show positions in the full project queue.
+			collapse_done_tasks: Count done tasks instead of listing them.
+			show_all: Include done tasks and return every match.
+
+		Returns:
+			A page of matching tasks and any requested human display details.
 		"""
 		if not show_all:
 			limit, offset = validate_page(limit, offset)
@@ -1511,6 +1573,11 @@ class ReadStore(_StoreBase):
 			parameters += (status,)
 		elif collapse_done_tasks and not show_all:
 			where += " AND tasks.status != 'done'"
+
+		# Keep only tasks in the named areas; empty when none are named.
+		area_clause, area_parameters = _area_match_clause(areas or ())
+		where += area_clause
+		parameters += area_parameters
 
 		with self.database.connection() as connection:
 			page_clause = "" if show_all else " LIMIT ? OFFSET ?"
@@ -1544,6 +1611,7 @@ class ReadStore(_StoreBase):
 					connection,
 					project.id,
 					collapse_done=status is None and not show_all,
+					areas=areas,
 				)
 			if collapse_done_tasks:
 				response.update(summary)
@@ -1580,6 +1648,7 @@ class ReadStore(_StoreBase):
 		project_id: str,
 		*,
 		collapse_done: bool,
+		areas: Sequence[str] | None = None,
 	) -> tuple[dict[str, object], dict[str, int]]:
 		"""Count the project's tasks for the human list and number its queue.
 
@@ -1587,16 +1656,32 @@ class ReadStore(_StoreBase):
 		done counts per release (empty unless collapse_done is set), every release
 		that has tasks in queue order, the releases that still have unfinished tasks,
 		and the title of the first unfinished task. The second item maps each
-		unfinished task's ID to its queue number, with 1 as the next task.
+		unfinished task's ID to its project-wide queue number, with 1 as the next
+		task. When areas are given, the counts and releases cover those areas.
+
+		Args:
+			connection: The open database connection.
+			project_id: The project whose tasks are counted.
+			collapse_done: Include done counts by release.
+			areas: Limit the summary to tasks in any named area, ignoring case.
+
+		Returns:
+			The summary and each unfinished task's place in the full queue.
 		"""
+		# The condition the task list query filters by, reused for the summary.
+		area_clause, area_parameters = _area_match_clause(areas or ())
+		# True for tasks the summary counts: every task when no areas are named.
+		area_expression = area_clause.removeprefix(" AND ") or "1"
+		# Read every task so queue numbers stay project-wide. The area parameters
+		# come first because the area test sits in the SELECT list, before WHERE.
 		all_rows = connection.execute(
 			"SELECT tasks.id, tasks.title, tasks.status, tasks.release_id, "
-			"releases.title AS release_title FROM tasks "
+			f"releases.title AS release_title, {area_expression} AS area_match FROM tasks "
 			"LEFT JOIN releases ON releases.id = tasks.release_id "
 			"AND releases.project_id = tasks.project_id "
 			"WHERE tasks.project_id = ? "
 			f"ORDER BY {_TASK_QUEUE_ORDER}",
-			(project_id,),
+			(*area_parameters, project_id),
 		).fetchall()
 		status_counts: dict[str, int] = {}
 		done_counts: dict[str | None, int] = {}
@@ -1605,8 +1690,17 @@ class ReadStore(_StoreBase):
 		releases_with_unfinished: set[str | None] = set()
 		queue_numbers: dict[str, int] = {}
 		next_task = None
+		# The queue number given to the latest unfinished task, across the project.
+		queue_position = 0
 		for row in all_rows:
 			row_status = str(row["status"])
+			# Number tasks before the area check so a filtered list keeps
+			# project-wide numbers.
+			if row_status != "done":
+				queue_position += 1
+				queue_numbers[str(row["id"])] = queue_position
+			if not row["area_match"]:
+				continue
 			status_counts[row_status] = status_counts.get(row_status, 0) + 1
 			release_id = row["release_id"]
 			if release_id not in seen_releases:
@@ -1616,7 +1710,6 @@ class ReadStore(_StoreBase):
 				done_counts[release_id] = done_counts.get(release_id, 0) + 1
 			else:
 				releases_with_unfinished.add(release_id)
-				queue_numbers[str(row["id"])] = len(queue_numbers) + 1
 				if next_task is None:
 					next_task = str(row["title"])
 
@@ -1658,6 +1751,7 @@ class ReadStore(_StoreBase):
 			"verification",
 			"done_when",
 			"files",
+			"areas",
 		)
 		all_fields = (*task_fields, "description")
 		requested_fields = set(all_fields if not fields else fields)
@@ -1679,6 +1773,8 @@ class ReadStore(_StoreBase):
 				"done_when": "EXISTS (SELECT 1 FROM task_contract_steps "
 				"WHERE task_id = tasks.id AND text LIKE ? ESCAPE '\\')",
 				"files": "EXISTS (SELECT 1 FROM task_files "
+				"WHERE task_id = tasks.id AND text LIKE ? ESCAPE '\\')",
+				"areas": "EXISTS (SELECT 1 FROM task_areas "
 				"WHERE task_id = tasks.id AND text LIKE ? ESCAPE '\\')",
 			}
 			chunk_conditions = {

@@ -832,7 +832,7 @@ def test_json_success_uses_the_stable_envelope(
 		def __init__(self, database) -> None:
 			pass
 
-		def next(self, *, task_id=None, include_position_totals=False):
+		def next(self, *, task_id=None, areas=None, include_position_totals=False):
 			return data
 
 	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
@@ -885,7 +885,7 @@ def test_next_task_flag_selects_the_named_task(
 		def __init__(self, database) -> None:
 			pass
 
-		def next(self, *, task_id: str, include_position_totals: bool):
+		def next(self, *, task_id: str, areas, include_position_totals: bool):
 			assert task_id == "named-task"
 			assert include_position_totals is False
 			return data
@@ -1214,6 +1214,27 @@ def test_task_list_treats_tidied_file_spellings_as_overlapping(
 	items = {item["id"]: item for item in ReadStore(database).task_list()["items"]}
 
 	assert items[other["id"]]["can_run_in_parallel"] is False
+
+
+def test_next_rejects_a_named_task_with_an_area_filter(tmp_path: Path, capsys) -> None:
+	result = cli.main(
+		[
+			"next",
+			"--task",
+			"named-task",
+			"--area",
+			"progress",
+			"--json",
+			"--database",
+			str(tmp_path / "db"),
+		]
+	)
+
+	assert result == 2
+	assert (
+		"--task and --area cannot be used together"
+		in json.loads(capsys.readouterr().out)["error"]["message"]
+	)
 
 
 def test_task_start_secondary_flag_reaches_the_write_store(
@@ -3734,7 +3755,7 @@ def test_human_success_renders_readable_output(
 		def __init__(self, database) -> None:
 			pass
 
-		def next(self, *, task_id=None, include_position_totals=False):
+		def next(self, *, task_id=None, areas=None, include_position_totals=False):
 			assert include_position_totals is True
 			return data
 
@@ -3906,6 +3927,7 @@ def test_human_task_list_groups_rows_and_renders_hints(
 			limit,
 			offset,
 			*,
+			areas,
 			include_release_titles,
 			include_queue_numbers,
 			collapse_done_tasks,
@@ -4164,6 +4186,115 @@ def task_list_pages(tmp_path: Path, monkeypatch) -> Path:
 	return database_path
 
 
+def test_task_list_and_next_show_and_filter_areas(
+	task_list_pages: Path, capsys
+) -> None:
+	database = Database(task_list_pages)
+	with database.transaction() as connection:
+		rows = connection.execute(
+			"SELECT id, title FROM tasks WHERE title IN (?, ?) ORDER BY title",
+			("First ready one", "Second ready"),
+		).fetchall()
+		for row in rows:
+			connection.execute(
+				"INSERT INTO task_areas (task_id, position, text) VALUES (?, ?, ?)",
+				(
+					row["id"],
+					1,
+					"Progress" if row["title"] == "First ready one" else "agent-run",
+				),
+			)
+
+	assert (
+		cli.main(
+			[
+				"task",
+				"list",
+				"--area",
+				"PROGRESS",
+				"--json",
+				"--database",
+				str(task_list_pages),
+			]
+		)
+		== 0
+	)
+	listed = json.loads(capsys.readouterr().out)["data"]["items"]
+	assert [(item["title"], item["areas"]) for item in listed] == [
+		("First ready one", ["Progress"])
+	]
+
+	assert (
+		cli.main(
+			["task", "list", "--area", "progress", "--database", str(task_list_pages)]
+		)
+		== 0
+	)
+	assert "First ready one (Progress)" in capsys.readouterr().out
+
+	assert (
+		cli.main(
+			[
+				"next",
+				"--area",
+				"AGENT-RUN",
+				"--json",
+				"--database",
+				str(task_list_pages),
+			]
+		)
+		== 0
+	)
+	selected = json.loads(capsys.readouterr().out)["data"]["task"]
+	assert selected["title"] == "Second ready"
+	assert selected["areas"] == ["agent-run"]
+
+	assert (
+		cli.main(["next", "--area", "missing", "--database", str(task_list_pages)]) == 0
+	)
+	assert "No task in progress or queued for missing." in capsys.readouterr().out
+
+
+def test_search_finds_areas_in_json_and_text(task_list_pages: Path, capsys) -> None:
+	database = Database(task_list_pages)
+	with database.transaction() as connection:
+		task_id = connection.execute(
+			"SELECT id FROM tasks WHERE title = ?", ("First ready one",)
+		).fetchone()["id"]
+		connection.execute(
+			"INSERT INTO task_areas (task_id, position, text) VALUES (?, ?, ?)",
+			(task_id, 1, "Progress"),
+		)
+
+	assert (
+		cli.main(
+			[
+				"search",
+				"PROG",
+				"--in",
+				"areas",
+				"--json",
+				"--database",
+				str(task_list_pages),
+			]
+		)
+		== 0
+	)
+	items = json.loads(capsys.readouterr().out)["data"]["items"]
+	assert items[0]["matched"] == ["areas"]
+	assert items[0]["snippets"] == {"areas": "Progress"}
+
+	assert (
+		cli.main(
+			["search", "PROG", "--in", "areas", "--database", str(task_list_pages)]
+		)
+		== 0
+	)
+	assert "areas: Progress" in render_module._ANSI_ESCAPE_PATTERN.sub(
+		"", capsys.readouterr().out
+	)
+
+
 def test_human_task_list_done_counts_follow_the_visible_page(
 	task_list_pages: Path, capsys
 ) -> None:
@@ -4261,6 +4392,7 @@ def test_json_task_list_all_removes_page_limit(
 			limit,
 			offset,
 			*,
+			areas,
 			include_release_titles,
 			include_queue_numbers,
 			collapse_done_tasks,
@@ -6008,7 +6140,7 @@ def test_human_next_renders_release_before_task(
 		def __init__(self, database) -> None:
 			pass
 
-		def next(self, *, task_id=None, include_position_totals=False):
+		def next(self, *, task_id=None, areas=None, include_position_totals=False):
 			assert include_position_totals is True
 			return data
 
@@ -6040,7 +6172,7 @@ def test_human_next_omits_release_without_one(
 		def __init__(self, database) -> None:
 			pass
 
-		def next(self, *, task_id=None, include_position_totals=False):
+		def next(self, *, task_id=None, areas=None, include_position_totals=False):
 			assert include_position_totals is True
 			return data
 
@@ -6072,7 +6204,7 @@ def test_json_next_includes_the_release_data(
 		def __init__(self, database) -> None:
 			pass
 
-		def next(self, *, task_id=None, include_position_totals=False):
+		def next(self, *, task_id=None, areas=None, include_position_totals=False):
 			return data
 
 	monkeypatch.setattr(cli, "ReadStore", _ReadStore)
@@ -6112,7 +6244,7 @@ def test_human_next_renders_done_chunk_with_success_status(
 		def __init__(self, database) -> None:
 			pass
 
-		def next(self, *, task_id=None, include_position_totals=False):
+		def next(self, *, task_id=None, areas=None, include_position_totals=False):
 			assert include_position_totals is True
 			return data
 
@@ -6351,6 +6483,7 @@ def test_json_task_list_does_not_request_release_titles(
 			limit,
 			offset,
 			*,
+			areas,
 			include_release_titles,
 			include_queue_numbers,
 			collapse_done_tasks,

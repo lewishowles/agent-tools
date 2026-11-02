@@ -853,7 +853,17 @@ def _render_next(data: object) -> str:
 	task = data.get("task")
 	chunk = data.get("chunk")
 	if not isinstance(task, dict):
-		blocks.append(render_row("Task", "No task is selected."))
+		# The areas that `progress next --area` was limited to.
+		areas = data.get("area_filter")
+		# The empty-state text, naming the areas when the filter matched nothing.
+		message = "No task is selected."
+		if isinstance(areas, list) and areas:
+			message = (
+				"No task in progress or queued for "
+				+ ", ".join(str(area) for area in areas)
+				+ "."
+			)
+		blocks.append(render_row("Task", message))
 	else:
 		release = data.get("release")
 		if isinstance(release, dict):
@@ -1660,6 +1670,10 @@ def _render_queue_item(
 	which defaults to the standard status width for lists without waiting labels.
 	"""
 	title = str(item.get("title") or item.get("id") or "item")
+	# Show a task's areas beside its title in the human list.
+	areas = item.get("areas")
+	if isinstance(areas, list) and areas:
+		title += f" ({', '.join(str(area) for area in areas)})"
 	identifier = str(item.get("id", ""))
 	number = str(item.get("queue_number", ""))
 	rendered_status = _render_queue_status(item)

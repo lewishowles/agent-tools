@@ -295,6 +295,63 @@ def test_next_returns_the_task_chunk_and_next_command(tmp_path: Path) -> None:
 	assert result["hint_command"] == f"progress chunk complete {CHUNK_A}"
 
 
+def test_next_area_filter_keeps_the_matching_default_then_uses_the_queue(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO task_areas (task_id, position, text) VALUES (?, ?, ?)",
+			(TASK_A, 1, "agent-run"),
+		)
+		connection.execute(
+			"INSERT INTO task_areas (task_id, position, text) VALUES (?, ?, ?)",
+			(TASK_B, 1, "Progress"),
+		)
+
+	default = store.next(areas=["AGENT-RUN"])
+	result = store.next(areas=["PROGRESS", "other"])
+	no_match = store.next(areas=["missing"])
+
+	assert default["task"]["id"] == TASK_A
+	assert default["task"]["areas"] == ["agent-run"]
+	assert result["task"]["id"] == TASK_B
+	assert result["task"]["areas"] == ["Progress"]
+	assert no_match["task"] is None
+	assert no_match["area_filter"] == ["missing"]
+
+	with store.database.transaction() as connection:
+		connection.execute(
+			"UPDATE tasks SET status = 'blocked' WHERE id = ?", (TASK_B,)
+		)
+
+	assert store.next(areas=["progress"])["task"]["id"] == TASK_B
+
+
+def test_next_area_filter_skips_a_nondefault_in_progress_task(tmp_path: Path) -> None:
+	"""Choose a queued area match when only the secondary active task matches."""
+	store = _seed_store(tmp_path)
+	writer = WriteStore(store.database, _ProjectStore(store.database))
+	queued = writer.task_add(
+		"queued-area",
+		"Queued area task",
+		overview="Queued task overview.",
+		done_when=["Queued task check."],
+		release_id=RELEASE_A,
+		areas=["Progress"],
+	)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO task_areas (task_id, position, text) VALUES (?, ?, ?)",
+			(TASK_B, 1, "Progress"),
+		)
+		connection.execute(
+			"UPDATE tasks SET status = 'in-progress' WHERE id = ?", (TASK_B,)
+		)
+
+	assert store.next(areas=["progress"])["task"]["id"] == queued["id"]
+
+
 def test_next_named_ready_task_suggests_secondary_start_when_default_is_active(
 	tmp_path: Path,
 ) -> None:
@@ -695,6 +752,32 @@ def test_task_list_uses_position_then_object_id_and_pagination(
 	assert result["has_more"] is True
 
 
+def test_task_list_filters_by_any_area_before_paging(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	with store.database.transaction() as connection:
+		for task_id, position, area in (
+			(TASK_A, 1, "agent-run"),
+			(TASK_A, 2, "Progress"),
+			(TASK_B, 1, "retina-shrink"),
+		):
+			connection.execute(
+				"INSERT INTO task_areas (task_id, position, text) VALUES (?, ?, ?)",
+				(task_id, position, area),
+			)
+
+	first = store.task_list(areas=["PROGRESS"])
+	combined = store.task_list(areas=["progress", "RETINA-SHRINK"], limit=1)
+	empty = store.task_list(areas=["missing"])
+
+	assert [item["id"] for item in first["items"]] == [TASK_A]
+	assert first["items"][0]["areas"] == ["agent-run", "Progress"]
+	assert first["has_more"] is False
+	assert [item["id"] for item in combined["items"]] == [TASK_A]
+	assert combined["has_more"] is True
+	assert empty["items"] == []
+	assert empty["has_more"] is False
+
+
 def test_task_list_numbers_unfinished_queue_independent_of_filters_and_pages(
 	tmp_path: Path,
 ) -> None:
@@ -718,11 +801,18 @@ def test_task_list_numbers_unfinished_queue_independent_of_filters_and_pages(
 	)
 	with store.database.transaction() as connection:
 		connection.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (TASK_B,))
+		connection.execute(
+			"INSERT INTO task_areas (task_id, position, text) VALUES (?, ?, ?)",
+			(fourth["id"], 1, "Progress"),
+		)
 
 	all_items = store.task_list(include_queue_numbers=True)["items"]
 	filtered_items = store.task_list(
 		status="ready", offset=1, include_queue_numbers=True
 	)["items"]
+	area_items = store.task_list(areas=["progress"], include_queue_numbers=True)[
+		"items"
+	]
 	done_items = store.task_list(status="done", include_queue_numbers=True)["items"]
 	json_items = store.task_list()["items"]
 
@@ -733,6 +823,9 @@ def test_task_list_numbers_unfinished_queue_independent_of_filters_and_pages(
 		(fourth["id"], 3),
 	]
 	assert [(item["id"], item["queue_number"]) for item in filtered_items] == [
+		(fourth["id"], 3)
+	]
+	assert [(item["id"], item["queue_number"]) for item in area_items] == [
 		(fourth["id"], 3)
 	]
 	assert "queue_number" not in done_items[0]
@@ -1024,6 +1117,28 @@ def test_search_reports_a_matching_task_file_path(tmp_path: Path) -> None:
 			"status": "in-progress",
 			"matched": ["files"],
 			"snippets": {"files": ["packages/button.py"]},
+		}
+	]
+
+
+def test_search_finds_task_areas(tmp_path: Path) -> None:
+	store = _seed_store(tmp_path)
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO task_areas (task_id, position, text) VALUES (?, ?, ?)",
+			(TASK_B, 1, "Progress"),
+		)
+
+	result = store.search("PROG", fields=["areas"])
+
+	assert result["items"] == [
+		{
+			"type": "task",
+			"id": TASK_B,
+			"title": "Second task",
+			"status": "ready",
+			"matched": ["areas"],
+			"snippets": {"areas": "Progress"},
 		}
 	]
 

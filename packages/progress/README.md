@@ -79,7 +79,14 @@ changing the default.
 ```bash
 progress next
 progress next --task <task_id>
+progress next --area <area> [--area <area> ...]
 ```
+
+With `--area`, `next` chooses only from tasks in the named areas, ignoring case.
+Repeat it to include more areas. It shows the in-progress default task if that
+task is in one of them; otherwise it shows the first queued task in those areas
+in the usual release and task order. It says when none match. `--area` cannot
+be combined with `--task`.
 
 ### `progress summary`
 
@@ -695,25 +702,27 @@ progress task block <task_id> --reason <reason> [--needs-decision] [--json] [--d
 List tasks for the current project:
 
 ```text
-progress task list [--status <status>] [--all] [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
+progress task list [--status <status>] [--area <area> ...] [--all] [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
 ```
 
 - `--status <status>`: filter by task status
+- `--area <area>`: show tasks in any named area, ignoring case; repeat for more areas
 - `--limit <limit>`: maximum number of tasks to return
 - `--offset <offset>`: number of tasks to skip before returning results
 - `--all`: show done tasks in full and remove the page limit; cannot be combined with `--limit` or `--offset`
 
-The human list collapses done tasks into a count for each release unless you
-filter by status or pass `--all`. Its page limit counts unfinished tasks, and
-the final line shows project-wide status counts and the next task. Waiting tasks
-show `waiting on #n` for unfinished dependencies in the same release, or the
-task ID for dependencies in another release. Ready tasks show `ready, can run in
-parallel` when their listed files share none with the next task or any task in
-progress. Paths are tidied before comparison, and a folder overlaps the files
-inside it. Tasks without listed files never get this hint. JSON gives waiting
-tasks an `unfinished_dependency_ids` list and every task a
-`can_run_in_parallel` value; with `--all`, `limit` is `null` and `has_more` is
-`false`.
+The human list shows each task's areas next to its title and collapses done
+tasks into a count for each release unless you filter by status or pass `--all`.
+Its page limit counts unfinished tasks. The final line shows status counts and
+the next task for the named areas when `--area` is used, or for the whole project
+otherwise. Queue numbers remain project-wide. Waiting tasks show `waiting on #n`
+for unfinished dependencies in the same release, or the task ID for dependencies
+in another release. Ready tasks show `ready, can run in parallel` when their
+listed files share none with the next task or any task in progress. Paths are
+tidied before comparison, and a folder overlaps the files inside it. Tasks
+without listed files never get this hint. JSON gives waiting tasks an
+`unfinished_dependency_ids` list and every task a `can_run_in_parallel` value;
+with `--all`, `limit` is `null` and `has_more` is `false`.
 
 See [Listing](#listing) for pagination details.
 
@@ -885,7 +894,7 @@ Search tasks and chunks by a case-insensitive term:
 progress search <term> [--in <field>]... [--status <status>] [--limit <limit>] [--offset <offset>] [--json] [--database <path>]
 ```
 
-- `--in <field>`: restrict the search to a field, and repeat it to search multiple fields. The fields are `title`, `overview`, `verification`, `done_when`, `files` and `description`
+- `--in <field>`: restrict the search to a field, and repeat it to search multiple fields. The fields are `title`, `overview`, `verification`, `done_when`, `files`, `areas` and `description`
 - `--status <status>`: filter by task status, including chunks whose parent task has that status
 - `--limit <limit>`: maximum number of results to return
 - `--offset <offset>`: number of results to skip before returning matches
