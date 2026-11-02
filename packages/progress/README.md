@@ -94,7 +94,12 @@ them. The command works outside a Git repository and does not record
 a checkout. Paths under your home directory start with `~` in human output. Use
 `--json` for per-project data. It includes full checkout paths, each checkout's
 boolean `stale` field and last-seen time, the next action, and the suggested
-command.
+command. Each project also has a `shared_files` list. Each entry names a tidied
+`path` and every in-progress task in that project whose listed file or folder
+overlaps it, with each task's `id`, `slug`, and `title` in queue order. A folder
+and a file inside it each get an entry when both are listed. The list is empty
+when there is no overlap. Human output adds one `Shared file:` line per path,
+naming every task involved. The warning does not block any work.
 
 ```bash
 progress summary

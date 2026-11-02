@@ -1046,6 +1046,21 @@ def _render_summary(data: object) -> str:
 		else:
 			lines.append(render_span("No current tasks", "muted", weight="normal"))
 
+		for shared_file in item.get("shared_files", []):
+			# Each task's title and ID, in queue order.
+			task_names = [
+				f"{task['title']} ({task['id']})" for task in shared_file["tasks"]
+			]
+			# The names as "A and B", or "A, B and C" for three or more.
+			listed_by = ", ".join(task_names[:-1]) + " and " + task_names[-1]
+			lines.append(
+				render_span(
+					f"Shared file: {shared_file['path']}, listed by {listed_by}",
+					"warning",
+					weight="normal",
+				)
+			)
+
 		lines.extend(["", render_divider(divider_colour="border")])
 		blocks.append("\n".join(lines))
 

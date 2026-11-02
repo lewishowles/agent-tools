@@ -3,6 +3,7 @@
 import posixpath
 import sqlite3
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import (
@@ -113,6 +114,20 @@ UNFINISHED_CHUNK_FIELDS = ("review_question",)
 
 # Chunk statuses that doctor treats as unfinished work.
 _UNFINISHED_CHUNK_STATUSES = frozenset({"pending", "active"})
+
+
+@dataclass
+class _InProgressTaskFiles:
+	"""An in-progress task and the files and folders it lists, ready to compare with other tasks."""
+
+	# The task ID, used to skip comparing a task with itself.
+	id: str
+	# The task slug, shown in JSON overlap results.
+	slug: str
+	# The task title, shown in human overlap warnings.
+	title: str
+	# The listed paths, tidied so two spellings of one path count once.
+	files: set[str]
 
 
 def validate_identifier(value: str, expected_prefix: str) -> str:
@@ -457,34 +472,118 @@ def shared_task_files(
 	# that lists the same file twice is named once.
 	shared: dict[str, dict[str, dict[str, str]]] = {}
 
-	# Every file listed by the project's other in-progress tasks, in queue order.
-	rows = connection.execute(
-		f"""
-		SELECT task_files.text, tasks.id, tasks.slug, tasks.title
-		FROM task_files JOIN tasks ON tasks.id = task_files.task_id
-		LEFT JOIN releases ON releases.id = tasks.release_id
-		AND releases.project_id = tasks.project_id
-		WHERE tasks.project_id = ? AND tasks.status = 'in-progress' AND tasks.id != ?
-		ORDER BY {_TASK_QUEUE_ORDER}, task_files.position
-		""",
-		(project_id, task_id),
-	)
+	for task in _in_progress_task_files(connection, project_id):
+		if task.id == task_id:
+			continue
 
-	for row in rows:
 		for file_path in selected_files:
-			if not _files_overlap(file_path, row["text"]):
+			if not any(_files_overlap(file_path, other) for other in task.files):
 				continue
 
-			shared.setdefault(file_path, {})[row["id"]] = {
-				"id": row["id"],
-				"slug": row["slug"],
-				"title": row["title"],
+			shared.setdefault(file_path, {})[task.id] = {
+				"id": task.id,
+				"slug": task.slug,
+				"title": task.title,
 			}
 
 	return [
 		{"path": file_path, "tasks": list(shared[file_path].values())}
 		for file_path in sorted(shared)
 	]
+
+
+def _project_shared_files(
+	connection: sqlite3.Connection, project_id: str
+) -> list[dict[str, object]]:
+	"""List each path that overlaps between two or more in-progress tasks in a project.
+
+	Args:
+		connection: An open connection to the progress database.
+		project_id: The project whose tasks are compared.
+
+	Returns:
+		One entry per tidied path, sorted by path, naming every task involved in
+		queue order. A folder and a file inside it each get an entry when both
+		are listed.
+	"""
+	# The project's in-progress tasks that list files, in queue order.
+	tasks = _in_progress_task_files(connection, project_id)
+	# Each overlapping path mapped to the IDs of the tasks involved.
+	shared: dict[str, set[str]] = {}
+
+	for index, first in enumerate(tasks):
+		for second in tasks[index + 1 :]:
+			_add_shared_paths(shared, first, second)
+
+	return [
+		{
+			"path": file_path,
+			"tasks": [
+				{"id": task.id, "slug": task.slug, "title": task.title}
+				for task in tasks
+				if task.id in shared[file_path]
+			],
+		}
+		for file_path in sorted(shared)
+	]
+
+
+def _in_progress_task_files(
+	connection: sqlite3.Connection, project_id: str
+) -> list[_InProgressTaskFiles]:
+	"""Load a project's in-progress tasks and the paths each one lists.
+
+	Args:
+		connection: An open connection to the progress database.
+		project_id: The project whose tasks are loaded.
+
+	Returns:
+		The tasks in queue order, each with its tidied paths. Tasks that list no
+		files are left out.
+	"""
+	# The tasks found so far by ID, which keeps them in queue order.
+	tasks: dict[str, _InProgressTaskFiles] = {}
+	# One row per listed path, in queue order and then list order.
+	rows = connection.execute(
+		f"""
+		SELECT task_files.text, tasks.id, tasks.slug, tasks.title
+		FROM task_files JOIN tasks ON tasks.id = task_files.task_id
+		LEFT JOIN releases ON releases.id = tasks.release_id
+		AND releases.project_id = tasks.project_id
+		WHERE tasks.project_id = ? AND tasks.status = 'in-progress'
+		ORDER BY {_TASK_QUEUE_ORDER}, task_files.position
+		""",
+		(project_id,),
+	)
+
+	for row in rows:
+		# The task this path belongs to, added the first time it appears.
+		task = tasks.setdefault(
+			row["id"], _InProgressTaskFiles(row["id"], row["slug"], row["title"], set())
+		)
+		task.files.add(_normalise_task_file(row["text"]))
+
+	return list(tasks.values())
+
+
+def _add_shared_paths(
+	shared: dict[str, set[str]],
+	first: _InProgressTaskFiles,
+	second: _InProgressTaskFiles,
+) -> None:
+	"""Add each overlapping path from two tasks to the shared paths, with both task IDs.
+
+	Args:
+		shared: Each overlapping path mapped to the IDs of the tasks involved.
+			Updated in place.
+		first: The first task in the pair.
+		second: The second task in the pair.
+	"""
+	for first_path in first.files:
+		for second_path in second.files:
+			if _files_overlap(first_path, second_path):
+				shared.setdefault(first_path, set()).update((first.id, second.id))
+				shared.setdefault(second_path, set()).update((first.id, second.id))
 
 
 def _normalise_task_file(file_path: str) -> str:
@@ -1110,6 +1209,7 @@ class ReadStore(_StoreBase):
 				results.append(
 					{
 						**selection,
+						"shared_files": _project_shared_files(connection, project.id),
 						"checkouts": [
 							{**dict(row), "stale": not Path(row["path"]).exists()}
 							for row in checkouts

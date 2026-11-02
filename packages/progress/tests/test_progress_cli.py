@@ -9025,6 +9025,150 @@ def test_summary_runs_outside_a_repository_without_recording_checkout(
 	assert calls == []
 
 
+def test_summary_lists_overlapping_paths_and_every_in_progress_task(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	"""Show tidied folder and file overlaps with all involved tasks in queue order."""
+	database_path = tmp_path / "progress.db"
+	project = Project(
+		"prj_" + "p" * 22,
+		"agents",
+		"Agent configuration",
+		"2026-01-01T00:00:00+00:00",
+	)
+	database = Database(database_path)
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(project.id, project.slug, project.name, project.created_at),
+		)
+
+	monkeypatch.setattr(ProjectStore, "current", lambda self, path=None: project)
+	writer = WriteStore(database)
+	tasks = [
+		writer.task_add(
+			slug,
+			title,
+			overview="Work on shared files.",
+			done_when=["Finish the work."],
+			files=files,
+		)
+		for slug, title, files in (
+			("folder", "Folder task", [" ./src/app/ "]),
+			("file", "File task", ["src/app/main.py"]),
+			("same-file", "Same file task", ["src//app/main.py/"]),
+		)
+	]
+	for task in tasks:
+		writer.task_start(task["id"], secondary=True)
+
+	assert cli.main(["summary", "--database", str(database_path), "--json"]) == 0
+	shared_files = json.loads(capsys.readouterr().out)["data"][0]["shared_files"]
+	task_names = [
+		{"id": task["id"], "slug": task["slug"], "title": task["title"]}
+		for task in tasks
+	]
+	assert shared_files == [
+		{"path": "src/app", "tasks": task_names},
+		{"path": "src/app/main.py", "tasks": task_names},
+	]
+
+	assert cli.main(["summary", "--database", str(database_path)]) == 0
+	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	listed_by = (
+		f"{tasks[0]['title']} ({tasks[0]['id']}), "
+		f"{tasks[1]['title']} ({tasks[1]['id']}) and "
+		f"{tasks[2]['title']} ({tasks[2]['id']})"
+	)
+	assert f"Shared file: src/app, listed by {listed_by}" in output
+	assert f"Shared file: src/app/main.py, listed by {listed_by}" in output
+
+
+def test_summary_reports_no_shared_files_when_in_progress_tasks_list_unrelated_paths(
+	tmp_path: Path, monkeypatch, capsys
+) -> None:
+	"""Show no shared files when in-progress tasks list unrelated paths."""
+	database_path = tmp_path / "progress.db"
+	project = Project(
+		"prj_" + "p" * 22,
+		"agents",
+		"Agent configuration",
+		"2026-01-01T00:00:00+00:00",
+	)
+	database = Database(database_path)
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(project.id, project.slug, project.name, project.created_at),
+		)
+
+	monkeypatch.setattr(ProjectStore, "current", lambda self, path=None: project)
+	writer = WriteStore(database)
+	tasks = [
+		writer.task_add(
+			slug,
+			title,
+			overview="Work on separate files.",
+			done_when=["Finish the work."],
+			files=files,
+		)
+		for slug, title, files in (
+			("app", "App task", ["src/app/main.py"]),
+			("docs", "Docs task", ["docs/guide.md"]),
+		)
+	]
+	for task in tasks:
+		writer.task_start(task["id"], secondary=True)
+
+	assert cli.main(["summary", "--database", str(database_path), "--json"]) == 0
+	assert json.loads(capsys.readouterr().out)["data"][0]["shared_files"] == []
+
+	assert cli.main(["summary", "--database", str(database_path)]) == 0
+	output = render_module._ANSI_ESCAPE_PATTERN.sub("", capsys.readouterr().out)
+	assert "Shared file:" not in output
+
+
+def test_summary_ignores_files_listed_by_done_tasks(
+	tmp_path: Path, monkeypatch
+) -> None:
+	"""Leave the shared file list empty when only a done task overlaps."""
+	database_path = tmp_path / "progress.db"
+	project = Project(
+		"prj_" + "p" * 22,
+		"agents",
+		"Agent configuration",
+		"2026-01-01T00:00:00+00:00",
+	)
+	database = Database(database_path)
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(project.id, project.slug, project.name, project.created_at),
+		)
+
+	monkeypatch.setattr(ProjectStore, "current", lambda self, path=None: project)
+	writer = WriteStore(database)
+	finished = writer.task_add(
+		"finished",
+		"Finished task",
+		overview="Finished.",
+		done_when=["Finish the work."],
+		files=["src/app"],
+	)
+	current = writer.task_add(
+		"current",
+		"Current task",
+		overview="Current.",
+		done_when=["Finish the work."],
+		files=["src/app/main.py"],
+	)
+	writer.task_start(finished["id"])
+	writer.task_complete(finished["id"])
+	writer.task_start(current["id"])
+
+	assert ReadStore(database).summary()[0]["shared_files"] == []
+
+
 def test_summary_counts_missing_checkouts_and_flags_them_stale_in_json(
 	tmp_path: Path, capsys
 ) -> None:
