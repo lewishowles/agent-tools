@@ -521,6 +521,29 @@ def test_task_add_past_a_removed_slot_uses_the_requested_position(
 	assert [item["position"] for item in items] == [1, 2, 3, 4]
 
 
+def test_task_remove_drops_links_to_done_tasks_but_refuses_unfinished_ones(
+	tmp_path: Path,
+) -> None:
+	store = _seed_store(tmp_path)
+	finished = _add_task(store, "finished", "Finished")
+	unfinished = _add_task(store, "unfinished", "Unfinished")
+	removed = _add_task(store, "removed", "Removed")
+	blocked = _add_task(store, "blocked", "Blocked")
+	store.task_dependency_add(removed["id"], finished["id"])
+	store.task_dependency_add(blocked["id"], unfinished["id"])
+	store.task_start(finished["id"])
+	store.task_complete(finished["id"])
+
+	store.task_remove(removed["id"])
+
+	assert _dependency_ids(store, removed["id"]) == []
+
+	with pytest.raises(StillReferencedError):
+		store.task_remove(blocked["id"])
+
+	assert _dependency_ids(store, blocked["id"]) == [unfinished["id"]]
+
+
 @pytest.mark.parametrize("force", [False, True])
 def test_task_remove_renumbers_a_queue_with_a_completed_task(
 	tmp_path: Path, force: bool

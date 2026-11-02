@@ -2301,9 +2301,11 @@ def _remove_task(
 ) -> dict[str, object]:
 	"""Remove one task.
 
-	Without ``force`` the task must own no chunks, notes, or dependency edges.
-	With ``force`` those rows are deleted with the task, and any task that was
-	blocked only by it becomes ready, as it would on completion.
+	Without ``force`` the task must own no chunks or notes, and no dependency
+	link may wait on an unfinished task. Links to a done task are deleted with
+	it, because they no longer hold any work back. With ``force`` every owned
+	row is deleted with the task, and any task that was blocked only by it
+	becomes ready, as it would on completion.
 
 	Returns the task's ID and title, so output can still name the task after
 	its row is gone. A forced removal also returns the deleted records and the
@@ -2317,8 +2319,10 @@ def _remove_task(
 
 	references = _task_references(connection, task_id)
 	chunk_ids = references.get("chunks", [])
-	dependency_edges = references.get("dependencies", [])
 	note_ids = references.get("notes", [])
+
+	# Every link to or from the task, including finished ones that do not block.
+	dependency_edges = _task_dependency_edges(connection, task_id)
 
 	if not force:
 		_raise_if_referenced(
@@ -2326,6 +2330,10 @@ def _remove_task(
 			task_id,
 			references,
 			hint="pass --force to remove it with everything it owns",
+		)
+		connection.execute(
+			"DELETE FROM task_dependencies WHERE task_id = ? OR depends_on_task_id = ?",
+			(task_id, task_id),
 		)
 		connection.execute("DELETE FROM task_worktrees WHERE task_id = ?", (task_id,))
 		_delete_task_values(connection, task_id)
@@ -2385,7 +2393,11 @@ def _remove_task(
 def _task_references(
 	connection: sqlite3.Connection, task_id: str
 ) -> dict[str, list[str]]:
-	"""List the chunks, dependency edges and notes that stop a plain task removal."""
+	"""List the chunks, dependency edges and notes that stop a plain task removal.
+
+	A dependency edge only stops removal while its prerequisite is unfinished;
+	a link to a done task holds no work back.
+	"""
 	references: dict[str, list[str]] = {}
 	chunk_ids = [
 		row["id"]
@@ -2397,18 +2409,9 @@ def _task_references(
 	if chunk_ids:
 		references["chunks"] = chunk_ids
 
-	dependency_edges = [
-		f"{row['task_id']} -> {row['depends_on_task_id']}"
-		for row in connection.execute(
-			"""
-			SELECT task_id, depends_on_task_id
-			FROM task_dependencies
-			WHERE task_id = ? OR depends_on_task_id = ?
-			ORDER BY task_id, depends_on_task_id
-			""",
-			(task_id, task_id),
-		).fetchall()
-	]
+	dependency_edges = _task_dependency_edges(
+		connection, task_id, unfinished_prerequisites_only=True
+	)
 
 	if dependency_edges:
 		references["dependencies"] = dependency_edges
@@ -2423,6 +2426,39 @@ def _task_references(
 	if note_ids:
 		references["notes"] = note_ids
 	return references
+
+
+def _task_dependency_edges(
+	connection: sqlite3.Connection,
+	task_id: str,
+	*,
+	unfinished_prerequisites_only: bool = False,
+) -> list[str]:
+	"""List the dependency links to or from a task as ``task -> prerequisite`` text.
+
+	Args:
+		connection: The open database connection.
+		task_id: The task whose links are listed.
+		unfinished_prerequisites_only: Leave out links whose prerequisite is done.
+
+	Returns:
+		The links in task, then prerequisite, ID order.
+	"""
+	# Matches every link when unset, and only links still waiting on work when set.
+	status_filter = "AND prerequisite.status != 'done'" if unfinished_prerequisites_only else ""
+	rows = connection.execute(
+		f"""
+		SELECT dependency.task_id, dependency.depends_on_task_id
+		FROM task_dependencies AS dependency
+		JOIN tasks AS prerequisite ON prerequisite.id = dependency.depends_on_task_id
+		WHERE (dependency.task_id = ? OR dependency.depends_on_task_id = ?)
+		{status_filter}
+		ORDER BY dependency.task_id, dependency.depends_on_task_id
+		""",
+		(task_id, task_id),
+	).fetchall()
+
+	return [f"{row['task_id']} -> {row['depends_on_task_id']}" for row in rows]
 
 
 def _complete_task(
