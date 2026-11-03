@@ -254,10 +254,18 @@ def main(argv=None):
 			results.append(SourceResult(source=source, report=None, error=error))
 			continue
 
-		selected_content = select_content(raw_content)
+		# The page's main content, plus the count of chrome blocks cut from it for the report.
+		selection = select_content(raw_content)
+		selected_content = selection.html
 		base_url = source if source.startswith(("http://", "https://")) else None
 		content = convert_to_markdown(selected_content, base_url=base_url)
-		report = build_report(raw_content, selected_content, content, source)
+		report = build_report(
+			raw_content,
+			selected_content,
+			content,
+			source,
+			chrome_blocks_removed=selection.chrome_blocks_removed,
+		)
 
 		results.append(
 			SourceResult(

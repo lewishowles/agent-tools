@@ -19,7 +19,7 @@ def load_fixture(name: str) -> str:
 def extract_fixture(name: str, base_url: str | None = None) -> tuple[str, str, str]:
 	"""Run the local fixture through reading, selection, and conversion."""
 	raw_html = load_fixture(name)
-	selected_html = select_content(raw_html)
+	selected_html = select_content(raw_html).html
 	markdown = convert_to_markdown(selected_html, base_url=base_url)
 	return raw_html, selected_html, markdown
 
@@ -105,6 +105,37 @@ def test_class_and_id_chrome_is_removed_without_losing_content() -> None:
 	assert 'class="promo"' in selected_html
 
 
+def test_class_and_id_chrome_removals_are_counted_in_report() -> None:
+	raw_html = load_fixture("chrome-by-class.html")
+	selection = select_content(raw_html)
+	markdown = convert_to_markdown(selection.html)
+	report = build_report(
+		raw_html,
+		selection.html,
+		markdown,
+		"chrome-by-class.html",
+		chrome_blocks_removed=selection.chrome_blocks_removed,
+	)
+
+	assert selection.chrome_blocks_removed == 5
+	assert report.removed_elements_total == 5
+	assert "removed-elements: 5 blocks matched by class or ID (total=5)" in str(report)
+
+
+def test_tag_and_class_removals_share_the_report_line() -> None:
+	raw_html = "<main><nav>Menu</nav><p>Article text</p></main>"
+	selected_html = "<main><p>Article text</p></main>"
+	report = build_report(
+		raw_html,
+		selected_html,
+		"Article text",
+		"inline.html",
+		chrome_blocks_removed=2,
+	)
+
+	assert "nav=1, 2 blocks matched by class or ID (total=3)" in str(report)
+
+
 def test_small_main_falls_through_to_the_article() -> None:
 	_, selected_html, markdown = extract_fixture("banner-main-with-article.html")
 
@@ -140,7 +171,7 @@ def test_indentation_outside_main_does_not_change_content_selection() -> None:
 	empty_blocks = "\n".join("        <div></div>" for _ in range(100))
 	html = f"<body>\n  <main><p>{main_text}</p></main>\n{empty_blocks}\n  <p>Home</p>\n</body>"
 
-	selected_html = select_content(html)
+	selected_html = select_content(html).html
 
 	assert main_text in selected_html
 	assert "Home" not in selected_html
@@ -255,7 +286,19 @@ def test_main_confidence_report_renders_aligned_rows(capsys, monkeypatch) -> Non
 
 	assert exit_code == 0
 	assert "Selected content root  body" in captured.out
+	assert "Removed elements" in captured.out
+	assert "none (total=0)" in captured.out
+	assert "matched by class or ID" not in captured.out
 	assert "× Verdict              low-confidence" in captured.out
+
+
+def test_main_reports_class_and_id_chrome_removals(capsys) -> None:
+	exit_code = main([str(FIXTURES / "chrome-by-class.html"), "--confidence"])
+	captured = capsys.readouterr()
+
+	assert exit_code == 0
+	assert "Removed elements" in captured.out
+	assert "5 blocks matched by class or ID (total=5)" in captured.out
 
 
 def test_main_keeps_failed_source_in_batch_output(tmp_path, capsys) -> None:

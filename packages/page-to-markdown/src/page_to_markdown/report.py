@@ -57,7 +57,7 @@ class ConfidenceReport:
 	source: str
 	# Label for the selected content root.
 	selected_content_root: str
-	# Per-element counts for content removed during selection.
+	# Counts of removed tags and blocks matched by class or ID.
 	removed_elements_summary: str
 	# Total number of elements removed during selection.
 	removed_elements_total: int
@@ -89,8 +89,21 @@ def build_report(
 	selected_html: str,
 	markdown: str,
 	source: str | None,
+	chrome_blocks_removed: int = 0,
 ) -> ConfidenceReport:
-	"""Build an advisory confidence report from raw and selected HTML."""
+	"""Build an advisory confidence report from raw and selected HTML.
+
+	Args:
+		raw_html: The original page HTML.
+		selected_html: The HTML kept for conversion.
+		markdown: The converted page content.
+		source: The source URL or file label, if known.
+		chrome_blocks_removed: How many blocks content selection removed because
+			their class or ID marked them as page chrome. Pass 0 when unknown.
+
+	Returns:
+		The extraction report with removed-element counts and confidence reasons.
+	"""
 	raw_builder = _parse(raw_html)
 	selected_builder = _parse(selected_html)
 	selected_root = _content_root_label(raw_builder.root)
@@ -133,10 +146,21 @@ def build_report(
 	else:
 		verdict = "high-confidence"
 
-	removed_total = sum(removed_elements.values())
+	removed_total = sum(removed_elements.values()) + chrome_blocks_removed
 	removed_summary = ", ".join(
 		f"{tag}={count}" for tag, count in sorted(removed_elements.items())
 	)
+	if chrome_blocks_removed:
+		# The noun for the chrome block count, singular for one block.
+		block_label = "block" if chrome_blocks_removed == 1 else "blocks"
+		# The chrome block count, listed after the tag counts.
+		chrome_summary = f"{chrome_blocks_removed} {block_label} matched by class or ID"
+		removed_summary = (
+			f"{removed_summary}, {chrome_summary}"
+			if removed_summary
+			else chrome_summary
+		)
+
 	if not removed_summary:
 		removed_summary = "none"
 

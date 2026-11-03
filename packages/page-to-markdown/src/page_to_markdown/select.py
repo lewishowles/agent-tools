@@ -11,6 +11,7 @@ Uses only the standard library (html.parser) to preserve nested markup
 for later Markdown conversion.
 """
 
+from dataclasses import dataclass
 from html import escape
 from html.parser import HTMLParser
 
@@ -39,6 +40,16 @@ VOID_TAGS = frozenset(
 		"wbr",
 	]
 )
+
+
+@dataclass(frozen=True)
+class SelectedContent:
+	"""The content chosen from a page, and how many chrome blocks were cut from it."""
+
+	# The HTML of the chosen content region, with its chrome blocks removed.
+	html: str
+	# How many blocks were removed because their class or ID marked them as chrome.
+	chrome_blocks_removed: int
 
 
 class _DomNode:
@@ -220,14 +231,20 @@ def _find_all(root, predicate, results=None):
 	return results
 
 
-def select_content(html):
-	"""Select the main content region of a page and return it as HTML.
+def select_content(html: str) -> SelectedContent:
+	"""Select the main content region of a page, without its chrome blocks.
 
 	Tries the first main, article and [role=main] element in that order and
 	uses the first one that holds at least a fifth of the page's text. Falls
 	back to the body, or the whole document when there is no body. Then
 	removes blocks inside that region whose class or ID marks them as page
 	chrome, such as share bars and cookie banners.
+
+	Args:
+		html: The raw HTML page to select from.
+
+	Returns:
+		The selected HTML and the number of chrome blocks removed from it.
 	"""
 	builder = _DomBuilder()
 	builder.feed(html)
@@ -235,9 +252,10 @@ def select_content(html):
 
 	# The part of the page kept as content; chrome inside it is removed next.
 	region = _choose_region(builder.root)
-	prune_chrome(region)
+	# The blocks removed because their class or ID marks them as page chrome.
+	removed_blocks = prune_chrome(region)
 
-	return _serialise(region)
+	return SelectedContent(_serialise(region), len(removed_blocks))
 
 
 def _choose_region(root):
