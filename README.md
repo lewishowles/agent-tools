@@ -6,7 +6,7 @@ The tools are for developers who use agents in their own projects. Each tool ins
 
 ## Requirements
 
-- Every tool except `retina-shrink` needs Python 3.11 or newer and [uv](https://docs.astral.sh/uv/getting-started/installation/) for installation.
+- Every Python tool needs Python 3.11 or newer and [uv](https://docs.astral.sh/uv/getting-started/installation/) for installation. `browser-feedback` and `retina-shrink` use separate installation steps.
 - Run `agent-run`, `progress`, and `review-feedback` inside a Git repository. `review-feedback` needs a Git worktree; `agent-run` and `progress` use Git to tell which project you are in.
 - `agent-quota` needs the `claude` and `codex` commands installed and signed in for the accounts you want to read.
 - `agent-board` and `team-send` need an active [HCOM](#glossary) session. [Install HCOM separately](https://github.com/aannoo/hcom#install); these instructions do not install it. `team-send` also needs `hcom` on your `PATH`.
@@ -20,6 +20,7 @@ The tools are for developers who use agents in their own projects. Each tool ins
 | [agent-board](packages/agent-board/README.md)           | Shows HCOM teams that need your attention in one terminal board                                  | HCOM session                                         |
 | [agent-quota](packages/agent-quota/README.md)           | Shows Claude and Codex quota for each account                                                    | `claude` and `codex` installed and signed in         |
 | [agent-run](packages/agent-run/README.md)               | Runs project commands with short output                                                          | Run inside a Git repository                          |
+| [browser-feedback](packages/browser-feedback/README.md) | Lets you pick page elements and copy review notes as Markdown                                    | Firefox; load the extension separately               |
 | [doc-paths](packages/doc-paths/README.md)               | Checks local paths named in Markdown files                                                       | None                                                 |
 | [friction](packages/friction/README.md)                 | Records times an agent ignored a rule or got stuck, so you can spot repeat problems              | None                                                 |
 | [page-to-markdown](packages/page-to-markdown/README.md) | Turns a URL, local HTML file, or piped HTML into compact Markdown                                | macOS for `--copy`                                   |
@@ -58,6 +59,8 @@ uv tool install "git+https://github.com/lewishowles/agent-tools.git#subdirectory
 
 `retina-shrink` is built with Swift rather than Python, so `install.sh` and `uv tool install` do not install it. Follow its [build and install instructions](packages/retina-shrink/README.md#build-and-install).
 
+`browser-feedback` is a Firefox extension that you [load from `about:debugging`](packages/browser-feedback/README.md#load-in-firefox).
+
 ## Glossary
 
 | Term                 | Meaning                                                                                                  |
@@ -80,7 +83,7 @@ uv tool install "git+https://github.com/lewishowles/agent-tools.git#subdirectory
 
 ### Package layout
 
-The root `pyproject.toml` is a virtual uv workspace. It discovers Python packages under `packages/`, but it is not a package itself. `packages/retina-shrink` is a Swift package excluded from the uv workspace.
+The root `pyproject.toml` is a virtual uv workspace. It discovers Python packages under `packages/`, but it is not a package itself. `packages/browser-feedback` is a plain JavaScript browser extension and `packages/retina-shrink` is a Swift package; both are excluded from the uv workspace.
 
 Each Python package owns its own:
 

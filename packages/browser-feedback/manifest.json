@@ -1,0 +1,35 @@
+{
+	"manifest_version": 3,
+	"name": "Browser feedback",
+	"version": "0.1.0",
+	"description": "Pick page elements and copy review notes as Markdown.",
+	"permissions": ["storage", "activeTab"],
+	"background": {
+		"scripts": ["background.js"],
+		"service_worker": "background.js"
+	},
+	"action": {
+		"default_title": "Toggle browser feedback"
+	},
+	"commands": {
+		"toggle-feedback": {
+			"suggested_key": {
+				"default": "Ctrl+Shift+E",
+				"mac": "Command+Shift+E"
+			},
+			"description": "Toggle browser feedback"
+		}
+	},
+	"content_scripts": [
+		{
+			"matches": ["<all_urls>"],
+			"js": ["content.js"],
+			"run_at": "document_idle"
+		}
+	],
+	"browser_specific_settings": {
+		"gecko": {
+			"id": "browser-feedback@lewishowles.dev"
+		}
+	}
+}

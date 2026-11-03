@@ -2,14 +2,14 @@
 
 ## Purpose
 
-A collection of independently installed command-line tools that make common agent tasks faster, safer, or substantially smaller in context than using ordinary human tools directly.
+A collection of independently installed tools that make common agent tasks faster, safer, or substantially smaller in context than using ordinary human tools directly. `browser-feedback` is a browser extension that turns notes on a web page into Markdown feedback for agents.
 
 ## Boundaries
 
 - Each package has one clear agent workflow.
-- Tools run globally and do not require project-local shims.
+- Command-line tools run globally and do not require project-local shims.
 - Default output is bounded; deeper evidence remains available on demand.
-- Tools support stable JSON output.
+- Command-line tools support stable JSON output; the browser extension copies a Markdown packet for agents.
 - Broader developer tools and browser experiments belong in `dev-tools`.
 
 ## Gotchas
@@ -20,3 +20,4 @@ A collection of independently installed command-line tools that make common agen
 - `progress` (packages/progress) is installed as an editable uv tool from this repository. Source edits take effect in the installed `progress` command straight away; no reinstall is needed after changing it.
 - Never run a task worktree's copy of `progress` (for example `uv run progress` inside a worktree) against the shared `~/.agents/progress.db`. Opening the database upgrades its schema, and the installed `progress` then refuses to open it for every team until the new code reaches `main`. Test worktree changes with the test suite or a temporary `--database`.
 - `packages/retina-shrink` is a Swift package excluded from the uv workspace. In the agent sandbox, pass `--disable-sandbox` to every SwiftPM build or test command.
+- `packages/browser-feedback` is a plain JavaScript browser extension excluded from the uv workspace. It runs from source without a build step.
