@@ -12,7 +12,7 @@ Firefox removes temporary add-ons when the browser closes. Reload the add-on fro
 
 ## Leave feedback
 
-Hover to highlight an element, then click to select it. Shift-click adds another element to the same note, or removes an element you already selected. Write an instruction in the panel and choose **Save note**. Use **Escape** to cancel the selection or an edit and stop picking. The panel also lets you edit or delete saved notes.
+Hover to highlight an element, then click to select it, which also stops picking; choose **Pick elements** in the panel to pick again. Shift-click instead to keep picking and add another element to the same note, or to remove one you already selected. Write an instruction in the panel and choose **Save note**. Use **Escape** to cancel the selection or an edit and stop picking. The panel also lets you edit or delete saved notes.
 
 Notes are stored in extension storage by page origin and pathname, so they survive page reloads. Query strings and fragments do not split notes into separate pages. **Copy all** copies a numbered Markdown packet containing the page URL, viewport, selectors, element details and comments, then clears the saved notes. The packet may contain text and HTML from the page; review it before sharing.
 

@@ -15,6 +15,10 @@
 	let shadow = null;
 	// The outline that follows the pointer while picking. It ignores the pointer, so clicks reach the element underneath.
 	let highlight = null;
+	// The layer holding the dashed outlines on picked elements. Like the pointer outline, it ignores the pointer.
+	let selectedOutlines = null;
+	// The animation frame queued to move the dashed outlines after a scroll or resize, so a burst of scroll events redraws them once.
+	let outlineFrame = null;
 	// The panel listing the selection and saved notes. It is rebuilt whenever either changes.
 	let panel = null;
 	// The live region that announces results and errors in the panel.
@@ -69,6 +73,7 @@
 			editingId = null;
 			draft = "";
 			hideHighlight();
+			drawSelectedOutlines();
 		}
 
 		render();
@@ -81,6 +86,7 @@
 		host = document.createElement("browser-feedback-root");
 		shadow = host.attachShadow({ mode: "closed" });
 		highlight = document.createElement("div");
+		selectedOutlines = document.createElement("div");
 		panel = document.createElement("aside");
 		status = document.createElement("output");
 		status.textContent = statusMessage;
@@ -90,6 +96,7 @@
 			:host { all: initial; position: fixed; inset: 0; z-index: 2147483647; pointer-events: none; font: 14px/1.5 system-ui, sans-serif; color: #17212e; }
 			*, *::before, *::after { box-sizing: border-box; }
 			#highlight { position: fixed; display: none; border: 3px solid #145bb5; outline: 2px solid white; border-radius: 3px; pointer-events: none; }
+			#selected-outlines > div { position: fixed; border: 3px dashed #145bb5; outline: 2px solid white; border-radius: 3px; pointer-events: none; }
 			#panel { position: fixed; inset: auto 16px 16px auto; display: none; width: min(380px, calc(100vw - 32px)); max-height: min(80vh, 700px); overflow: auto; padding: 16px; border: 2px solid #17212e; border-radius: 10px; background: #fff; color: #17212e; box-shadow: 0 10px 30px #0005; pointer-events: auto; }
 			#panel.open { display: block; }
 			h2, h3, p { margin: 0 0 10px; }
@@ -110,17 +117,19 @@
 		`;
 
 		highlight.id = "highlight";
+		selectedOutlines.id = "selected-outlines";
+		selectedOutlines.setAttribute("aria-hidden", "true");
 		panel.id = "panel";
 		panel.setAttribute("aria-label", "Browser feedback");
 		status.id = "status";
 		status.setAttribute("role", "status");
-		shadow.append(style, highlight, panel);
+		shadow.append(style, selectedOutlines, highlight, panel);
 		document.documentElement.append(host);
 		render();
 	}
 
 	/**
-	 * Listen for the page events that picking and the panel need. Scroll and resize hide the outline whether or not picking is on.
+	 * Listen for the page events that picking and the panel need. Scroll and resize hide the pointer outline and move the dashed outlines on picked elements, whether or not picking is on.
 	 */
 	function setupEvents() {
 		window.addEventListener("pointerover", onPointerOver, true);
@@ -129,8 +138,22 @@
 		window.addEventListener("mouseup", onPagePointerAction, true);
 		window.addEventListener("click", onPageClick, true);
 		window.addEventListener("keydown", onPageKeyDown, true);
-		window.addEventListener("scroll", hideHighlight, true);
-		window.addEventListener("resize", hideHighlight);
+		window.addEventListener("scroll", onViewportChange, true);
+		window.addEventListener("resize", onViewportChange);
+	}
+
+	/**
+	 * Hide the pointer outline and queue one redraw of the dashed outlines so they follow their elements.
+	 */
+	function onViewportChange() {
+		hideHighlight();
+
+		if (outlineFrame === null) {
+			outlineFrame = requestAnimationFrame(() => {
+				outlineFrame = null;
+				drawSelectedOutlines();
+			});
+		}
 	}
 
 	/**
@@ -244,9 +267,8 @@
 			selection = [];
 			editingId = null;
 			draft = "";
-			picking = false;
-			hideHighlight();
-			render();
+			drawSelectedOutlines();
+			setPicking(false);
 			panel.querySelector("button")?.focus();
 			return;
 		}
@@ -282,6 +304,7 @@
 	/**
 	 * Choose an element for the next note, replacing the selection or, with Shift, adding or removing it.
 	 * A snapshot is taken now, so later page changes do not alter the note.
+	 * A plain click also switches picking off; a Shift-click leaves it on so the person can add more.
 	 *
 	 * @param  {Element}  element
 	 *     The page element selected by the user.
@@ -300,9 +323,21 @@
 			selection = append ? [...selection, snapshot] : [snapshot];
 		}
 
+		drawSelectedOutlines();
+		setPicking(append);
+		panel.querySelector("textarea")?.focus();
+	}
+
+	/**
+	 * Switch picking on or off, hiding the hover outline and updating the panel button to match.
+	 *
+	 * @param  {boolean}  enabled
+	 *     Whether the next page click may pick an element.
+	 */
+	function setPicking(enabled) {
+		picking = enabled;
 		hideHighlight();
 		render();
-		panel.querySelector("textarea")?.focus();
 	}
 
 	/**
@@ -310,6 +345,62 @@
 	 */
 	function hideHighlight() {
 		highlight.style.display = "none";
+	}
+
+	/**
+	 * Draw a dashed outline on each picked element with a non-zero bounding box, replacing any outlines drawn before.
+	 * Call it whenever the selection changes; an empty selection clears the outlines. It also cancels a queued
+	 * scroll redraw, because this drawing already uses the current positions.
+	 */
+	function drawSelectedOutlines() {
+		if (outlineFrame !== null) {
+			cancelAnimationFrame(outlineFrame);
+			outlineFrame = null;
+		}
+
+		selectedOutlines.replaceChildren();
+
+		for (const element of findSelectedElements()) {
+			const bounds = element.getBoundingClientRect();
+
+			// Elements that take up no space on the page, such as display:none or removed ones, get no outline.
+			if (bounds.width === 0 && bounds.height === 0) {
+				continue;
+			}
+
+			const outline = document.createElement("div");
+
+			outline.style.left = `${bounds.left}px`;
+			outline.style.top = `${bounds.top}px`;
+			outline.style.width = `${bounds.width}px`;
+			outline.style.height = `${bounds.height}px`;
+			selectedOutlines.append(outline);
+		}
+	}
+
+	/**
+	 * Find the page elements that the selection's saved selectors point to. Each picked element is stored as a
+	 * selector, so this finds the elements for a new pick and for a reopened note alike.
+	 *
+	 * @returns {Element[]}
+	 *     The matching elements in selection order, leaving out any selector that matches nothing.
+	 */
+	function findSelectedElements() {
+		const elements = [];
+
+		for (const selected of selection) {
+			try {
+				const element = document.querySelector(selected.selector);
+
+				if (element) {
+					elements.push(element);
+				}
+			} catch {
+				// An invalid selector, such as one saved by an older version, is skipped so the other outlines still draw.
+			}
+		}
+
+		return elements;
 	}
 
 	/**
@@ -480,9 +571,7 @@
 		controls.className = "actions";
 		controls.append(
 			button(picking ? "Pause picking" : "Pick elements", () => {
-				picking = !picking;
-				hideHighlight();
-				render();
+				setPicking(!picking);
 			}),
 			button("Close panel", togglePanel),
 		);
@@ -519,6 +608,7 @@
 					editingId = null;
 					selection = [];
 					draft = "";
+					drawSelectedOutlines();
 					render();
 				}),
 			);
@@ -543,9 +633,8 @@
 					editingId = note.id;
 					selection = note.elements;
 					draft = note.comment;
-					picking = false;
-					hideHighlight();
-					render();
+					drawSelectedOutlines();
+					setPicking(false);
 					panel.querySelector("textarea")?.focus();
 				}),
 				button(`Delete note ${index + 1}`, () => void deleteNote(note.id)),
@@ -661,6 +750,7 @@
 			editingId = null;
 			picking = false;
 			hideHighlight();
+			drawSelectedOutlines();
 			draft = "";
 			saved = true;
 		} catch {
@@ -704,6 +794,7 @@
 			if (editingId === id) {
 				editingId = null;
 				selection = [];
+				drawSelectedOutlines();
 				draft = "";
 			}
 
@@ -749,6 +840,7 @@
 			await extension.storage.local.remove(storageKey);
 			notes = [];
 			selection = [];
+			drawSelectedOutlines();
 			editingId = null;
 			draft = "";
 			copied = true;
