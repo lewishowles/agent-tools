@@ -324,9 +324,8 @@
 		const bounds = element.getBoundingClientRect();
 		const styles = getComputedStyle(element);
 		const attributes = {};
-		const parent = element.parentElement;
-		const parentText = parent?.textContent?.trim().replace(/\s+/g, " ").slice(0, 80) ?? "";
-		const parentSummary = parent ? `${parent.tagName.toLowerCase()} ${parentText}` : "";
+		// The full HTML, measured before shortening so a cut can be marked.
+		const html = element.outerHTML;
 
 		for (const name of [
 			"alt",
@@ -348,12 +347,12 @@
 		return {
 			selector: uniqueSelector(element),
 			tag: element.tagName.toLowerCase(),
-			text: element.textContent?.trim().replace(/\s+/g, " ").slice(0, textLimit) ?? "",
+			text: visibleText(element),
 			id: element.id,
 			classes: Array.from(element.classList).slice(0, 12),
 			attributes,
-			outerHTML: element.outerHTML.slice(0, htmlLimit),
-			parent: parentSummary,
+			outerHTML: html.length > htmlLimit ? `${html.slice(0, htmlLimit)} (truncated)` : html,
+			parent: parentDescription(element.parentElement),
 			previousSibling: element.previousElementSibling?.tagName.toLowerCase() ?? "",
 			nextSibling: element.nextElementSibling?.tagName.toLowerCase() ?? "",
 			role: element.getAttribute("role") ?? "",
@@ -377,7 +376,7 @@
 	}
 
 	/**
-	 * Prefer a unique ID, then an ancestry path with sibling positions.
+	 * Use the nearest unique ID as an anchor, with sibling positions only where needed.
 	 *
 	 * @param  {Element}  element
 	 *     The element to find again in the current document.
@@ -385,33 +384,74 @@
 	 *     A selector that identifies the element in the current document.
 	 */
 	function uniqueSelector(element) {
-		if (element === document.documentElement) {
-			return "html";
-		}
-
-		if (element.id) {
-			const byId = `#${CSS.escape(element.id)}`;
-
-			if (document.querySelectorAll(byId).length === 1) {
-				return byId;
-			}
-		}
-
 		const parts = [];
 		let current = element;
 
-		while (current && current !== document.documentElement) {
+		while (current) {
+			if (current.id) {
+				const byId = `#${CSS.escape(current.id)}`;
+
+				if (document.querySelectorAll(byId).length === 1) {
+					return [byId, ...parts].join(" > ");
+				}
+			}
+
 			const tag = current.tagName.toLowerCase();
 			const siblings = Array.from(current.parentElement?.children ?? []).filter(
 				(sibling) => sibling.tagName === current.tagName,
 			);
-			const position = siblings.indexOf(current) + 1;
+			// A position is only needed to tell apart siblings that share this tag.
+			const position = siblings.length > 1 ? `:nth-of-type(${siblings.indexOf(current) + 1})` : "";
 
-			parts.unshift(`${tag}:nth-of-type(${position})`);
+			parts.unshift(`${tag}${position}`);
 			current = current.parentElement;
 		}
 
-		return `html > ${parts.join(" > ")}`;
+		return parts.join(" > ");
+	}
+
+	/**
+	 * Return the text a person sees on the element, falling back to its button or ARIA label.
+	 *
+	 * @param  {Element}  element
+	 *     The page element being added to a note.
+	 * @returns {string}
+	 *     The text with whitespace collapsed, cut to the packet's text limit.
+	 */
+	function visibleText(element) {
+		// The label on an input drawn as a button, which has no text content of its own.
+		const inputLabel =
+			element.tagName === "INPUT" && ["submit", "button", "reset"].includes(element.type)
+				? element.value
+				: "";
+		// The first non-empty candidate, preferring what is drawn on screen.
+		const text = inputLabel || element.innerText || element.getAttribute("aria-label") || "";
+
+		return text.trim().replace(/\s+/g, " ").slice(0, textLimit);
+	}
+
+	/**
+	 * Describe the parent without repeating the selected element's text.
+	 *
+	 * @param  {Element | null}  parent
+	 *     The selected element's parent, if one exists.
+	 * @returns {string}
+	 *     Its tag, ID and classes, or an empty string for the document root.
+	 */
+	function parentDescription(parent) {
+		if (!parent) {
+			return "";
+		}
+
+		// The parent's ID with a # in front, as a selector would show it.
+		const id = parent.id ? `#${parent.id}` : "";
+		// Up to 12 of the parent's classes, each with a . in front, as a selector would show them.
+		const classes = Array.from(parent.classList)
+			.slice(0, 12)
+			.map((name) => `.${name}`)
+			.join("");
+
+		return `${parent.tagName.toLowerCase()}${id}${classes}`;
 	}
 
 	/**
@@ -504,6 +544,7 @@
 					selection = note.elements;
 					draft = note.comment;
 					picking = false;
+					hideHighlight();
 					render();
 					panel.querySelector("textarea")?.focus();
 				}),
@@ -619,6 +660,7 @@
 			selection = [];
 			editingId = null;
 			picking = false;
+			hideHighlight();
 			draft = "";
 			saved = true;
 		} catch {

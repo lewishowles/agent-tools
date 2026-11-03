@@ -17,3 +17,19 @@ Hover to highlight an element, then click to select it. Shift-click adds another
 Notes are stored in extension storage by page origin and pathname, so they survive page reloads. Query strings and fragments do not split notes into separate pages. **Copy all** copies a numbered Markdown packet containing the page URL, viewport, selectors, element details and comments, then clears the saved notes. The packet may contain text and HTML from the page; review it before sharing.
 
 The extension runs on ordinary web pages. Browser-owned pages and some restricted pages do not allow content scripts, so the picker is unavailable there.
+
+## What's in a copied packet
+
+Each numbered entry has a heading with the page URL, viewport size in CSS pixels and the selector of each chosen element. A JSON block contains one snapshot for each selected element:
+
+- `selector`: a selector that matches only this element, starting from the nearest unique ID (or from `html` when there is none)
+- `tag`, `id`, `classes` and `role`: the element's tag name and identifiers
+- `text`: the text shown on screen, or the button or ARIA label when there is none, limited to 240 characters
+- `attributes`: useful attributes such as `alt`, `aria-label`, `href` and `name`, with values limited to 240 characters
+- `outerHTML`: the element's HTML, marked `(truncated)` if it exceeds 1,600 characters
+- `parent`: the parent's tag, ID and classes
+- `previousSibling` and `nextSibling`: the neighbouring tag names
+- `styles`: computed colour, font, display and position styles
+- `bounds`: position and size in CSS pixels
+
+The note's comment follows the JSON block.
