@@ -57,10 +57,11 @@ verdict: high-confidence
 - Scripts, styles, `noscript` blocks, and inline SVG.
 - The page's header, footer, navigation, sidebars (`aside`), and forms.
 - Anything marked `aria-hidden="true"`, such as icon labels and duplicate menus, because screen readers skip it too. Content hidden only by the `hidden` attribute or an inline `display` style is kept, because tabs and accordions use those for real content.
+- Inside the chosen content, blocks labelled as cookies, consent notices, newsletter sign-ups, sharing controls, related posts, promotions, sponsorships, ads, or pop-ups in their class or ID.
 
 To choose the main content, it uses the first `main`, `article`, or `role="main"` element that holds at least a fifth of the page's text, checked in that order. If none does, it uses the whole body. This stops a small banner marked as `main` from hiding the real article.
 
-It does not look for ads, cookie banners, share buttons, or related-post lists, so these can still appear in the output.
+Class and ID labels match whole words separated by spaces, hyphens, or underscores, so `ad` does not match `header` or `shadow`. Headings, `main`, `article`, `body`, and blocks containing them stay. A block also stays if its class or ID includes `content`, `article`, `post`, `entry`, or `body`, or if it holds more than a quarter of the chosen region's text. Unlabelled page furniture can still appear in the output, and so can a labelled block with a heading inside, such as a "Related posts" box.
 
 A page saved while a dialog was open can come out nearly empty. Sites often mark everything behind an open dialog `aria-hidden="true"`, so that content is removed along with it.
 

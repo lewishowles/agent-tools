@@ -29,6 +29,7 @@ def extract_fixture(name: str, base_url: str | None = None) -> tuple[str, str, s
 	[
 		"simple.html",
 		"blog-with-chrome.html",
+		"chrome-by-class.html",
 		"docs-page-with-code.html",
 		"table-heavy.html",
 		"js-app-shell.html",
@@ -66,6 +67,42 @@ def test_blog_fixture_removes_page_chrome_and_reports_selection() -> None:
 	assert report.selected_content_root == "main"
 	assert report.removed_elements_total >= 1
 	assert report.verdict == "high-confidence"
+
+
+def test_class_and_id_chrome_is_removed_without_losing_content() -> None:
+	_, selected_html, markdown = extract_fixture("chrome-by-class.html")
+
+	for chrome_text in (
+		"Accept tracking cookies",
+		"Share this garden guide",
+		"Sign up for weekly garden emails",
+		"Read our other garden articles",
+		"Sponsored garden tools",
+	):
+		assert chrome_text not in selected_html
+		assert chrome_text not in markdown
+
+	for content_text in (
+		"Growing a resilient garden",
+		"Choose plants that tolerate dry summers",
+		"Keep the garden shaded",
+		"This related note belongs to the post",
+		"This long garden note explains",
+		"Further reading",
+	):
+		assert content_text in markdown
+
+	# Each element below has a chrome word, or a near miss, and a different
+	# rule keeps it: share-wrapper holds the article, cookie is on the heading,
+	# related-links holds a heading, "shadow" is not the word "ad", "post" marks
+	# content, and the promo block holds more than a quarter of the article's
+	# text.
+	assert 'class="share-wrapper"' in selected_html
+	assert 'class="cookie"' in selected_html
+	assert 'class="related-links"' in selected_html
+	assert 'class="header-shadow"' in selected_html
+	assert 'class="post-related"' in selected_html
+	assert 'class="promo"' in selected_html
 
 
 def test_small_main_falls_through_to_the_article() -> None:

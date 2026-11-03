@@ -3,7 +3,9 @@
 Strips page chrome (script, style, nav, header, footer, etc.) and selects
 the main content region using deterministic rules: main, then article,
 then [role=main], followed by the remaining body content or root. A region
-is skipped when it holds less than a fifth of the page's text.
+is skipped when it holds less than a fifth of the page's text. Blocks inside
+the chosen region whose class or ID marks them as page chrome, such as share
+bars and cookie banners, are then removed.
 
 Uses only the standard library (html.parser) to preserve nested markup
 for later Markdown conversion.
@@ -11,6 +13,8 @@ for later Markdown conversion.
 
 from html import escape
 from html.parser import HTMLParser
+
+from page_to_markdown.prune import prune_chrome
 
 # Elements to strip entirely (content and tags).
 STRIP_TAGS = frozenset(
@@ -221,13 +225,31 @@ def select_content(html):
 
 	Tries the first main, article and [role=main] element in that order and
 	uses the first one that holds at least a fifth of the page's text. Falls
-	back to the body, or the whole document when there is no body.
+	back to the body, or the whole document when there is no body. Then
+	removes blocks inside that region whose class or ID marks them as page
+	chrome, such as share bars and cookie banners.
 	"""
 	builder = _DomBuilder()
 	builder.feed(html)
 	builder.close()
-	root = builder.root
 
+	# The part of the page kept as content; chrome inside it is removed next.
+	region = _choose_region(builder.root)
+	prune_chrome(region)
+
+	return _serialise(region)
+
+
+def _choose_region(root):
+	"""Pick the element that holds the page's main content.
+
+	Args:
+		root: The parsed document.
+
+	Returns:
+		The first main, article or [role=main] element with enough text, or
+		otherwise the body, or the whole document when there is no body.
+	"""
 	# The amount of text on the page, not counting stripped tags such as nav and footer.
 	page_text_length = root.text_length
 
@@ -240,7 +262,6 @@ def select_content(html):
 	):
 		candidate = _find_first(root, predicate)
 		if candidate and candidate.text_length * 5 >= page_text_length:
-			return _serialise(candidate)
+			return candidate
 
-	body = _find_first(root, lambda n: n.tag == "body")
-	return _serialise(body or root)
+	return _find_first(root, lambda n: n.tag == "body") or root
