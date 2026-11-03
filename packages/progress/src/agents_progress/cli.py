@@ -1516,6 +1516,30 @@ def _single_or_many(values: list[str]) -> str | list[str]:
 	return values[0] if len(values) == 1 else values
 
 
+def _with_position_note(
+	record: dict[str, object], position: int | None, item_name: str
+) -> dict[str, object]:
+	"""Add a note to a new item's record when a negative position put it first.
+
+	Args:
+		record: The record returned by the release, task or chunk add.
+		position: The position the user asked for, or None when they gave none.
+		item_name: The word for the item in the note, such as "task".
+
+	Returns:
+		The record unchanged when no position was given or it was 0 or above,
+		otherwise a copy with a `position_note` explaining where the item went.
+	"""
+	if position is None or position >= 0:
+		return record
+	return {
+		**record,
+		"position_note": (
+			f"Position {position} isn't supported, so the {item_name} was put first."
+		),
+	}
+
+
 def _render_human_output(
 	command: str, data: object, *, dependency_id: str | None = None
 ) -> str:
@@ -1525,13 +1549,22 @@ def _render_human_output(
 	list response, only the first rendered line of each record is kept unless
 	forced removal details need to be shown below it. The worktree commands
 	print only the checkout path, so a launcher can change into it directly.
-	Task completion adds cleanup lines when a task had a managed worktree. Task
-	and chunk starts add one line when the worktree has uncommitted changes or
-	Git could not check it. A dependency add names the task it now depends on
-	from dependency_id, because the response holds only the dependent task.
+	Adding a release, task or chunk with a negative position prints the
+	position note on its own line after the record. Task completion adds
+	cleanup lines when a task had a managed worktree. Task and chunk starts add
+	one line when the worktree has uncommitted changes or Git could not check
+	it. A dependency add names the task it now depends on from dependency_id,
+	because the response holds only the dependent task.
 	"""
 	if command in {"worktree ensure", "worktree get"} and isinstance(data, dict):
 		return f"{data['path']}\n"
+	if (
+		command in {"release add", "task add", "chunk add"}
+		and isinstance(data, dict)
+		and (position_note := data.get("position_note"))
+	):
+		record = {key: value for key, value in data.items() if key != "position_note"}
+		return render(command, record) + f"{position_note}\n"
 	if command == "worktree cleanup" and isinstance(data, dict):
 		return "\n".join(_worktree_cleanup_lines(data)) + "\n"
 	if command == "project remove" and isinstance(data, dict):
@@ -1838,12 +1871,16 @@ def _run_command(
 			"project current",
 		),
 		("release", "add"): lambda: (
-			WriteStore(database).release_add(
-				slug=args.slug,
-				title=args.title,
-				overview=args.overview,
-				status=args.status,
-				position=args.position,
+			_with_position_note(
+				WriteStore(database).release_add(
+					slug=args.slug,
+					title=args.title,
+					overview=args.overview,
+					status=args.status,
+					position=args.position,
+				),
+				args.position,
+				"release",
 			),
 			"release add",
 		),
@@ -1884,18 +1921,22 @@ def _run_command(
 			"release complete",
 		),
 		("task", "add"): lambda: (
-			WriteStore(database).task_add(
-				slug=args.slug,
-				title=args.title,
-				overview=args.overview,
-				done_when=args.done_when,
-				files=args.files,
-				areas=args.areas,
-				split_rationale=args.split_rationale,
-				verification=args.verification,
-				release_id=args.release_id,
-				depends_on=args.depends_on,
-				position=args.position,
+			_with_position_note(
+				WriteStore(database).task_add(
+					slug=args.slug,
+					title=args.title,
+					overview=args.overview,
+					done_when=args.done_when,
+					files=args.files,
+					areas=args.areas,
+					split_rationale=args.split_rationale,
+					verification=args.verification,
+					release_id=args.release_id,
+					depends_on=args.depends_on,
+					position=args.position,
+				),
+				args.position,
+				"task",
 			),
 			"task add",
 		),
@@ -1972,12 +2013,16 @@ def _run_command(
 			"chunk get",
 		),
 		("chunk", "add"): lambda: (
-			WriteStore(database).chunk_add(
-				task_id=args.task_id,
-				title=args.title,
-				description=args.description,
-				review_question=args.review_question,
-				position=args.position,
+			_with_position_note(
+				WriteStore(database).chunk_add(
+					task_id=args.task_id,
+					title=args.title,
+					description=args.description,
+					review_question=args.review_question,
+					position=args.position,
+				),
+				args.position,
+				"chunk",
 			),
 			"chunk add",
 		),

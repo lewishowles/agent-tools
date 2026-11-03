@@ -293,7 +293,8 @@ progress release add --slug <slug> --title <title> --overview <overview> [--stat
   the new release goes before the release already there. A position past the
   end, or no position, places the new release last. Every add renumbers the
   release list from 1 with no gaps, so the returned position can be lower than
-  requested and a position of 0 becomes 1
+  requested and a position of 0 becomes 1. A negative position puts the release
+  first with a note in the result
 
 ### `progress release list`
 
@@ -417,7 +418,8 @@ progress task add --slug <slug> --title <title> --overview <overview> --done-whe
   the new task goes before the task already there in its release or unassigned
   queue. A position past the end, or no position, places the new task last.
   Every add renumbers that queue from 1 with no gaps, so the returned position
-  can be lower than requested and a position of 0 becomes 1
+  can be lower than requested and a position of 0 becomes 1. A negative position
+  puts the task first with a note in the result
 
 The new task is `ready` when its dependencies allow it to start, or `blocked`
 when it still has unresolved dependencies.
@@ -757,7 +759,8 @@ progress chunk add --task <task_id> --title <title> --description <description> 
   the new chunk goes before the chunk already there. A position past the end, or
   no position, places the new chunk last. Every add renumbers the task's chunks
   from 1 with no gaps, so the returned position can be lower than requested and
-  a position of 0 becomes 1
+  a position of 0 becomes 1. A negative position puts the chunk first with a note
+  in the result
 
 Running `progress chunk add` at a real terminal without every required flag
 asks for missing required fields, then offers optional fields in a checkbox,

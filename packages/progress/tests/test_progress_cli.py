@@ -3536,6 +3536,121 @@ def test_release_move_passes_relative_target_to_write_store(
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 
+@pytest.mark.parametrize("command", ["release", "task", "chunk"])
+@pytest.mark.parametrize("position", [-3, 0, 2, None])
+@pytest.mark.parametrize("json_mode", [False, True], ids=["human", "json"])
+def test_add_reports_negative_positions_after_placing_the_item_first(
+	tmp_path: Path,
+	monkeypatch,
+	capsys,
+	command: str,
+	position: int | None,
+	json_mode: bool,
+) -> None:
+	"""Put the new item first for a negative position, and add a note only in that case."""
+	database_path = tmp_path / "progress.db"
+	project = Project(
+		"prj_" + "p" * 22,
+		"agents",
+		"Agent tools",
+		"2026-01-01T00:00:00+00:00",
+	)
+	database = Database(database_path)
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(project.id, project.slug, project.name, project.created_at),
+		)
+
+	monkeypatch.setattr(ProjectStore, "current", lambda self, path=None: project)
+	writer = WriteStore(database)
+	if command == "release":
+		existing = writer.release_add("first", "First release", overview="First work.")
+		arguments = [
+			"release",
+			"add",
+			"--slug",
+			"new",
+			"--title",
+			"New release",
+			"--overview",
+			"New work.",
+		]
+	elif command == "task":
+		existing = writer.task_add(
+			"first", "First task", overview="First work.", done_when=["Done."]
+		)
+		arguments = [
+			"task",
+			"add",
+			"--slug",
+			"new",
+			"--title",
+			"New task",
+			"--overview",
+			"New work.",
+			"--done-when",
+			"Done.",
+		]
+	else:
+		task = writer.task_add(
+			"owner", "Owner task", overview="Owner work.", done_when=["Done."]
+		)
+		existing = writer.chunk_add(
+			task["id"], "First chunk", "First work.", "Is it done?"
+		)
+		arguments = [
+			"chunk",
+			"add",
+			"--task",
+			task["id"],
+			"--title",
+			"New chunk",
+			"--description",
+			"New work.",
+			"--review-question",
+			"Is it done?",
+		]
+	if position is not None:
+		arguments.extend(["--position", str(position)])
+	arguments.extend(["--database", str(database_path)])
+	if json_mode:
+		arguments.append("--json")
+
+	assert cli.main(arguments) == 0
+	output = capsys.readouterr().out
+	has_negative_position = position is not None and position < 0
+	expected_note = (
+		f"Position {position} isn't supported, so the {command} was put first."
+	)
+	if json_mode:
+		result = json.loads(output)["data"]
+		assert result.get("position_note") == (
+			expected_note if has_negative_position else None
+		)
+	else:
+		plain_lines = render_module._ANSI_ESCAPE_PATTERN.sub("", output).splitlines()
+		assert "position_note" not in output
+		assert (expected_note in plain_lines) is has_negative_position
+		if has_negative_position:
+			record_line = next(
+				index
+				for index, line in enumerate(plain_lines)
+				if f"New {command}" in line
+			)
+			assert plain_lines.index(expected_note) > record_line
+		result = None
+	if position is not None and position <= 0:
+		with database.connection() as connection:
+			table = {"release": "releases", "task": "tasks", "chunk": "chunks"}[command]
+			rows = connection.execute(
+				f"SELECT id, position FROM {table} WHERE id = ?", (existing["id"],)
+			).fetchall()
+		assert rows[0]["position"] == 2
+		if result is not None:
+			assert result["position"] == 1
+
+
 @pytest.mark.parametrize(
 	"relative_arguments",
 	[
