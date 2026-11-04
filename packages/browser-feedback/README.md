@@ -24,7 +24,7 @@ Each numbered entry has a heading with the page URL, viewport size in CSS pixels
 
 - `selector`: a selector that matches only this element, starting from the nearest unique ID (or from `html` when there is none)
 - `tag`, `id`, `classes` and `role`: the element's tag name and identifiers
-- `text`: the text shown on screen, or the button or ARIA label when there is none, limited to 240 characters
+- `text`: the text shown on screen, including the labels of buttons inside the element, limited to 240 characters. An element with no text falls back to its ARIA label, except a form field, which reports empty text
 - `attributes`: useful attributes such as `alt`, `aria-label`, `href` and `name`, with values limited to 240 characters
 - `outerHTML`: the element's HTML, marked `(truncated)` if it exceeds 1,600 characters
 - `parent`: the parent's tag, ID and classes

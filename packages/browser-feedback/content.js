@@ -7,6 +7,10 @@
 	const storageKey = `browser-feedback:${location.origin}${location.pathname}`;
 	// The most characters of element text or attribute values kept for each element, so the packet stays readable.
 	const textLimit = 240;
+	// The input types drawn as buttons. Their label is their value, not text inside them.
+	const inputButtonTypes = ["submit", "button", "reset"];
+	// Matches any input drawn as a button.
+	const inputButtonSelector = inputButtonTypes.map((type) => `input[type='${type}']`).join(", ");
 	// The most characters of an element's HTML kept for each element. Large containers would otherwise fill the packet.
 	const htmlLimit = 1600;
 	// The element that holds the extension's interface. It is added to the page only when the user first opens the panel.
@@ -502,7 +506,9 @@
 	}
 
 	/**
-	 * Return the text a person sees on the element, falling back to its button or ARIA label.
+	 * Return the text a person sees on the element, including its own input-button label and those inside it.
+	 * An element with no visible text falls back to its ARIA label, except a form field, which reports
+	 * empty text because its label is not shown in the field.
 	 *
 	 * @param  {Element}  element
 	 *     The page element being added to a note.
@@ -512,13 +518,87 @@
 	function visibleText(element) {
 		// The label on an input drawn as a button, which has no text content of its own.
 		const inputLabel =
-			element.tagName === "INPUT" && ["submit", "button", "reset"].includes(element.type)
-				? element.value
-				: "";
+			element.tagName === "INPUT" && inputButtonTypes.includes(element.type) ? element.value : "";
+
+		// The container's text with its input-button labels, which innerText leaves out.
+		const buttonText = element.querySelector(inputButtonSelector)
+			? textWithInputButtons(element)
+			: "";
+
+		// Whether the element is a field the person types or chooses in.
+		const isFormField =
+			["TEXTAREA", "SELECT"].includes(element.tagName) ||
+			(element.tagName === "INPUT" &&
+				element.type !== "image" &&
+				!inputButtonTypes.includes(element.type));
+
 		// The first non-empty candidate, preferring what is drawn on screen.
-		const text = inputLabel || element.innerText || element.getAttribute("aria-label") || "";
+		const text =
+			inputLabel ||
+			buttonText ||
+			element.innerText ||
+			(!isFormField && element.getAttribute("aria-label")) ||
+			"";
 
 		return text.trim().replace(/\s+/g, " ").slice(0, textLimit);
+	}
+
+	/**
+	 * Join the element's visible text and the labels of its visible input buttons, in page order.
+	 *
+	 * @param  {Element}  element
+	 *     The page element being added to a note.
+	 * @returns {string}
+	 *     The text and labels in page order, with whitespace not yet collapsed.
+	 */
+	function textWithInputButtons(element) {
+		// The text pieces and button labels found so far.
+		const parts = [];
+		// The visible characters found so far, not counting whitespace. The text collapses its spaces
+		// afterwards, so this never passes the limit before the final text does.
+		let collectedLength = 0;
+
+		// Visits every element and text node inside the element in page order.
+		const walker = document.createTreeWalker(
+			element,
+			NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+		);
+
+		while (collectedLength <= textLimit && walker.nextNode()) {
+			// The element or text node being looked at.
+			const node = walker.currentNode;
+
+			if (node.nodeType === Node.TEXT_NODE) {
+				if (
+					node.parentElement?.checkVisibility({ visibilityProperty: true }) &&
+					!node.parentElement.closest("script, style")
+				) {
+					parts.push(node.textContent);
+					collectedLength += node.textContent.replace(/\s+/g, "").length;
+				}
+
+				continue;
+			}
+
+			if (node.tagName === "BR") {
+				parts.push(" ");
+
+				continue;
+			}
+
+			if (
+				node.tagName === "INPUT" &&
+				inputButtonTypes.includes(node.type) &&
+				node.checkVisibility({ visibilityProperty: true })
+			) {
+				parts.push(` ${node.value} `);
+				collectedLength += node.value.replace(/\s+/g, "").length;
+			}
+		}
+
+		// Text keeps the spacing written in the page, with a space for each line break and around each
+		// button label. Two blocks with no whitespace between them in the HTML still run together.
+		return parts.join("");
 	}
 
 	/**
