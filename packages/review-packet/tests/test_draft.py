@@ -1,5 +1,6 @@
 """Check draft behaviour with invented worktrees and progress records."""
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -11,6 +12,8 @@ import review_packet.cli as cli
 import review_packet.progress_records as records
 from review_packet.brief import render
 from review_packet.cli import main
+from review_packet.manifest import create as create_manifest
+from review_packet.manifest import to_json as manifest_to_json
 from review_packet.progress_records import (
 	Chunk,
 	ProgressError,
@@ -153,7 +156,7 @@ def test_draft_json_include_and_force(
 	monkeypatch: pytest.MonkeyPatch,
 	capsys: pytest.CaptureFixture[str],
 ) -> None:
-	"""Write an absolute brief path, then refuse replacement without force."""
+	"""Write both draft files and replace both only when force is requested."""
 	chunk = Chunk(
 		"chk_example",
 		"Draft",
@@ -173,14 +176,24 @@ def test_draft_json_include_and_force(
 	data = json.loads(capsys.readouterr().out)["data"]
 
 	assert Path(data["brief"]).is_absolute()
+	assert Path(data["manifest"]).is_absolute()
 	assert "README.md" in data["contents"]
 	assert Path(data["brief"]).exists()
+	assert Path(data["manifest"]).exists()
+	assert "Content fingerprint" not in Path(data["brief"]).read_text()
+
+	Path(data["brief"]).write_text("Edited brief\n")
+	Path(data["manifest"]).write_text("Edited manifest\n")
 
 	assert main(["draft", "chk_example", "--json"]) == 2
 	assert json.loads(capsys.readouterr().out)["error"]["code"] == "usage"
+	assert Path(data["brief"]).read_text() == "Edited brief\n"
+	assert Path(data["manifest"]).read_text() == "Edited manifest\n"
 
 	assert main(["draft", "chk_example", "--force", "--json"]) == 0
 	assert json.loads(capsys.readouterr().out)["ok"] is True
+	assert Path(data["brief"]).read_text() != "Edited brief\n"
+	assert json.loads(Path(data["manifest"]).read_text())["files"]
 
 
 def test_snapshot_covers_staged_and_unstaged_edit_without_base(repo: Path) -> None:
@@ -202,42 +215,135 @@ def test_snapshot_covers_staged_and_unstaged_edit_without_base(repo: Path) -> No
 	)
 
 
-def test_snapshot_fingerprint_changes_with_file_contents(repo: Path) -> None:
-	"""Keep the fingerprint until a changed file's contents change."""
+def test_manifest_fingerprint_changes_with_file_contents(repo: Path) -> None:
+	"""Keep the fingerprint until a selected file's contents change."""
 	(repo / "old.txt").write_text("first edit\n")
-	first = capture(repo)
+	snapshot = capture(repo)
+	contents = select_files(repo, snapshot, ())
+	first = create_manifest(repo, snapshot, contents)
 
-	assert capture(repo).fingerprint == first.fingerprint
+	assert create_manifest(repo, snapshot, contents).fingerprint == first.fingerprint
 
 	(repo / "old.txt").write_text("second edit\n")
-	second = capture(repo)
+	second = create_manifest(repo, capture(repo), contents)
 
 	assert second.fingerprint != first.fingerprint
 
 
-def test_snapshot_fingerprint_hashes_link_text_without_reading_target(
+def test_manifest_hashes_link_text_without_reading_target(
 	repo: Path,
 	tmp_path_factory: pytest.TempPathFactory,
 	monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-	"""Changing a link target changes the fingerprint without opening its file."""
+	"""Changing link text changes the fingerprint without opening its target."""
 	outside_folder = tmp_path_factory.mktemp("outside")
 	outside = outside_folder / "private-review-target.txt"
 	outside.write_text("private content\n")
 	link = repo / "linked.txt"
 	link.symlink_to(outside)
-	first = capture(repo)
+	first = create_manifest(repo, capture(repo), ("linked.txt",))
 
 	def refuse_read(_path: Path) -> bytes:
 		"""Catch any attempt to read a changed file through a link."""
 		raise AssertionError("The link target was opened")
 
 	monkeypatch.setattr(Path, "read_bytes", refuse_read)
-	assert capture(repo).fingerprint == first.fingerprint
+	assert (
+		create_manifest(repo, capture(repo), ("linked.txt",)).fingerprint
+		== first.fingerprint
+	)
 
 	link.unlink()
 	link.symlink_to(outside_folder / "another-private-target.txt")
-	assert capture(repo).fingerprint != first.fingerprint
+	assert (
+		create_manifest(repo, capture(repo), ("linked.txt",)).fingerprint
+		!= first.fingerprint
+	)
+
+
+def test_manifest_covers_explicit_and_ignored_files_but_not_the_brief(
+	repo: Path,
+	tmp_path_factory: pytest.TempPathFactory,
+	monkeypatch: pytest.MonkeyPatch,
+	capsys: pytest.CaptureFixture[str],
+) -> None:
+	"""Track selected files outside Git changes without hashing the editable brief."""
+	(repo / ".gitignore").write_text("private-note.txt\n")
+	(repo / "private-note.txt").write_text("first note\n")
+	chunk = Chunk(
+		"chk_example",
+		"Draft",
+		"Draft a brief",
+		"Is it complete?",
+		Task("tsk_example", "Review", "Overview", (), ()),
+	)
+	monkeypatch.setattr(cli, "read_chunk", lambda _root, _id: chunk)
+	monkeypatch.setattr(
+		cli, "read_related_tasks", lambda _root, _id: RelatedTasks((), ())
+	)
+	drafts = tmp_path_factory.mktemp("drafts")
+	monkeypatch.setattr(cli.tempfile, "gettempdir", lambda: str(drafts))
+	monkeypatch.chdir(repo)
+	arguments = [
+		"draft",
+		"chk_example",
+		"--include",
+		"README.md",
+		"--include",
+		"private-note.txt",
+		"--json",
+	]
+
+	assert main(arguments) == 0
+
+	data = json.loads(capsys.readouterr().out)["data"]
+	first = json.loads(Path(data["manifest"]).read_text())
+	files = {item["path"]: item["sha256"] for item in first["files"]}
+
+	assert files["README.md"] == hashlib.sha256(b"Repository\n").hexdigest()
+	assert files["private-note.txt"] == hashlib.sha256(b"first note\n").hexdigest()
+	assert "private-note.txt" not in {item["path"] for item in first["changes"]}
+
+	Path(data["brief"]).write_text("Edited review question\n")
+
+	assert main([*arguments, "--force"]) == 0
+
+	capsys.readouterr()
+
+	assert (
+		json.loads(Path(data["manifest"]).read_text())["fingerprint"]
+		== first["fingerprint"]
+	)
+
+	contents = select_files(repo, capture(repo), ("README.md", "private-note.txt"))
+
+	(repo / "README.md").write_text("Changed repository\n")
+
+	assert (
+		create_manifest(repo, capture(repo), contents).fingerprint
+		!= first["fingerprint"]
+	)
+
+	(repo / "README.md").write_text("Repository\n")
+	(repo / "private-note.txt").write_text("second note\n")
+
+	assert (
+		create_manifest(repo, capture(repo), contents).fingerprint
+		!= first["fingerprint"]
+	)
+
+
+def test_manifest_lists_deleted_files_without_a_hash(repo: Path) -> None:
+	"""Keep a deletion in the change list without adding it to selected files."""
+	(repo / "delete.txt").unlink()
+	snapshot = capture(repo)
+	manifest = create_manifest(repo, snapshot, select_files(repo, snapshot, ()))
+
+	assert {item.path: item.status for item in manifest.changes}[
+		"delete.txt"
+	] == "deleted"
+	assert "delete.txt" not in {item.path for item in manifest.files}
+	assert manifest_to_json(manifest)["fingerprint"] == manifest.fingerprint
 
 
 def test_root_project_manifest_is_selected(repo: Path) -> None:
@@ -383,7 +489,9 @@ def test_draft_text_and_usage_errors(
 
 	output = capsys.readouterr().out
 
-	assert "Brief:" in output and "Settings: .review-packet.toml" in output
+	assert "Brief:" in output
+	assert "Manifest:" in output
+	assert "Settings: .review-packet.toml" in output
 
 	brief = next((tmp_path / "drafts").rglob("REVIEW.md")).read_text()
 

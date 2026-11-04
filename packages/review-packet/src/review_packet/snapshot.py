@@ -1,7 +1,5 @@
-"""Record the Git changes and file contents covered by a review."""
+"""Record the Git changes a review covers."""
 
-import hashlib
-import os
 import subprocess
 from dataclasses import dataclass
 from enum import StrEnum
@@ -63,9 +61,6 @@ class Snapshot:
 	uncommitted: bool
 	# Every changed path, sorted by path.
 	changes: tuple[Change, ...]
-	# A SHA-256 hash of the base commit and the changed files, so a reviewer
-	# can tell whether the files changed after the brief was written.
-	fingerprint: str
 
 
 def repository_root(cwd: Path) -> Path:
@@ -107,14 +102,14 @@ def repository_name(root: Path) -> str:
 
 
 def capture(root: Path, base: str | None = None) -> Snapshot:
-	"""List the changes since a base revision and fingerprint them.
+	"""List the changes since a base revision.
 
 	Args:
 		root: The worktree root.
 		base: The revision to compare against, or None for the last commit.
 
 	Returns:
-		The changed paths, the resolved base commit and the fingerprint.
+		The changed paths and the resolved base commit.
 
 	Raises:
 		InvalidBaseError: The requested base does not name a commit.
@@ -127,7 +122,7 @@ def capture(root: Path, base: str | None = None) -> Snapshot:
 	changes = _changed_since_base(root, base_sha) + _untracked(root)
 	# The changes looked up by path, so they can be listed in path order.
 	by_path = {change.path: change for change in changes}
-	# The changes sorted by path, so the brief and fingerprint are repeatable.
+	# The changes sorted by path, so the brief and manifest are repeatable.
 	ordered = tuple(by_path[path] for path in sorted(by_path))
 
 	return Snapshot(
@@ -135,7 +130,6 @@ def capture(root: Path, base: str | None = None) -> Snapshot:
 		base_sha,
 		bool(_git(root, "status", "--porcelain", "-z")),
 		ordered,
-		_fingerprint(root, base_sha, ordered),
 	)
 
 
@@ -237,39 +231,6 @@ def _parse_changes(output: bytes) -> list[Change]:
 		changes.append(Change(next(fields), change_status))
 
 	return changes
-
-
-def _fingerprint(root: Path, base_sha: str | None, changes: tuple[Change, ...]) -> str:
-	"""Hash the base commit and each changed path, status and file contents.
-
-	Args:
-		root: The worktree root.
-		base_sha: The base commit, or None before the first commit.
-		changes: The changes, sorted by path.
-
-	Returns:
-		The hexadecimal SHA-256 hash.
-	"""
-	# The digest joins the base, each path and its current contents.
-	digest = hashlib.sha256()
-	digest.update((base_sha or NO_COMMITS).encode() + b"\0")
-
-	for change in changes:
-		digest.update(change.path.encode(errors="surrogateescape") + b"\0")
-		digest.update(change.status.encode() + b"\0")
-		digest.update((change.old_path or "").encode(errors="surrogateescape") + b"\0")
-
-		# The changed file on disk; deleted files have none.
-		file_path = root / change.path
-
-		if file_path.is_symlink():
-			# Hash where the link points, so a file outside the repository is never read.
-			digest.update(hashlib.sha256(os.fsencode(os.readlink(file_path))).digest())
-		elif file_path.is_file():
-			# A separate hash keeps one file's bytes from running into the next path.
-			digest.update(hashlib.sha256(file_path.read_bytes()).digest())
-
-	return digest.hexdigest()
 
 
 def _split_paths(output: bytes) -> list[str]:
