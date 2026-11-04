@@ -6,7 +6,7 @@ All notable changes to `page-to-markdown` are documented here. The format is bas
 
 ### Added
 
-- Remove blocks inside the chosen content whose class or ID labels them as page chrome, such as cookie notices, sign-ups, sharing controls, related posts, promotions, sponsorships, ads and pop-ups. Labels match whole words. Headings, blocks with a heading inside, large blocks and blocks labelled as content are kept.
+- Remove blocks inside the chosen content when their class or ID contains a page chrome word, such as `cookie`, `signup`, `share`, `related`, `promo`, `sponsor`, `ad` or `popup`. Labels match whole words. Headings, blocks with a heading inside, large blocks and blocks labelled as content are kept. Blocks with generated class names, such as many share buttons, are not caught.
 - Count blocks removed by class or ID in the removed-elements report line.
 
 ### Fixed

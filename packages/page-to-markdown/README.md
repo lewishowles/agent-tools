@@ -57,7 +57,7 @@ verdict: high-confidence
 - Scripts, styles, `noscript` blocks, and inline SVG.
 - The page's header, footer, navigation, sidebars (`aside`), and forms.
 - Anything marked `aria-hidden="true"`, such as icon labels and duplicate menus, because screen readers skip it too. Content hidden only by the `hidden` attribute or an inline `display` style is kept, because tabs and accordions use those for real content.
-- Inside the chosen content, blocks labelled as cookies, consent notices, newsletter sign-ups, sharing controls, related posts, promotions, sponsorships, ads, or pop-ups in their class or ID.
+- Inside the chosen content, blocks with a class or ID containing `cookie`, `consent`, `gdpr`, `newsletter`, `subscribe`, `signup`, `share`, `sharing`, `social`, `related`, `recommended`, `promo`, `sponsor`, `advert`, `ad`, `ads`, `popup`, or `modal` as a whole word. Blocks with generated class names, such as many share buttons, are not caught.
 
 To choose the main content, it uses the first `main`, `article`, or `role="main"` element that holds at least a fifth of the page's text, checked in that order. If none does, it uses the whole body. This stops a small banner marked as `main` from hiding the real article.
 
