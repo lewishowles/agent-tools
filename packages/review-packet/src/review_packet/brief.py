@@ -33,7 +33,7 @@ def render(
 
 	Args:
 		chunk: The reviewed chunk and its task.
-		snapshot: The current changes and their fingerprint.
+		snapshot: The current Git changes.
 		contents: The files selected for the packet.
 		settings_name: The settings file name to show, or None.
 		related: Titles of prerequisite and dependent tasks.
@@ -85,7 +85,6 @@ def render(
 		f"Base: {snapshot.base}",
 		f"Base commit: {snapshot.base_sha or NO_COMMITS}",
 		f"Uncommitted changes: {'yes' if snapshot.uncommitted else 'no'}",
-		f"Content fingerprint (SHA-256): {snapshot.fingerprint}",
 		"",
 		"Changed paths:",
 		"",

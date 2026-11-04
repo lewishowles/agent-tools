@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from review_packet.brief import render
+from review_packet.manifest import create as create_manifest
+from review_packet.manifest import to_json as manifest_to_json
 from review_packet.progress_records import (
 	Chunk,
 	ProgressError,
@@ -79,6 +81,8 @@ class DraftResult:
 
 	# The absolute path lets the next command find the brief.
 	brief: str
+	# The absolute path lets the next command find the manifest.
+	manifest: str
 	# The selected repository paths preview the packet contents.
 	contents: tuple[str, ...]
 	# The relative settings path avoids leaking the user's home directory.
@@ -176,8 +180,8 @@ def main(argv: list[str] | None = None) -> int:
 		# Where the brief is written.
 		brief_path = _brief_path(root, args.chunk_id)
 		# The paths to report.
-		data = _write_brief(
-			brief_path, chunk, snapshot, contents, settings, related, args.force
+		data = _write_draft(
+			root, brief_path, chunk, snapshot, contents, settings, related, args.force
 		)
 	except USAGE_ERRORS as error:
 		_print_error("usage", str(error), args.json)
@@ -219,7 +223,8 @@ def _brief_path(root: Path, chunk_id: str) -> Path:
 	return folder / "REVIEW.md"
 
 
-def _write_brief(
+def _write_draft(
+	root: Path,
 	brief_path: Path,
 	chunk: Chunk,
 	snapshot: Snapshot,
@@ -228,9 +233,10 @@ def _write_brief(
 	related: RelatedTasks,
 	force: bool,
 ) -> DraftResult:
-	"""Write the draft brief and return its output details.
+	"""Write the brief and manifest, then return their paths.
 
 	Args:
+		root: The repository root containing the selected files.
 		brief_path: The destination file.
 		chunk: The reviewed chunk and its task.
 		snapshot: The current Git change set.
@@ -244,7 +250,7 @@ def _write_brief(
 
 	Raises:
 		BriefExistsError: A brief exists and force is false.
-		OSError: The brief cannot be written.
+		OSError: A selected file cannot be read or a draft file cannot be written.
 	"""
 	# The settings file name to show, or None when there is no settings file.
 	settings_name = SETTINGS_NAME if settings.found else None
@@ -254,10 +260,24 @@ def _write_brief(
 			f"The review brief already exists: {brief_path}. Use --force to replace it."
 		)
 
-	brief_path.parent.mkdir(parents=True, exist_ok=True)
-	brief_path.write_text(render(chunk, snapshot, contents, settings_name, related))
+	# Hash every selected path before either draft file is replaced.
+	manifest = create_manifest(root, snapshot, contents)
+	# The manifest sits beside REVIEW.md, where the build step looks for it.
+	manifest_path = brief_path.with_name("manifest.json")
 
-	return DraftResult(str(brief_path.resolve()), contents, settings_name)
+	brief_path.parent.mkdir(parents=True, exist_ok=True)
+	# The brief is written first. If the manifest write then fails, the old
+	# manifest either still matches the files or shows that they changed, whereas
+	# a new manifest beside an old brief would pass off older work as current.
+	brief_path.write_text(render(chunk, snapshot, contents, settings_name, related))
+	manifest_path.write_text(json.dumps(manifest_to_json(manifest), indent=2) + "\n")
+
+	return DraftResult(
+		str(brief_path.resolve()),
+		str(manifest_path.resolve()),
+		contents,
+		settings_name,
+	)
 
 
 def _print_result(data: DraftResult, json_mode: bool) -> None:
@@ -273,6 +293,7 @@ def _print_result(data: DraftResult, json_mode: bool) -> None:
 			"ok": True,
 			"data": {
 				"brief": data.brief,
+				"manifest": data.manifest,
 				"contents": list(data.contents),
 				"settings": data.settings,
 			},
@@ -282,6 +303,7 @@ def _print_result(data: DraftResult, json_mode: bool) -> None:
 		return
 
 	print(f"Brief: {data.brief}")
+	print(f"Manifest: {data.manifest}")
 	print(f"Settings: {data.settings or '(none)'}")
 	print("Contents:")
 
