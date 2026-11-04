@@ -12,6 +12,7 @@ members = [
     "friction",
     "page-to-markdown",
     "review-feedback",
+    "review-packet",
     "team-send",
 ]
 
@@ -196,6 +197,11 @@ requires-dist = [
     { name = "lewishowles-cli-style", specifier = ">=0.17.1" },
     { name = "prompt-toolkit", specifier = ">=3.0" },
 ]
+
+[[package]]
+name = "review-packet"
+version = "0.1.0"
+source = { editable = "packages/review-packet" }
 
 [[package]]
 name = "ruff"
