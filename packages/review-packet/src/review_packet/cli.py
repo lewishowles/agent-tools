@@ -15,7 +15,11 @@ from review_packet.progress_records import (
 	read_chunk,
 	read_related_tasks,
 )
-from review_packet.selection import MissingIncludeError, select_files
+from review_packet.selection import (
+	MissingIncludeError,
+	OutsideSymlinkError,
+	select_files,
+)
 from review_packet.settings import (
 	SETTINGS_NAME,
 	InvalidSettingsError,
@@ -42,6 +46,7 @@ USAGE_ERRORS = (
 	InvalidBaseError,
 	InvalidSettingsError,
 	MissingIncludeError,
+	OutsideSymlinkError,
 )
 
 # Failures in Git or the file system that stop the draft. Progress failures
@@ -60,6 +65,8 @@ NOT_FOUND_EXIT = 1
 # The exit code for each progress error kind, from docs/cli-contract.md.
 PROGRESS_EXITS = {
 	"usage": USAGE_EXIT,
+	"invalid-id": USAGE_EXIT,
+	"wrong-id-type": USAGE_EXIT,
 	"not-found": NOT_FOUND_EXIT,
 	"environment": ENVIRONMENT_EXIT,
 	"internal": ENVIRONMENT_EXIT,
