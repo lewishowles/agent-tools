@@ -1,6 +1,7 @@
 """Record the Git changes and file contents covered by a review."""
 
 import hashlib
+import os
 import subprocess
 from dataclasses import dataclass
 from enum import StrEnum
@@ -261,7 +262,10 @@ def _fingerprint(root: Path, base_sha: str | None, changes: tuple[Change, ...]) 
 		# The changed file on disk; deleted files have none.
 		file_path = root / change.path
 
-		if file_path.is_file():
+		if file_path.is_symlink():
+			# Hash where the link points, so a file outside the repository is never read.
+			digest.update(hashlib.sha256(os.fsencode(os.readlink(file_path))).digest())
+		elif file_path.is_file():
 			# A separate hash keeps one file's bytes from running into the next path.
 			digest.update(hashlib.sha256(file_path.read_bytes()).digest())
 

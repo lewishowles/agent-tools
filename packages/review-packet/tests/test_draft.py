@@ -20,7 +20,11 @@ from review_packet.progress_records import (
 	read_chunk,
 	read_related_tasks,
 )
-from review_packet.selection import MissingIncludeError, select_files
+from review_packet.selection import (
+	MissingIncludeError,
+	OutsideSymlinkError,
+	select_files,
+)
 from review_packet.settings import InvalidSettingsError, read_settings
 from review_packet.snapshot import NO_COMMITS, capture
 
@@ -211,6 +215,31 @@ def test_snapshot_fingerprint_changes_with_file_contents(repo: Path) -> None:
 	assert second.fingerprint != first.fingerprint
 
 
+def test_snapshot_fingerprint_hashes_link_text_without_reading_target(
+	repo: Path,
+	tmp_path_factory: pytest.TempPathFactory,
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	"""Changing a link target changes the fingerprint without opening its file."""
+	outside_folder = tmp_path_factory.mktemp("outside")
+	outside = outside_folder / "private-review-target.txt"
+	outside.write_text("private content\n")
+	link = repo / "linked.txt"
+	link.symlink_to(outside)
+	first = capture(repo)
+
+	def refuse_read(_path: Path) -> bytes:
+		"""Catch any attempt to read a changed file through a link."""
+		raise AssertionError("The link target was opened")
+
+	monkeypatch.setattr(Path, "read_bytes", refuse_read)
+	assert capture(repo).fingerprint == first.fingerprint
+
+	link.unlink()
+	link.symlink_to(outside_folder / "another-private-target.txt")
+	assert capture(repo).fingerprint != first.fingerprint
+
+
 def test_root_project_manifest_is_selected(repo: Path) -> None:
 	"""Find a manifest and test configuration in a root-level project."""
 	(repo / "pyproject.toml").write_text(
@@ -230,6 +259,74 @@ def test_includes_are_normalised(repo: Path) -> None:
 	contents = select_files(repo, capture(repo), ("./README.md",))
 
 	assert contents.count("README.md") == 1
+
+
+def test_changed_outside_links_are_all_refused(repo: Path, tmp_path: Path) -> None:
+	"""List every changed link that points outside the repository."""
+	(repo / "first-link.txt").symlink_to(tmp_path.parent / "outside-one.txt")
+	(repo / "second-link.txt").symlink_to(tmp_path.parent / "outside-two.txt")
+
+	with pytest.raises(OutsideSymlinkError) as error:
+		select_files(repo, capture(repo), ())
+
+	assert "first-link.txt" in str(error.value)
+	assert "second-link.txt" in str(error.value)
+	assert "can't be shared" in str(error.value)
+
+
+def test_included_outside_link_is_refused(repo: Path, tmp_path: Path) -> None:
+	"""Give an included outside link the same refusal as a changed link."""
+	(repo / "included-link.txt").symlink_to(tmp_path.parent / "outside.txt")
+
+	with pytest.raises(OutsideSymlinkError, match="included-link.txt"):
+		select_files(repo, capture(repo), ("included-link.txt",))
+
+
+def test_included_path_through_outside_link_is_refused(
+	repo: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+	"""Refuse an included file reached through a linked directory."""
+	outside_folder = tmp_path_factory.mktemp("outside")
+	(outside_folder / "private.txt").write_text("private content\n")
+	(repo / "linked-directory").symlink_to(outside_folder, target_is_directory=True)
+
+	with pytest.raises(OutsideSymlinkError, match="linked-directory/private.txt"):
+		select_files(repo, capture(repo), ("linked-directory/private.txt",))
+
+
+def test_inside_link_is_selected(repo: Path) -> None:
+	"""Allow a selected link whose target stays in the repository."""
+	(repo / "inside-link.txt").symlink_to("README.md")
+
+	assert "inside-link.txt" in select_files(repo, capture(repo), ())
+
+
+def test_draft_reports_outside_link_as_usage(
+	repo: Path,
+	tmp_path: Path,
+	monkeypatch: pytest.MonkeyPatch,
+	capsys: pytest.CaptureFixture[str],
+) -> None:
+	"""Return usage exit 2 and name the link in the draft error."""
+	(repo / "outside-link.txt").symlink_to(tmp_path.parent / "outside.txt")
+	chunk = Chunk(
+		"chk_example",
+		"Draft",
+		"Draft a brief",
+		"Is it complete?",
+		Task("tsk_example", "Review", "Overview", (), ()),
+	)
+	monkeypatch.setattr(cli, "read_chunk", lambda _root, _id: chunk)
+	monkeypatch.setattr(
+		cli, "read_related_tasks", lambda _root, _id: RelatedTasks((), ())
+	)
+	monkeypatch.chdir(repo)
+
+	assert main(["draft", "chk_example", "--json"]) == 2
+
+	error = json.loads(capsys.readouterr().out)["error"]
+	assert error["code"] == "usage"
+	assert "outside-link.txt" in error["message"]
 
 
 def test_include_outside_repository_is_rejected(repo: Path) -> None:
@@ -463,7 +560,14 @@ def test_argparse_usage_error_is_json(capsys: pytest.CaptureFixture[str]) -> Non
 
 
 @pytest.mark.parametrize(
-	("code", "exit_code"), [("usage", 2), ("not-found", 1), ("environment", 3)]
+	("code", "exit_code"),
+	[
+		("usage", 2),
+		("invalid-id", 2),
+		("wrong-id-type", 2),
+		("not-found", 1),
+		("environment", 3),
+	],
 )
 def test_progress_error_keeps_its_kind(
 	repo: Path,

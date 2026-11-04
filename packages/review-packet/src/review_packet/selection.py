@@ -28,6 +28,10 @@ class MissingIncludeError(ValueError):
 	"""An explicitly included file is missing or outside the repository."""
 
 
+class OutsideSymlinkError(ValueError):
+	"""A selected path leads outside the repository through a link."""
+
+
 def select_files(
 	root: Path, snapshot: Snapshot, extra: tuple[str, ...]
 ) -> tuple[str, ...]:
@@ -46,6 +50,7 @@ def select_files(
 
 	Raises:
 		MissingIncludeError: An extra file is missing or outside the repository.
+		OutsideSymlinkError: A selected path leads outside the repository through a link.
 	"""
 	# Every candidate path, before checking that it exists.
 	paths = {
@@ -62,6 +67,24 @@ def select_files(
 
 	for change in snapshot.changes:
 		paths.update(_project_files(root, change.path))
+
+	# Paths that reach outside the repository through a link at any level, which
+	# can't be shared. They are checked first so an included link gets this error
+	# rather than a missing-file one. Absolute paths and paths that climb out with
+	# .. are left for the missing-include check below.
+	outside_links = [
+		path
+		for path in sorted(paths)
+		if not Path(path).is_absolute()
+		and ".." not in Path(path).parts
+		and not (root / path).resolve().is_relative_to(root.resolve())
+	]
+
+	if outside_links:
+		raise OutsideSymlinkError(
+			"Paths that lead outside the repository through a link can't be shared: "
+			+ ", ".join(outside_links)
+		)
 
 	# The candidates that exist inside the repository.
 	selected = []
