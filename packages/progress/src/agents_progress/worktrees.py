@@ -18,6 +18,11 @@ from .repository import GitRepository
 from .schema import utc_timestamp
 from .writes import _unresolved_dependencies
 
+# The reason given when cleanup is asked to remove the worktree it is running in.
+IN_TASK_WORKTREE_REASON = (
+	"run this from outside the task worktree, such as the main checkout"
+)
+
 
 class WorktreeStore(_StoreBase):
 	"""Keep a task's recorded checkout tied to its project and Git repository."""
@@ -109,7 +114,10 @@ class WorktreeStore(_StoreBase):
 			if Path.cwd().resolve().is_relative_to(
 				resolved_target
 			) or repository.path.is_relative_to(resolved_target):
-				return pending("command uses the task worktree")
+				return pending(
+					IN_TASK_WORKTREE_REASON,
+					self._retry_from_main_checkout(common_dir, retry),
+				)
 
 			changes = checkout.run(
 				["status", "--porcelain", "--ignore-submodules=none"]
@@ -695,7 +703,7 @@ class WorktreeStore(_StoreBase):
 				return {
 					"status": "kept",
 					"path": checkout_path,
-					"reason": "command uses the task worktree",
+					"reason": IN_TASK_WORKTREE_REASON,
 				}
 
 			worktrees = repository.run(["worktree", "list", "--porcelain"])
@@ -1035,6 +1043,23 @@ class WorktreeStore(_StoreBase):
 			"branch": branch,
 			"base_branch": row["base_branch"],
 		}
+
+	@staticmethod
+	def _retry_from_main_checkout(common_dir: Path, retry: str) -> str:
+		"""Prefix the cleanup command with a move into the main checkout.
+
+		Args:
+			common_dir: The Git folder shared by every worktree of the repository.
+			retry: The cleanup command to run again.
+
+		Returns:
+			The command preceded by `cd` into the main checkout, or the command
+			alone when the repository has no main checkout, as with a bare one.
+		"""
+		if common_dir.name != ".git":
+			return retry
+
+		return f"cd {quote(str(common_dir.parent))} && {retry}"
 
 	def _record_location(
 		self, row: sqlite3.Row, project_id: str, common_dir: Path

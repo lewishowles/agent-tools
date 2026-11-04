@@ -25,7 +25,7 @@ from agents_progress.projects import Project, ProjectStore
 from agents_progress.reads import ReadStore
 from agents_progress.repository import GitRepository
 from agents_progress.style import span as render_span
-from agents_progress.worktrees import WorktreeStore
+from agents_progress.worktrees import IN_TASK_WORKTREE_REASON, WorktreeStore
 from agents_progress.writes import WriteStore
 
 PROJECT_ID = "prj_" + "p" * 22
@@ -2153,10 +2153,16 @@ def test_task_complete_does_not_remove_the_current_checkout(
 	completed = store.task_complete(task["id"], path=checkout)
 
 	assert completed["worktree_cleanup"]["status"] == "pending"
-	assert completed["worktree_cleanup"]["reason"] == "command uses the task worktree"
+	assert completed["worktree_cleanup"]["reason"] == IN_TASK_WORKTREE_REASON
 	assert checkout.is_dir()
 	assert worktrees.get(task["id"], committed_repository)["path"] == str(checkout)
-	assert worktrees.cleanup(task["id"], committed_repository)["status"] == "pending"
+
+	cleanup = worktrees.cleanup(task["id"], committed_repository)
+
+	assert cleanup["status"] == "pending"
+	assert cleanup["command"] == (
+		f"cd {committed_repository.resolve()} && progress worktree cleanup {task['id']}"
+	)
 
 
 def test_task_complete_does_not_remove_a_checkout_named_as_its_git_path(
@@ -2169,7 +2175,7 @@ def test_task_complete_does_not_remove_a_checkout_named_as_its_git_path(
 	completed = store.task_complete(task["id"], path=checkout)
 
 	assert completed["worktree_cleanup"]["status"] == "pending"
-	assert completed["worktree_cleanup"]["reason"] == "command uses the task worktree"
+	assert completed["worktree_cleanup"]["reason"] == IN_TASK_WORKTREE_REASON
 	assert checkout.is_dir()
 	assert worktrees.get(task["id"], committed_repository)["path"] == str(checkout)
 
@@ -3752,7 +3758,7 @@ def test_task_remove_checks_a_later_in_use_checkout_before_removing_the_first(
 	second_checkout = Path(worktrees.ensure(second["id"], committed_repository)["path"])
 	monkeypatch.chdir(second_checkout)
 
-	with pytest.raises(StillReferencedError, match="command uses the task worktree"):
+	with pytest.raises(StillReferencedError, match=IN_TASK_WORKTREE_REASON):
 		store.task_remove(
 			[first["id"], second["id"]], path=committed_repository, force=True
 		)
@@ -4782,7 +4788,7 @@ def test_task_clean_renders_the_whole_output_for_a_checkout_only_blocker() -> No
 				"dependencies": [],
 				"worktree": {
 					"path": "/tmp/task-checkout",
-					"reason": "command uses the task worktree",
+					"reason": IN_TASK_WORKTREE_REASON,
 				},
 			}
 		],
@@ -4799,7 +4805,7 @@ def test_task_clean_renders_the_whole_output_for_a_checkout_only_blocker() -> No
 				render_span("1 task kept", "warning", weight="normal"),
 				"",
 				f"{render_span('Kept task'.ljust(len('Kept checkout')), 'muted', weight='normal')}  Task (tsk_example)",
-				f"{render_span('Kept checkout', 'muted', weight='normal')}  /tmp/task-checkout (command uses the task worktree)",
+				f"{render_span('Kept checkout', 'muted', weight='normal')}  /tmp/task-checkout ({IN_TASK_WORKTREE_REASON})",
 				"",
 				render_span("0 releases removed", "muted", weight="normal"),
 			]
@@ -5095,9 +5101,9 @@ def test_task_clean_force_keeps_an_in_use_checkout_and_removes_other_done_tasks(
 	assert result["removed"] == [{"id": removed["id"], "title": "Removed"}]
 	assert result["blocked"][0]["worktree"] == {
 		"path": str(kept_path),
-		"reason": "command uses the task worktree",
+		"reason": IN_TASK_WORKTREE_REASON,
 	}
-	assert f"Kept checkout  {kept_path} (command uses the task worktree)" in output
+	assert f"Kept checkout  {kept_path} ({IN_TASK_WORKTREE_REASON})" in output
 	assert f"Removed checkout: {removed_path}" in output
 	assert kept_path.is_dir()
 	assert not removed_path.exists()
