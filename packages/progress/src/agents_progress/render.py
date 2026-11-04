@@ -153,6 +153,8 @@ def render(command: str, data: object) -> str:
 		return _render_release(data)
 	if command == "task get" and isinstance(data, dict):
 		return _render_task_get(data)
+	if command == "task find" and isinstance(data, list):
+		return _render_task_find(data)
 	if command == "context get" and isinstance(data, dict):
 		return _render_context_get(data)
 	if command == "chunk get" and isinstance(data, dict):
@@ -652,6 +654,38 @@ def _render_task_get(task: dict[str, object]) -> str:
 	next keeps the plain task view, so it never shows these extra sections.
 	"""
 	return "\n\n".join([_render_task(task), _render_read_context(task)])
+
+
+def _render_task_find(matches: list[dict[str, object]]) -> str:
+	"""Show each matching task with its project and recorded checkout paths."""
+	# One block of lines per match, separated by blank lines so repeated slugs stay readable.
+	blocks = []
+	for match in matches:
+		# The project that owns the matching task.
+		project = match["project"]
+		# The matching task's ID, slug, title and status.
+		task = match["task"]
+		# The folders where the project is checked out, which may be none.
+		checkouts = match["checkouts"]
+		# The heading and fields shown for this match.
+		lines = [
+			render_span(
+				f"{project['name']} ({project['slug']}, {project['id']})",
+				"accent",
+				weight="bold",
+			),
+			f"Task: {task['title']} ({task['id']})",
+			f"Slug: {task['slug']}",
+			f"Status: {task['status']}",
+			"Checkouts:",
+		]
+		if checkouts:
+			lines.extend(f"  {path}" for path in checkouts)
+		else:
+			lines.append("  None recorded")
+		blocks.append("\n".join(lines))
+
+	return "\n\n".join(blocks) + "\n"
 
 
 def _render_context_get(context: dict[str, object]) -> str:

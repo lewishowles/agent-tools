@@ -396,6 +396,20 @@ is started by starting a task within it.
 A task belongs to the current project and can belong to a release. It can have
 chunks, notes, and dependencies.
 
+### `progress task find`
+
+Find which project owns a task, even when you are outside its checkout:
+
+```text
+progress task find <task_id_or_slug> [--json] [--database <path>]
+```
+
+The result shows the project ID, slug and name; the task ID, slug, title and
+status; and every recorded checkout path for that project. A task ID gives one
+match. A slug shared by several projects lists every match. A missing task
+returns `not-found`. This command does not need a current project; other task
+commands continue to use the current project.
+
 ### `progress task add`
 
 Create a task:

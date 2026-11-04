@@ -736,6 +736,11 @@ _COMMAND_SPECS = (
 				arguments=(_argument("task_id"),),
 			),
 			_CommandSpec(
+				"find",
+				"find a task by ID or slug across all projects",
+				arguments=(_argument("task_id", metavar="TASK"),),
+			),
+			_CommandSpec(
 				"get",
 				"show one task",
 				arguments=(_argument("task_id", nargs="?"),),
@@ -1980,6 +1985,10 @@ def _run_command(
 				_selected_id(store, args.task_id, "task")
 			),
 			"task get",
+		),
+		("task", "find"): lambda: (
+			ReadStore(database).task_find(args.task_id),
+			"task find",
 		),
 		("task", "list"): lambda: (
 			ReadStore(database).task_list(

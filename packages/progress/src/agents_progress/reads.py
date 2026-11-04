@@ -976,6 +976,24 @@ def _dependency_ids(connection: sqlite3.Connection, task_id: str) -> list[str]:
 	return [row["depends_on_task_id"] for row in rows]
 
 
+def _checkout_paths(connection: sqlite3.Connection, project_id: str) -> list[str]:
+	"""Return the folders where a project is checked out, sorted by path.
+
+	Args:
+		connection: The open progress database connection.
+		project_id: The project whose checkouts to list.
+
+	Returns:
+		Every recorded checkout path for the project, which may be empty.
+	"""
+	rows = connection.execute(
+		"SELECT path FROM checkouts WHERE project_id = ? ORDER BY path",
+		(project_id,),
+	).fetchall()
+
+	return [row["path"] for row in rows]
+
+
 def _search_like_pattern(term: str) -> str:
 	"""Wrap the term in LIKE wildcards, escaping any % or _ the user typed so they match literally."""
 	escaped_term = term.replace("\\", "\\\\")
@@ -1168,7 +1186,65 @@ def _search_chunk_item(
 
 
 class ReadStore(_StoreBase):
-	"""Run the current project's read queries against the progress database."""
+	"""Run read commands against the current project; task find searches every project."""
+
+	def task_find(self, task_reference: str) -> list[dict[str, object]]:
+		"""Find every project with a task matching an ID or slug.
+
+		Args:
+			task_reference: The task ID or slug to look up across all projects.
+
+		Returns:
+			Matching projects, tasks, and recorded checkout paths, sorted by project name.
+
+		Raises:
+			NotFoundError: No task matches the ID or slug.
+		"""
+		task_reference = validate_identifier(task_reference, TASK_PREFIX)
+		# A task ID matches one task. Anything else is a slug, which can repeat across projects.
+		lookup_column = (
+			"tasks.id"
+			if is_valid_object_id(task_reference, TASK_PREFIX)
+			else "tasks.slug"
+		)
+
+		with self.database.connection() as connection:
+			# The matching tasks and their projects, sorted by project name.
+			matches = connection.execute(
+				"SELECT tasks.id AS task_id, tasks.slug AS task_slug, "
+				"tasks.title AS task_title, tasks.status AS task_status, "
+				"projects.id AS project_id, projects.slug AS project_slug, "
+				"projects.name AS project_name "
+				"FROM tasks JOIN projects ON projects.id = tasks.project_id "
+				f"WHERE {lookup_column} = ? ORDER BY projects.name, projects.id, tasks.id",
+				(task_reference,),
+			).fetchall()
+			if not matches:
+				raise NotFoundError(
+					f"task {task_reference} was not found", {"id": task_reference}
+				)
+
+			# One entry per match, each listing where its project is checked out.
+			results = []
+			for match in matches:
+				results.append(
+					{
+						"project": {
+							"id": match["project_id"],
+							"slug": match["project_slug"],
+							"name": match["project_name"],
+						},
+						"task": {
+							"id": match["task_id"],
+							"slug": match["task_slug"],
+							"title": match["task_title"],
+							"status": match["task_status"],
+						},
+						"checkouts": _checkout_paths(connection, match["project_id"]),
+					}
+				)
+
+			return results
 
 	def next(
 		self,

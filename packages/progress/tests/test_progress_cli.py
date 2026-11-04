@@ -221,6 +221,109 @@ def test_show_requires_an_id(capsys) -> None:
 	assert json.loads(capsys.readouterr().out)["error"]["code"] == "usage"
 
 
+@pytest.mark.parametrize("json_mode", [False, True], ids=["human", "json"])
+def test_task_find_works_outside_a_bound_project(
+	tmp_path: Path, monkeypatch, capsys, json_mode: bool
+) -> None:
+	"""Show a task's owning project and checkout paths in either output mode."""
+	# Run from a folder that is not a Git checkout, so no project can be bound.
+	monkeypatch.chdir(tmp_path)
+
+	# A temporary database for the test's own project and task.
+	database_path = tmp_path / "progress.db"
+	# The database the test seeds directly, without a Git checkout.
+	database = Database(database_path)
+	# The task the command should find by its slug.
+	task_id = "tsk_" + "a" * 22
+	# The project that owns the task.
+	project_id = "prj_" + "a" * 22
+	with database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(project_id, "agents", "Agent configuration", "2026-01-01T00:00:00+00:00"),
+		)
+		connection.execute(
+			"INSERT INTO tasks (id, project_id, slug, title, overview, verification, "
+			"split_rationale, status, position, created_at, updated_at) "
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			(
+				task_id,
+				project_id,
+				"first",
+				"First task",
+				"Overview",
+				"Check",
+				"Split",
+				"ready",
+				1,
+				"2026-01-01T00:00:00+00:00",
+				"2026-01-01T00:00:00+00:00",
+			),
+		)
+		connection.execute(
+			"INSERT INTO checkouts (project_id, path, last_seen_at) VALUES (?, ?, ?)",
+			(project_id, "/work/agents", "2026-01-01T00:00:00+00:00"),
+		)
+
+	# The command line for finding the task by slug.
+	arguments = ["task", "find", "first", "--database", str(database_path)]
+	if json_mode:
+		arguments.append("--json")
+
+	assert cli.main(arguments) == 0
+	# What the command printed to standard output and standard error.
+	output = capsys.readouterr()
+	assert output.err == ""
+	if json_mode:
+		assert json.loads(output.out) == {
+			"ok": True,
+			"data": [
+				{
+					"project": {
+						"id": project_id,
+						"slug": "agents",
+						"name": "Agent configuration",
+					},
+					"task": {
+						"id": task_id,
+						"slug": "first",
+						"title": "First task",
+						"status": "ready",
+					},
+					"checkouts": ["/work/agents"],
+				}
+			],
+		}
+	else:
+		assert "Agent configuration" in output.out
+		assert "First task" in output.out
+		assert task_id in output.out
+		assert "Slug: first" in output.out
+		assert "Status: ready" in output.out
+		assert "/work/agents" in output.out
+
+
+@pytest.mark.parametrize("json_mode", [False, True], ids=["human", "json"])
+def test_task_find_reports_not_found(tmp_path: Path, capsys, json_mode: bool) -> None:
+	"""Report a missing task through the standard CLI error path."""
+	# The command line for a slug that no project uses.
+	arguments = ["task", "find", "missing", "--database", str(tmp_path / "db")]
+	if json_mode:
+		arguments.append("--json")
+
+	assert cli.main(arguments) == 1
+	# What the command printed to standard output and standard error.
+	output = capsys.readouterr()
+	if json_mode:
+		assert json.loads(output.out)["error"] == {
+			"code": "not-found",
+			"message": "task missing was not found",
+			"details": {"id": "missing"},
+		}
+	else:
+		assert "task missing was not found" in output.err
+
+
 @pytest.mark.parametrize(
 	"command, explicit_id, selected_kind, method_name",
 	[
@@ -397,7 +500,7 @@ def test_version_json_uses_the_standard_envelope(capsys) -> None:
 		("release", "{add,move,list,get,remove,rename,edit,complete}"),
 		(
 			"task",
-			"{add,move,dependency,remove,clean,rename,edit,start,complete,block,unblock,get,list}",
+			"{add,move,dependency,remove,clean,rename,edit,start,complete,block,unblock,find,get,list}",
 		),
 		("chunk", "{add,move,start,complete,remove,rename,edit,get,list}"),
 		("discovery", "{add,list,remove}"),
@@ -506,6 +609,7 @@ def test_inbox_help_names_add_dismiss_and_list(capsys) -> None:
 				"progress task complete",
 				"progress task block",
 				"progress task unblock",
+				"progress task find",
 				"progress task get",
 				"progress task list",
 			],

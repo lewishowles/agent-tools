@@ -142,6 +142,91 @@ def _seed_store(tmp_path: Path) -> ReadStore:
 	return ReadStore(database, _ProjectStore(database))
 
 
+def test_task_find_matches_ids_and_repeated_slugs_without_a_current_project(
+	tmp_path: Path,
+) -> None:
+	"""Find tasks and checkout paths in every project without Git binding."""
+	# The seeded store holds project "agents" with a task whose slug is "first".
+	store = _seed_store(tmp_path)
+	# A second project that reuses the slug "first" for its own task.
+	other_project_id = "prj_" + "z" * 22
+	# The second project's task with the repeated slug.
+	other_task_id = "tsk_" + "z" * 22
+	with store.database.transaction() as connection:
+		connection.execute(
+			"INSERT INTO projects (id, slug, name, created_at) VALUES (?, ?, ?, ?)",
+			(other_project_id, "other", "Other project", "2026-01-01T00:00:00+00:00"),
+		)
+		connection.execute(
+			"INSERT INTO tasks (id, project_id, slug, title, overview, verification, "
+			"split_rationale, status, position, created_at, updated_at) "
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			(
+				other_task_id,
+				other_project_id,
+				"first",
+				"Other first task",
+				"Other overview",
+				"Verify it",
+				"One chunk",
+				"done",
+				1,
+				"2026-01-01T00:00:00+00:00",
+				"2026-01-01T00:00:00+00:00",
+			),
+		)
+		for project_id, path in (
+			(PROJECT_ID, "/work/agents-two"),
+			(PROJECT_ID, "/work/agents-one"),
+			(other_project_id, "/work/other"),
+		):
+			connection.execute(
+				"INSERT INTO checkouts (project_id, path, last_seen_at) VALUES (?, ?, ?)",
+				(project_id, path, "2026-01-01T00:00:00+00:00"),
+			)
+
+	# A new reader on the same database; task find searches it without a current project.
+	reader = ReadStore(store.database)
+	# The single match for the first project's task ID.
+	by_id = reader.task_find(TASK_A)
+	# Both projects' tasks that share the slug "first".
+	by_slug = reader.task_find("first")
+
+	assert by_id == [by_slug[0]]
+	assert by_slug == [
+		{
+			"project": {
+				"id": PROJECT_ID,
+				"slug": "agents",
+				"name": "Agent configuration",
+			},
+			"task": {
+				"id": TASK_A,
+				"slug": "first",
+				"title": "First task",
+				"status": "in-progress",
+			},
+			"checkouts": ["/work/agents-one", "/work/agents-two"],
+		},
+		{
+			"project": {
+				"id": other_project_id,
+				"slug": "other",
+				"name": "Other project",
+			},
+			"task": {
+				"id": other_task_id,
+				"slug": "first",
+				"title": "Other first task",
+				"status": "done",
+			},
+			"checkouts": ["/work/other"],
+		},
+	]
+	with pytest.raises(NotFoundError, match="task missing was not found"):
+		reader.task_find("missing")
+
+
 def test_export_includes_finished_work_and_project_context(tmp_path: Path) -> None:
 	"""Export every project record, including finished work, without local paths."""
 	store = _seed_store(tmp_path)
