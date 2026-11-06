@@ -5,8 +5,10 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+from pathlib import Path
 from typing import NoReturn
 
 # The team roles a sender can hold and send to. The last part of every team tag
@@ -30,10 +32,15 @@ NOT_IN_HCOM_HINT = (
 )
 
 
+class BodyFileError(Exception):
+    """Raised when a body file cannot be sent, with the reason to show the sender."""
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Send the piped message to the one live teammate for the requested role and return 0.
+    """Send a file or piped message to the one live teammate for the requested role.
 
     With --team, the teammate comes from that named team in the sender's repository.
+    With --body-file, the file is removed only after HCOM confirms delivery.
     A refusal or failed send prints the reason and returns 1, and a message is never sent twice.
     Invalid arguments exit with status 2, as argparse does.
     """
@@ -49,6 +56,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reply-to", help="HCOM event ID to reply to")
     parser.add_argument("--thread", help="HCOM thread name")
     parser.add_argument("--team", help="Send to this named team in the same repository")
+    parser.add_argument(
+        "--body-file",
+        type=Path,
+        help="Send this file and remove it after confirmed delivery",
+    )
     parser.add_argument("--json", action="store_true", help="Print structured output")
     args = parser.parse_args(arguments)
 
@@ -113,10 +125,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.intent == "ack" and not args.reply_to:
         return _refuse("--intent ack requires --reply-to.", args.json)
 
-    if sys.stdin.isatty():
-        return _refuse("Pipe a message body to stdin.", args.json)
+    # The message text, from the body file or from stdin.
+    if args.body_file is not None:
+        try:
+            body = _read_body_file(args.body_file)
+        except BodyFileError as error:
+            return _refuse(str(error), args.json)
+    else:
+        if sys.stdin.isatty():
+            return _refuse(
+                "Pipe a message body to stdin or use --body-file.", args.json
+            )
 
-    body = sys.stdin.read()
+        body = sys.stdin.read()
 
     if not body.strip():
         return _refuse("Message body is empty.", args.json)
@@ -219,24 +240,83 @@ def main(argv: list[str] | None = None) -> int:
         detail = f"{error} ({output})" if output else str(error)
         return _refuse(f"Unexpected HCOM send receipt: {detail}", args.json)
 
+    # The warning for the sender when a delivered body file could not be removed.
+    warning = None
+
+    if args.body_file is not None:
+        warning = _remove_body_file(args.body_file)
+
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "ok": True,
-                    "data": {
-                        "recipient": recipient["name"],
-                        "base_name": recipient["base_name"],
-                        "tag": target_tag,
-                        "event_id": event_id,
-                    },
-                }
-            )
-        )
+        # The delivery details in the success output.
+        data = {
+            "recipient": recipient["name"],
+            "base_name": recipient["base_name"],
+            "tag": target_tag,
+            "event_id": event_id,
+        }
+
+        if warning:
+            data["warning"] = warning
+
+        print(json.dumps({"ok": True, "data": data}))
     else:
         print(f"Sent to {recipient['name']} (event {event_id}).")
 
+        if warning:
+            print(f"team-send: {warning}", file=sys.stderr)
+
     return 0
+
+
+def _read_body_file(path: Path) -> str:
+    """Read an ordinary file as the message body.
+
+    Args:
+        path: The file the sender passed with --body-file.
+
+    Returns:
+        The file's text, which may be blank; the caller refuses a blank body.
+
+    Raises:
+        BodyFileError: The file is missing, is not an ordinary file, or cannot be read.
+    """
+    try:
+        # The file's own details, read with lstat so that a symlink is refused, not followed.
+        file_stat = path.lstat()
+    except FileNotFoundError as error:
+        raise BodyFileError(
+            f"Body file {path} is missing. It may already have been sent; write a new one."
+        ) from error
+    except OSError as error:
+        raise BodyFileError(f"Cannot inspect body file {path}: {error}") from error
+
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise BodyFileError(f"Body file {path} must be an ordinary file.")
+
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise BodyFileError(f"Cannot read body file {path}: {error}") from error
+
+
+def _remove_body_file(path: Path) -> str | None:
+    """Remove a body file after its message has been delivered.
+
+    A failed removal is returned as a warning, because the send has already succeeded
+    and an error could lead the sender to send the same message again.
+
+    Args:
+        path: The body file that HCOM confirmed was delivered.
+
+    Returns:
+        None when the file was removed, otherwise a warning for the sender.
+    """
+    try:
+        path.unlink()
+    except OSError as error:
+        return f"Sent, but could not remove body file {path}: {error}. Do not send it again."
+
+    return None
 
 
 class _ArgumentParser(argparse.ArgumentParser):

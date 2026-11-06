@@ -447,6 +447,201 @@ def test_missing_piped_body_refuses_before_hcom(
     assert calls == []
 
 
+def test_body_file_sends_its_contents_and_removes_only_that_file(
+    hcom, tmp_path, monkeypatch, capsys
+) -> None:
+    """Confirmed delivery removes the chosen file, leaves its folder intact, and refuses a second send."""
+    # The HCOM commands that team-send ran.
+    _, _, calls = hcom
+    # The report that delivery should remove.
+    body_file = tmp_path / "report.txt"
+    # A file in the same folder that delivery must not touch.
+    other_file = tmp_path / "notes.txt"
+    # Stdin that looks like a terminal and holds text. Neither matters when a body file is given.
+    stdin = io.StringIO("stale piped report")
+
+    body_file.write_text("fresh report\n")
+    other_file.write_text("keep this")
+    stdin.isatty = lambda: True
+    monkeypatch.setattr(cli.sys, "stdin", stdin)
+
+    assert cli.main(["scout", "--intent", "inform", "--body-file", str(body_file)]) == 0
+
+    assert calls[1][1]["input"] == "fresh report\n"
+    assert stdin.tell() == 0
+    assert not body_file.exists()
+    assert other_file.read_text() == "keep this"
+    assert "event 42" in capsys.readouterr().out
+
+    assert cli.main(["scout", "--intent", "inform", "--body-file", str(body_file)]) == 1
+    assert "may already have been sent" in capsys.readouterr().err
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("body", ["", "  \n"])
+def test_empty_body_file_is_kept(hcom, tmp_path, capsys, body: str) -> None:
+    """A blank body file is refused and stays in place."""
+    # The HCOM commands that team-send ran.
+    _, _, calls = hcom
+    # The blank report that should stay in place.
+    body_file = tmp_path / "report.txt"
+
+    body_file.write_text(body)
+
+    assert cli.main(["scout", "--intent", "inform", "--body-file", str(body_file)]) == 1
+
+    assert "Message body is empty" in capsys.readouterr().err
+    assert body_file.read_text() == body
+    assert calls == []
+
+
+@pytest.mark.parametrize("kind", ["missing", "directory", "symlink", "invalid UTF-8"])
+def test_invalid_body_file_refuses_without_sending(
+    hcom, tmp_path, capsys, kind: str
+) -> None:
+    """A missing, unsuitable, or unreadable body file is refused before sending."""
+    # The HCOM commands that team-send ran.
+    _, _, calls = hcom
+    # The path passed to team-send, set up below to match the kind of bad file.
+    body_file = tmp_path / "report.txt"
+
+    if kind == "directory":
+        body_file.mkdir()
+    elif kind == "symlink":
+        # The file the symlink points at, which must survive the refusal.
+        target = tmp_path / "target.txt"
+
+        target.write_text("keep this")
+        body_file.symlink_to(target)
+    elif kind == "invalid UTF-8":
+        body_file.write_bytes(b"\xff")
+
+    assert cli.main(["scout", "--intent", "inform", "--body-file", str(body_file)]) == 1
+
+    # The refusal message that team-send printed.
+    error = capsys.readouterr().err
+
+    # The words the refusal must contain for this kind of bad file.
+    expected_error = {
+        "missing": "may already have been sent",
+        "directory": "ordinary file",
+        "symlink": "ordinary file",
+        "invalid UTF-8": "Cannot read body file",
+    }[kind]
+
+    assert expected_error in error
+    assert calls == []
+
+    if kind == "symlink":
+        assert body_file.is_symlink()
+        assert target.read_text() == "keep this"
+
+
+@pytest.mark.parametrize("refusal", ["own role", "no teammate", "several teammates"])
+def test_refusal_before_sending_keeps_body_file(
+    hcom, tmp_path, capsys, refusal: str
+) -> None:
+    """A refusal while choosing the teammate keeps the body file."""
+    # The live agents HCOM reports, and the HCOM commands that team-send ran.
+    listing, _, calls = hcom
+    # The report that the refusal should leave in place.
+    body_file = tmp_path / "report.txt"
+    # The role to send to, which is the sender's own for the own-role refusal.
+    role = "implementer" if refusal == "own role" else "scout"
+
+    body_file.write_text("keep this")
+
+    if refusal == "no teammate":
+        listing.clear()
+    elif refusal == "several teammates":
+        listing.append(agent("agent-tools-scout-nova"))
+
+    assert cli.main([role, "--intent", "inform", "--body-file", str(body_file)]) == 1
+
+    assert body_file.read_text() == "keep this"
+    assert all(command[1] != "send" for command, _ in calls)
+    assert capsys.readouterr().err
+
+
+@pytest.mark.parametrize("failure", ["send", "receipt"])
+def test_unconfirmed_delivery_keeps_body_file(
+    hcom, tmp_path, monkeypatch, capsys, failure: str
+) -> None:
+    """A failed send or unconfirmed receipt keeps the body file."""
+    # The delivery receipt HCOM returns, and the HCOM commands that team-send ran.
+    _, receipt, calls = hcom
+    # The report that the failed delivery should leave in place.
+    body_file = tmp_path / "report.txt"
+
+    body_file.write_text("keep this")
+
+    if failure == "send":
+        # The fake HCOM runner, which still answers every call except the send.
+        original_run = cli.subprocess.run
+
+        def run(command, **kwargs):
+            """Return a failed delivery from the HCOM send call."""
+            if command[1] == "send":
+                calls.append((command, kwargs))
+                return subprocess.CompletedProcess(command, 1, "", "failed")
+
+            return original_run(command, **kwargs)
+
+        monkeypatch.setattr(cli.subprocess, "run", run)
+    else:
+        receipt["delivered_to"] = ["someone-else"]
+
+    assert cli.main(["scout", "--intent", "inform", "--body-file", str(body_file)]) == 1
+
+    assert body_file.read_text() == "keep this"
+    assert len(calls) == 2
+    assert capsys.readouterr().err
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_removal_failure_reports_success_and_warns(
+    hcom, tmp_path, monkeypatch, capsys, json_output: bool
+) -> None:
+    """A confirmed send remains successful when its file cannot be removed."""
+    # The HCOM commands that team-send ran.
+    _, _, calls = hcom
+    # The delivered report that cannot be removed.
+    body_file = tmp_path / "report.txt"
+    # The command-line arguments, with or without JSON output.
+    args = ["scout", "--intent", "inform", "--body-file", str(body_file)]
+
+    body_file.write_text("keep this")
+
+    def fail_unlink(self):
+        """Simulate a file removal error after delivery."""
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(cli.Path, "unlink", fail_unlink)
+
+    if json_output:
+        args.append("--json")
+
+    assert cli.main(args) == 0
+
+    # The text that team-send printed to stdout and stderr.
+    output = capsys.readouterr()
+
+    if json_output:
+        # The success envelope printed to stdout.
+        payload = json.loads(output.out)
+
+        assert payload["ok"] is True
+        assert payload["data"]["event_id"] == 42
+        assert "Do not send it again" in payload["data"]["warning"]
+        assert output.err == ""
+    else:
+        assert output.out == "Sent to agent-tools-scout-peko (event 42).\n"
+        assert "Do not send it again" in output.err
+
+    assert body_file.read_text() == "keep this"
+    assert len(calls) == 2
+
+
 def test_json_success_names_the_selected_teammate(hcom, capsys) -> None:
     """Structured success carries the exact recipient and HCOM event ID."""
     _, _, calls = hcom
