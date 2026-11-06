@@ -868,6 +868,44 @@ def test_brief_marks_agent_sections_and_empty_question(repo: Path) -> None:
 	assert "Review question: (none)" in brief
 
 
+def test_brief_ends_with_fixed_file_questions(repo: Path) -> None:
+	"""End the brief with the reviewer's file questions, after the agent sections."""
+	# A chunk with no recorded details, so the closing section can't depend on them.
+	chunk = Chunk(
+		"chk_only",
+		"Draft",
+		"Draft a brief",
+		"",
+		Task("tsk_only", "Review", "Overview", (), ()),
+	)
+
+	# The full text of the drafted brief.
+	brief = render(chunk, capture(repo), (), None, RelatedTasks((), ()), (), (), ())
+	# Everything after the closing heading, which should hold no drafting work.
+	closing_section = brief.split("## Files in this packet", 1)[1]
+
+	assert brief.count("## Files in this packet") == 1
+
+	assert brief.rstrip().endswith(
+		'Write "None" under either point if nothing applies.'
+	)
+
+	assert "Please finish your review by listing:" in closing_section
+
+	assert (
+		"- Files you had to ask for, or guess at, because they weren't in this packet."
+		in closing_section
+	)
+
+	assert "- Files in this packet you didn't need." in closing_section
+	assert "<!-- agent:" not in closing_section
+	assert "Write this section." not in closing_section
+
+	assert brief.index("<!-- agent:end reviewer-verification -->") < brief.index(
+		"## Files in this packet"
+	)
+
+
 def test_argparse_usage_error_is_json(capsys: pytest.CaptureFixture[str]) -> None:
 	"""Return a JSON usage envelope even when parsing fails."""
 	with pytest.raises(SystemExit) as error:
