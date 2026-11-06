@@ -32,7 +32,10 @@ def render(
 	unreadable: tuple[str, ...],
 	outside: tuple[str, ...],
 ) -> str:
-	"""Build the recorded context and the agent sections as Markdown.
+	"""Build the brief as Markdown, ending with a question for the outside reviewer.
+
+	The brief holds the recorded context, the agent sections, then a closing
+	section that asks the reviewer which files were missing or unneeded.
 
 	Args:
 		chunk: The reviewed chunk and its task.
@@ -125,6 +128,8 @@ def render(
 		body = main_question if name == "review-question" else PLACEHOLDER
 		lines.extend(_agent_section(name, heading, body))
 
+	lines.extend(_files_in_packet_section())
+
 	return "\n".join(lines)
 
 
@@ -160,6 +165,28 @@ def _agent_section(name: str, heading: str, body: str) -> list[str]:
 		"",
 		body,
 		f"<!-- agent:end {name} -->",
+		"",
+	]
+
+
+def _files_in_packet_section() -> list[str]:
+	"""Ask the outside reviewer which files were missing or unneeded.
+
+	The person drafting the brief has nothing to fill in here, so these lines
+	sit outside the marked agent sections.
+
+	Returns:
+		The lines of the closing section.
+	"""
+	return [
+		"## Files in this packet",
+		"",
+		"Please finish your review by listing:",
+		"",
+		"- Files you had to ask for, or guess at, because they weren't in this packet.",
+		"- Files in this packet you didn't need.",
+		"",
+		'Write "None" under either point if nothing applies.',
 		"",
 	]
 
