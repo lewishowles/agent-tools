@@ -14,7 +14,7 @@ You'll also need `hcom` on `PATH` and the `HCOM_TAG` and `HCOM_NAME` variables f
 
 ## Usage
 
-Pass a message file with `--body-file <path>`. After HCOM confirms delivery, `team-send` removes that file and leaves its folder in place. Make a new file for each message. Roles are `orchestrator`, `scout`, `implementer`, and `reviewer`. An intent is required:
+Pass a message file with `--body-file <path>`. After HCOM confirms delivery, `team-send` removes the file if it has not changed and leaves its folder in place. Make a new file for each message. Roles are `orchestrator`, `scout`, `implementer`, and `reviewer`. An intent is required:
 
 ```sh
 report_file=$(mktemp)
@@ -30,7 +30,7 @@ printf 'Received.\n' | team-send orchestrator --intent ack --reply-to 42
 printf 'The review is ready.\n' | team-send reviewer --team insights --intent inform
 ```
 
-When `--body-file` is given, `team-send` ignores stdin. It refuses a missing, empty, or unreadable file, and anything that isn't an ordinary file, such as a folder or symlink. A missing file may already have been sent; write a new one. A failed or unconfirmed send leaves the file in place. If delivery is confirmed but removal fails, the command exits successfully and warns you not to send the file again.
+When `--body-file` is given, `team-send` ignores stdin. It refuses a missing, empty, or unreadable file, and anything that isn't an ordinary file, such as a folder or symlink. A missing file may already have been sent; write a new one. A failed or unconfirmed send leaves the file in place. An unconfirmed delivery receipt means the message may still have been delivered. If delivery is confirmed but the file has changed since it was read, the command succeeds, keeps the file, and warns that its current contents have not been sent. If delivery is confirmed but removal fails, the command exits successfully and warns you not to send the file again.
 
 Use `--team <label>` to send to a role in a named team of the same repository. A label uses lowercase letters, numbers and hyphens, with no hyphen at the start or end. `team-send` finds your repository by removing your `HCOM_TEAM_LABEL` from just before the role in your `HCOM_TAG`, and refuses if the label isn't there. An empty `HCOM_TEAM_LABEL` counts as no label. Without `--team`, the command sends within your current team.
 

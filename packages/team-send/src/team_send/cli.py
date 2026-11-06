@@ -1,6 +1,7 @@
 """Send an HCOM message to one live teammate in the sender's team or a named team of the same repository."""
 
 import argparse
+import errno
 import json
 import os
 import re
@@ -8,6 +9,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
 
@@ -34,6 +36,16 @@ NOT_IN_HCOM_HINT = (
 
 class BodyFileError(Exception):
     """Raised when a body file cannot be sent, with the reason to show the sender."""
+
+
+@dataclass(frozen=True)
+class BodyFileRead:
+    """A body file's text and the details that show whether the file later changed."""
+
+    # The text read from the file, which is what gets sent.
+    text: str
+    # The opened file's details, taken just before its text was read.
+    file_stat: os.stat_result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -125,12 +137,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.intent == "ack" and not args.reply_to:
         return _refuse("--intent ack requires --reply-to.", args.json)
 
+    # The body file's text and details, when the message comes from a file.
+    body_file_read = None
+
     # The message text, from the body file or from stdin.
     if args.body_file is not None:
         try:
-            body = _read_body_file(args.body_file)
+            body_file_read = _read_body_file(args.body_file)
         except BodyFileError as error:
             return _refuse(str(error), args.json)
+
+        body = body_file_read.text
     else:
         if sys.stdin.isatty():
             return _refuse(
@@ -238,13 +255,16 @@ def main(argv: list[str] | None = None) -> int:
     except (json.JSONDecodeError, TypeError, ValueError) as error:
         output = _one_line(result.stdout)
         detail = f"{error} ({output})" if output else str(error)
-        return _refuse(f"Unexpected HCOM send receipt: {detail}", args.json)
+        return _refuse(
+            f"Unexpected HCOM send receipt: {detail}. The message may still have been delivered.",
+            args.json,
+        )
 
-    # The warning for the sender when a delivered body file could not be removed.
+    # The warning for the sender when a delivered body file was kept or could not be removed.
     warning = None
 
     if args.body_file is not None:
-        warning = _remove_body_file(args.body_file)
+        warning = _finish_body_file(args.body_file, body_file_read.file_stat)
 
     if args.json:
         # The delivery details in the success output.
@@ -268,35 +288,97 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _read_body_file(path: Path) -> str:
-    """Read an ordinary file as the message body.
+def _read_body_file(path: Path) -> BodyFileRead:
+    """Read an ordinary file as the message body, along with the details that identify it.
 
     Args:
         path: The file the sender passed with --body-file.
 
     Returns:
-        The file's text, which may be blank; the caller refuses a blank body.
+        The file's text, which may be blank, and its details; the caller refuses a blank body.
 
     Raises:
         BodyFileError: The file is missing, is not an ordinary file, or cannot be read.
     """
     try:
-        # The file's own details, read with lstat so that a symlink is refused, not followed.
-        file_stat = path.lstat()
+        # The open file. Opening refuses a symlink and does not wait on a named pipe.
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError as error:
         raise BodyFileError(
             f"Body file {path} is missing. It may already have been sent; write a new one."
         ) from error
     except OSError as error:
-        raise BodyFileError(f"Cannot inspect body file {path}: {error}") from error
+        if error.errno == errno.ELOOP:
+            raise BodyFileError(
+                f"Body file {path} must be an ordinary file."
+            ) from error
+
+        raise BodyFileError(f"Cannot read body file {path}: {error}") from error
+
+    # The details of the file that was opened, whatever the path names by now.
+    file_stat = os.fstat(descriptor)
 
     if not stat.S_ISREG(file_stat.st_mode):
+        os.close(descriptor)
         raise BodyFileError(f"Body file {path} must be an ordinary file.")
 
+    with os.fdopen(descriptor, "r", encoding="utf-8") as body_file:
+        try:
+            return BodyFileRead(body_file.read(), file_stat)
+        except (OSError, UnicodeError) as error:
+            raise BodyFileError(f"Cannot read body file {path}: {error}") from error
+
+
+def _finish_body_file(path: Path, file_stat: os.stat_result) -> str | None:
+    """Keep a changed body file or remove the delivered one, returning any warning.
+
+    Args:
+        path: The file path used for the delivered message.
+        file_stat: The opened file's details from when it was read.
+
+    Returns:
+        A warning if the file changed or could not be removed, otherwise None.
+    """
+    if _body_file_changed(path, file_stat):
+        return (
+            "Sent, but the file changed after it was read, so it was kept. "
+            "Its current contents have not been sent."
+        )
+
+    return _remove_body_file(path)
+
+
+def _body_file_changed(path: Path, file_stat: os.stat_result) -> bool:
+    """Check whether the path still names the file and contents that were read.
+
+    Args:
+        path: The file path used for the delivered message.
+        file_stat: The opened file's details from when it was read.
+
+    Returns:
+        True if the file's identity, size or modified time differs, or inspecting the
+        path fails for a reason other than the file being missing.
+    """
     try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as error:
-        raise BodyFileError(f"Cannot read body file {path}: {error}") from error
+        # The details of whatever the path names now, without following a symlink.
+        current_stat = path.lstat()
+    except FileNotFoundError:
+        # A missing file reaches removal, which warns the sender not to send it again.
+        return False
+    except OSError:
+        return True
+
+    return (
+        current_stat.st_dev,
+        current_stat.st_ino,
+        current_stat.st_size,
+        current_stat.st_mtime_ns,
+    ) != (
+        file_stat.st_dev,
+        file_stat.st_ino,
+        file_stat.st_size,
+        file_stat.st_mtime_ns,
+    )
 
 
 def _remove_body_file(path: Path) -> str | None:

@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import subprocess
 
 import pytest
@@ -478,6 +479,169 @@ def test_body_file_sends_its_contents_and_removes_only_that_file(
     assert len(calls) == 2
 
 
+@pytest.mark.parametrize(
+    "change", ["same-size rewrite", "different-size rewrite", "replace"]
+)
+@pytest.mark.parametrize("json_output", [False, True])
+def test_body_file_changed_during_send_is_kept(
+    hcom, tmp_path, monkeypatch, capsys, change: str, json_output: bool
+) -> None:
+    """A delivered report stays in place if its path or contents change during sending."""
+    # The HCOM calls recorded by the fixture.
+    _, _, calls = hcom
+    # The report passed to team-send.
+    body_file = tmp_path / "report.txt"
+    # The file moved over the report in the "replace" case.
+    replacement = tmp_path / "replacement.txt"
+    # The fixture's fake HCOM call, which the wrapper below hands on to.
+    original_run = cli.subprocess.run
+    # The command-line arguments for the send.
+    args = ["scout", "--intent", "inform", "--body-file", str(body_file)]
+
+    body_file.write_text("sent report")
+
+    # The report's details before sending, so each change can isolate one difference.
+    original_stat = body_file.stat()
+
+    def run(command, **kwargs):
+        """Change the report while HCOM handles the send."""
+        if command[1] == "send":
+            if change == "same-size rewrite":
+                body_file.write_text("new version")
+                os.utime(
+                    body_file,
+                    ns=(
+                        original_stat.st_atime_ns,
+                        original_stat.st_mtime_ns + 1_000_000_000,
+                    ),
+                )
+                assert body_file.stat().st_size == original_stat.st_size
+                assert body_file.stat().st_mtime_ns != original_stat.st_mtime_ns
+            elif change == "different-size rewrite":
+                body_file.write_text("new report with more text")
+                os.utime(
+                    body_file, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns)
+                )
+                assert body_file.stat().st_size != original_stat.st_size
+                assert body_file.stat().st_mtime_ns == original_stat.st_mtime_ns
+            elif change == "replace":
+                replacement.write_text("new version")
+                # Matching size and modified time leave only the file identity different.
+                os.utime(
+                    replacement,
+                    ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+                )
+                replacement.replace(body_file)
+                assert body_file.stat().st_size == original_stat.st_size
+                assert body_file.stat().st_mtime_ns == original_stat.st_mtime_ns
+                assert body_file.stat().st_ino != original_stat.st_ino
+
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+
+    if json_output:
+        args.append("--json")
+
+    assert cli.main(args) == 0
+
+    # What the command printed.
+    output = capsys.readouterr()
+
+    # The warning the sender should see.
+    warning = (
+        "Sent, but the file changed after it was read, so it was kept. "
+        "Its current contents have not been sent."
+    )
+
+    if json_output:
+        assert json.loads(output.out)["data"]["warning"] == warning
+        assert output.err == ""
+    else:
+        assert output.out == "Sent to agent-tools-scout-peko (event 42).\n"
+        assert warning in output.err
+
+    assert calls[1][1]["input"] == "sent report"
+
+    assert body_file.read_text() == (
+        "new report with more text"
+        if change == "different-size rewrite"
+        else "new version"
+    )
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_body_file_deleted_during_send_warns_not_to_send_it_again(
+    hcom, tmp_path, monkeypatch, capsys, json_output: bool
+) -> None:
+    """A report deleted during sending gets the removal warning after delivery."""
+    # The HCOM calls recorded by the fixture.
+    _, _, calls = hcom
+    # The report passed to team-send.
+    body_file = tmp_path / "report.txt"
+    # The fixture's fake HCOM call, which the wrapper below hands on to.
+    original_run = cli.subprocess.run
+    # The command-line arguments for the send.
+    args = ["scout", "--intent", "inform", "--body-file", str(body_file)]
+
+    body_file.write_text("sent report")
+
+    def run(command, **kwargs):
+        """Delete the report while HCOM handles the send."""
+        if command[1] == "send":
+            body_file.unlink()
+
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+
+    if json_output:
+        args.append("--json")
+
+    assert cli.main(args) == 0
+
+    # What the command printed.
+    output = capsys.readouterr()
+    # The warning shown after the send succeeds.
+    warning = json.loads(output.out)["data"]["warning"] if json_output else output.err
+
+    assert f"could not remove body file {body_file}" in warning
+    assert "Do not send it again" in warning
+    assert not body_file.exists()
+    assert calls[1][1]["input"] == "sent report"
+
+
+def test_symlink_swapped_in_before_body_file_open_is_refused(
+    hcom, tmp_path, monkeypatch, capsys
+) -> None:
+    """A symlink swapped in just before the body file is opened is refused and not sent."""
+    # The HCOM calls recorded by the fixture.
+    _, _, calls = hcom
+    # The report passed to team-send.
+    body_file = tmp_path / "report.txt"
+    # The file the swapped-in symlink points to.
+    target = tmp_path / "target.txt"
+    # The real open call, which the wrapper below hands on to.
+    original_open = cli.os.open
+
+    body_file.write_text("original report")
+    target.write_text("do not send this")
+
+    def swap_before_open(path, flags):
+        """Replace the report just before its file descriptor is opened."""
+        body_file.unlink()
+        body_file.symlink_to(target)
+        return original_open(path, flags)
+
+    monkeypatch.setattr(cli.os, "open", swap_before_open)
+
+    assert cli.main(["scout", "--intent", "inform", "--body-file", str(body_file)]) == 1
+    assert "ordinary file" in capsys.readouterr().err
+    assert body_file.is_symlink()
+    assert target.read_text() == "do not send this"
+    assert calls == []
+
+
 @pytest.mark.parametrize("body", ["", "  \n"])
 def test_empty_body_file_is_kept(hcom, tmp_path, capsys, body: str) -> None:
     """A blank body file is refused and stays in place."""
@@ -495,7 +659,9 @@ def test_empty_body_file_is_kept(hcom, tmp_path, capsys, body: str) -> None:
     assert calls == []
 
 
-@pytest.mark.parametrize("kind", ["missing", "directory", "symlink", "invalid UTF-8"])
+@pytest.mark.parametrize(
+    "kind", ["missing", "directory", "symlink", "named pipe", "invalid UTF-8"]
+)
 def test_invalid_body_file_refuses_without_sending(
     hcom, tmp_path, capsys, kind: str
 ) -> None:
@@ -513,6 +679,8 @@ def test_invalid_body_file_refuses_without_sending(
 
         target.write_text("keep this")
         body_file.symlink_to(target)
+    elif kind == "named pipe":
+        os.mkfifo(body_file)
     elif kind == "invalid UTF-8":
         body_file.write_bytes(b"\xff")
 
@@ -526,6 +694,7 @@ def test_invalid_body_file_refuses_without_sending(
         "missing": "may already have been sent",
         "directory": "ordinary file",
         "symlink": "ordinary file",
+        "named pipe": "ordinary file",
         "invalid UTF-8": "Cannot read body file",
     }[kind]
 
@@ -595,7 +764,14 @@ def test_unconfirmed_delivery_keeps_body_file(
 
     assert body_file.read_text() == "keep this"
     assert len(calls) == 2
-    assert capsys.readouterr().err
+
+    # The refusal the sender saw.
+    error = capsys.readouterr().err
+
+    if failure == "receipt":
+        assert "The message may still have been delivered." in error
+    else:
+        assert error
 
 
 @pytest.mark.parametrize("json_output", [False, True])
