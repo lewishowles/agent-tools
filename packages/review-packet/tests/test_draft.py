@@ -51,6 +51,31 @@ def repo(tmp_path: Path) -> Path:
 	return tmp_path
 
 
+@pytest.fixture
+def draft_context(
+	repo: Path,
+	tmp_path_factory: pytest.TempPathFactory,
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	"""Use one invented chunk and a draft folder outside its repository."""
+	# The invented progress chunk for draft tests.
+	chunk = Chunk(
+		"chk_example",
+		"Draft",
+		"Draft a brief",
+		"Is it complete?",
+		Task("tsk_example", "Review", "Overview", (), ()),
+	)
+	monkeypatch.setattr(cli, "read_chunk", lambda _root, _id: chunk)
+	monkeypatch.setattr(
+		cli, "read_related_tasks", lambda _root, _id: RelatedTasks((), ())
+	)
+	monkeypatch.setattr(
+		cli.tempfile, "gettempdir", lambda: str(tmp_path_factory.mktemp("drafts"))
+	)
+	monkeypatch.chdir(repo)
+
+
 def test_snapshot_covers_renames_deletions_untracked_and_base(repo: Path) -> None:
 	"""Keep each change kind visible and include commits since a base."""
 	base = subprocess.check_output(
@@ -196,6 +221,189 @@ def test_draft_json_include_and_force(
 	assert json.loads(Path(data["manifest"]).read_text())["files"]
 
 
+def test_draft_adds_direct_imports_and_changed_files_tests(
+	repo: Path,
+	draft_context: None,
+	capsys: pytest.CaptureFixture[str],
+) -> None:
+	"""Hash direct imports and matched tests, and report missing local imports."""
+	# The package containing the changed source file and its tests.
+	package = repo / "app"
+	(package / "src").mkdir(parents=True)
+	(package / "tests").mkdir()
+	(package / "package.json").write_text('{"imports": {"#src/*": "./src/*.ts"}}')
+	(package / "src" / "helper.ts").write_text('import "./deep";\n')
+	(package / "parent.ts").write_text("")
+	(package / "src" / "deep.ts").write_text("export const deep = true;\n")
+	(package / "src" / "changed.ts").write_text(
+		'import "#src/helper";\nimport "../parent";\nimport "./missing";\n'
+	)
+	(package / "tests" / "changed.test.ts").write_text("test('changed', () => {});\n")
+	(package / "tests" / "helper.test.ts").write_text("test('helper', () => {});\n")
+	git(repo, "add", "app")
+	git(repo, "commit", "-qm", "add app")
+	(package / "src" / "changed.ts").write_text(
+		'import "#src/helper";\nimport "../parent";\nimport "./missing";\n'
+		"export const changed = true;\n"
+	)
+
+	assert main(["draft", "chk_example", "--json"]) == 0
+
+	# The draft command's result.
+	data = json.loads(capsys.readouterr().out)["data"]
+	# Selected paths in the draft.
+	contents = set(data["contents"])
+	# The generated manifest beside the brief.
+	manifest = json.loads(Path(data["manifest"]).read_text())
+	# The generated brief outside the invented repository.
+	brief = Path(data["brief"]).read_text()
+
+	assert {
+		"app/src/changed.ts",
+		"app/src/helper.ts",
+		"app/parent.ts",
+		"app/tests/changed.test.ts",
+	} <= contents
+	assert "app/src/deep.ts" not in contents
+	assert "app/tests/helper.test.ts" not in contents
+	assert "app/src/helper.ts" in {item["path"] for item in manifest["files"]}
+	assert "app/src/changed.ts: ./missing (unresolved import)" in brief
+
+
+def test_draft_lists_unparseable_python_file_separately(
+	repo: Path,
+	draft_context: None,
+	capsys: pytest.CaptureFixture[str],
+) -> None:
+	"""List a changed file whose imports cannot be read as its own omission."""
+	# The changed Python file with invalid syntax.
+	source = repo / "changed.py"
+	source.write_text("from package import\n")
+
+	assert main(["draft", "chk_example", "--json"]) == 0
+
+	# The result printed by the draft command.
+	data = json.loads(capsys.readouterr().out)["data"]
+	# The generated brief, written outside the invented repository.
+	brief = Path(data["brief"]).read_text()
+
+	assert "- changed.py (could not read imports)" in brief
+	assert "changed.py (unresolved import)" not in brief
+
+
+def test_draft_leaves_out_linked_import_and_test_but_refuses_included_link(
+	repo: Path,
+	draft_context: None,
+	tmp_path_factory: pytest.TempPathFactory,
+	capsys: pytest.CaptureFixture[str],
+) -> None:
+	"""List discovered outside links while refusing one the user includes."""
+	# Files outside the invented repository that the packet cannot share.
+	outside_folder = tmp_path_factory.mktemp("outside")
+	(outside_folder / "helper.ts").write_text("export const helper = 1\n")
+	(outside_folder / "changed.test.ts").write_text("test('changed', () => {})\n")
+	# The project with links to an imported file and a matching test.
+	package = repo / "app"
+	(package / "tests").mkdir(parents=True)
+	(package / "package.json").write_text("{}")
+	(package / "changed.ts").write_text('import "./helper";\n')
+	(package / "helper.ts").symlink_to(outside_folder / "helper.ts")
+	(package / "tests" / "changed.test.ts").symlink_to(
+		outside_folder / "changed.test.ts"
+	)
+	git(repo, "add", "app")
+	git(repo, "commit", "-qm", "add linked project")
+	(package / "changed.ts").write_text(
+		'import "./helper";\nexport const changed = 1;\n'
+	)
+
+	assert main(["draft", "chk_example", "--json"]) == 0
+
+	# The draft result printed by the command.
+	data = json.loads(capsys.readouterr().out)["data"]
+	# The brief written outside the invented repository.
+	brief = Path(data["brief"]).read_text()
+
+	assert "app/helper.ts" not in data["contents"]
+	assert "app/tests/changed.test.ts" not in data["contents"]
+	assert "- app/helper.ts (links outside the repository)" in brief
+	assert "- app/tests/changed.test.ts (links outside the repository)" in brief
+
+	with pytest.raises(OutsideSymlinkError, match="app/helper.ts"):
+		select_files(repo, capture(repo), ("app/helper.ts",))
+
+
+def test_selects_tsx_tests_for_changed_component(repo: Path) -> None:
+	"""Include a same-name TSX test beside a changed component."""
+	# The project holding the component.
+	package = repo / "app"
+	# The folder with the component and the test beside it.
+	source_folder = package / "src"
+	source_folder.mkdir(parents=True)
+	(package / "package.json").write_text("{}")
+	(source_folder / "Button.tsx").write_text("export const Button = 1\n")
+	(source_folder / "Button.test.tsx").write_text("test('Button', () => {})\n")
+	git(repo, "add", "app")
+	git(repo, "commit", "-qm", "add component")
+	(source_folder / "Button.tsx").write_text("export const Button = 2\n")
+
+	# Files selected for the changed component.
+	selection = select_files(repo, capture(repo), ())
+
+	assert "app/src/Button.test.tsx" in selection.files
+
+
+def test_does_not_select_ignored_or_neighbouring_tests(repo: Path) -> None:
+	"""Keep ignored files and another component's tests out of a draft."""
+	# A root project with unrelated same-name tests.
+	(repo / "package.json").write_text("{}")
+	(repo / ".gitignore").write_text("tests/generated/\n")
+	# The folder holding one of the changed files.
+	source_folder = repo / "src"
+	# Another component's folder, whose test has the same name.
+	other_folder = source_folder / "other"
+	other_folder.mkdir(parents=True)
+	(source_folder / "index.ts").write_text("export const value = 1\n")
+	(other_folder / "index.test.ts").write_text("test('other', () => {})\n")
+	git(repo, "add", ".")
+	git(repo, "commit", "-qm", "add source and tests")
+	# A matching test inside a searched folder, ignored by Git.
+	ignored_folder = repo / "tests" / "generated"
+	ignored_folder.mkdir(parents=True)
+	(ignored_folder / "index.test.ts").write_text("test('ignored', () => {})\n")
+	(source_folder / "index.ts").write_text("export const value = 2\n")
+
+	# Files selected for the changed file.
+	selection = select_files(repo, capture(repo), ())
+
+	assert "src/other/index.test.ts" not in selection.files
+	assert "tests/generated/index.test.ts" not in selection.files
+
+
+@pytest.mark.parametrize("manifest_text", ('{"imports":', '{"imports": []}'))
+def test_draft_lists_alias_when_package_manifest_is_invalid(
+	repo: Path,
+	draft_context: None,
+	capsys: pytest.CaptureFixture[str],
+	manifest_text: str,
+) -> None:
+	"""Keep drafting and list an alias the package manifest cannot resolve."""
+	# The changed JavaScript file and its package manifest.
+	package = repo / "app"
+	package.mkdir()
+	(package / "changed.ts").write_text('import "#src/helper";\n')
+	(package / "package.json").write_text(manifest_text)
+
+	assert main(["draft", "chk_example", "--json"]) == 0
+
+	# The result printed by the draft command.
+	data = json.loads(capsys.readouterr().out)["data"]
+	# The generated brief, written outside the invented repository.
+	brief = Path(data["brief"]).read_text()
+
+	assert "app/changed.ts: #src/helper (unresolved import)" in brief
+
+
 def test_snapshot_covers_staged_and_unstaged_edit_without_base(repo: Path) -> None:
 	"""Include both index and worktree edits when the base defaults to HEAD."""
 	(repo / "old.txt").write_text("staged\n")
@@ -219,7 +427,7 @@ def test_manifest_fingerprint_changes_with_file_contents(repo: Path) -> None:
 	"""Keep the fingerprint until a selected file's contents change."""
 	(repo / "old.txt").write_text("first edit\n")
 	snapshot = capture(repo)
-	contents = select_files(repo, snapshot, ())
+	contents = select_files(repo, snapshot, ()).files
 	first = create_manifest(repo, snapshot, contents)
 
 	assert create_manifest(repo, snapshot, contents).fingerprint == first.fingerprint
@@ -315,7 +523,9 @@ def test_manifest_covers_explicit_and_ignored_files_but_not_the_brief(
 		== first["fingerprint"]
 	)
 
-	contents = select_files(repo, capture(repo), ("README.md", "private-note.txt"))
+	contents = select_files(
+		repo, capture(repo), ("README.md", "private-note.txt")
+	).files
 
 	(repo / "README.md").write_text("Changed repository\n")
 
@@ -337,7 +547,7 @@ def test_manifest_lists_deleted_files_without_a_hash(repo: Path) -> None:
 	"""Keep a deletion in the change list without adding it to selected files."""
 	(repo / "delete.txt").unlink()
 	snapshot = capture(repo)
-	manifest = create_manifest(repo, snapshot, select_files(repo, snapshot, ()))
+	manifest = create_manifest(repo, snapshot, select_files(repo, snapshot, ()).files)
 
 	assert {item.path: item.status for item in manifest.changes}[
 		"delete.txt"
@@ -354,7 +564,7 @@ def test_root_project_manifest_is_selected(repo: Path) -> None:
 	(repo / "pytest.ini").write_text("[pytest]\n")
 	(repo / "old.txt").write_text("changed\n")
 
-	contents = select_files(repo, capture(repo), ())
+	contents = select_files(repo, capture(repo), ()).files
 
 	assert "pyproject.toml" in contents
 	assert "pytest.ini" in contents
@@ -362,7 +572,7 @@ def test_root_project_manifest_is_selected(repo: Path) -> None:
 
 def test_includes_are_normalised(repo: Path) -> None:
 	"""List a file once when its include uses a leading dot folder."""
-	contents = select_files(repo, capture(repo), ("./README.md",))
+	contents = select_files(repo, capture(repo), ("./README.md",)).files
 
 	assert contents.count("README.md") == 1
 
@@ -404,7 +614,7 @@ def test_inside_link_is_selected(repo: Path) -> None:
 	"""Allow a selected link whose target stays in the repository."""
 	(repo / "inside-link.txt").symlink_to("README.md")
 
-	assert "inside-link.txt" in select_files(repo, capture(repo), ())
+	assert "inside-link.txt" in select_files(repo, capture(repo), ()).files
 
 
 def test_draft_reports_outside_link_as_usage(
@@ -500,7 +710,7 @@ def test_draft_text_and_usage_errors(
 	assert "Is it complete?" in brief
 	assert "Settings: .review-packet.toml" in brief
 	assert "### Callers\n\nNot listed yet." in brief
-	assert "### Left out\n\nNot listed yet." in brief
+	assert "### Left out\n\nNothing left out." in brief
 
 	assert main(["draft", "chk_example", "--base", "missing", "--json"]) == 2
 	assert json.loads(capsys.readouterr().out)["error"]["code"] == "usage"
@@ -533,7 +743,7 @@ def test_null_progress_text_uses_review_prompt(
 	)
 
 	chunk = read_chunk(repo, "chk_null")
-	brief = render(chunk, capture(repo), (), None, RelatedTasks((), ()))
+	brief = render(chunk, capture(repo), (), None, RelatedTasks((), ()), (), (), ())
 
 	assert chunk.description == ""
 	assert chunk.task.overview == ""
@@ -568,7 +778,7 @@ def test_snapshot_before_first_commit_marks_index_as_added(tmp_path: Path) -> No
 		"",
 		Task("tsk_only", "Review", "Overview", (), ()),
 	)
-	brief = render(chunk, snapshot, (), None, RelatedTasks((), ()))
+	brief = render(chunk, snapshot, (), None, RelatedTasks((), ()), (), (), ())
 
 	assert snapshot.base_sha is None
 	assert snapshot.changes[0].status == "added"
@@ -618,7 +828,7 @@ def test_brief_uses_outside_review_question_when_marked(
 		),
 	)
 
-	brief = render(chunk, capture(repo), (), None, RelatedTasks((), ()))
+	brief = render(chunk, capture(repo), (), None, RelatedTasks((), ()), (), (), ())
 
 	assert f"Review question: {question}" in brief
 	assert f"## Main review question\n\n{main_question}\n" in brief
@@ -636,7 +846,7 @@ def test_brief_has_no_other_chunks_when_task_has_one(repo: Path) -> None:
 		Task("tsk_only", "Review", "Overview", (), ()),
 	)
 
-	brief = render(chunk, capture(repo), (), None, RelatedTasks((), ()))
+	brief = render(chunk, capture(repo), (), None, RelatedTasks((), ()), (), (), ())
 
 	assert "### Other chunks\n\nNone." in brief
 
@@ -651,7 +861,7 @@ def test_brief_marks_agent_sections_and_empty_question(repo: Path) -> None:
 		Task("tsk_only", "Review", "Overview", (), ()),
 	)
 
-	brief = render(chunk, capture(repo), (), None, RelatedTasks((), ()))
+	brief = render(chunk, capture(repo), (), None, RelatedTasks((), ()), (), (), ())
 
 	assert "<!-- agent:start review-question -->" in brief
 	assert "<!-- agent:end review-question -->" in brief
