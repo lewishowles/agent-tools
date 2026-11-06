@@ -20,6 +20,7 @@ from review_packet.progress_records import (
 from review_packet.selection import (
 	MissingIncludeError,
 	OutsideSymlinkError,
+	Selection,
 	select_files,
 )
 from review_packet.settings import (
@@ -175,13 +176,20 @@ def main(argv: list[str] | None = None) -> int:
 		settings = read_settings(root)
 		# The current changes since the base.
 		snapshot = capture(root, args.base)
-		# The repository files for the packet.
-		contents = select_files(root, snapshot, tuple(args.include) + settings.include)
+		# The packet's files and what the brief lists under Left out.
+		selection = select_files(root, snapshot, tuple(args.include) + settings.include)
 		# Where the brief is written.
 		brief_path = _brief_path(root, args.chunk_id)
 		# The paths to report.
 		data = _write_draft(
-			root, brief_path, chunk, snapshot, contents, settings, related, args.force
+			root,
+			brief_path,
+			chunk,
+			snapshot,
+			selection,
+			settings,
+			related,
+			args.force,
 		)
 	except USAGE_ERRORS as error:
 		_print_error("usage", str(error), args.json)
@@ -228,7 +236,7 @@ def _write_draft(
 	brief_path: Path,
 	chunk: Chunk,
 	snapshot: Snapshot,
-	contents: tuple[str, ...],
+	selection: Selection,
 	settings: Settings,
 	related: RelatedTasks,
 	force: bool,
@@ -240,7 +248,7 @@ def _write_draft(
 		brief_path: The destination file.
 		chunk: The reviewed chunk and its task.
 		snapshot: The current Git change set.
-		contents: The selected repository files.
+		selection: The selected files and what the brief lists under Left out.
 		settings: The optional settings file and its values.
 		related: Titles of prerequisite and dependent tasks.
 		force: Whether an existing brief may be replaced.
@@ -261,7 +269,7 @@ def _write_draft(
 		)
 
 	# Hash every selected path before either draft file is replaced.
-	manifest = create_manifest(root, snapshot, contents)
+	manifest = create_manifest(root, snapshot, selection.files)
 	# The manifest sits beside REVIEW.md, where the build step looks for it.
 	manifest_path = brief_path.with_name("manifest.json")
 
@@ -269,13 +277,24 @@ def _write_draft(
 	# The brief is written first. If the manifest write then fails, the old
 	# manifest either still matches the files or shows that they changed, whereas
 	# a new manifest beside an old brief would pass off older work as current.
-	brief_path.write_text(render(chunk, snapshot, contents, settings_name, related))
+	brief_path.write_text(
+		render(
+			chunk,
+			snapshot,
+			selection.files,
+			settings_name,
+			related,
+			selection.unresolved,
+			selection.unreadable,
+			selection.outside,
+		)
+	)
 	manifest_path.write_text(json.dumps(manifest_to_json(manifest), indent=2) + "\n")
 
 	return DraftResult(
 		str(brief_path.resolve()),
 		str(manifest_path.resolve()),
-		contents,
+		selection.files,
 		settings_name,
 	)
 

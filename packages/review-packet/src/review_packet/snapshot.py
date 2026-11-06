@@ -133,6 +133,27 @@ def capture(root: Path, base: str | None = None) -> Snapshot:
 	)
 
 
+def is_ignored(root: Path, path: Path) -> bool:
+	"""Check whether Git excludes a file from the repository.
+
+	Args:
+		root: The repository root.
+		path: A file inside the repository.
+
+	Returns:
+		True when Git ignores the file. A Git error counts as not ignored.
+	"""
+	# Git exits with one for a file that is not ignored, so _git cannot run this check.
+	result = subprocess.run(
+		["git", "check-ignore", "-q", "--", str(path.relative_to(root))],
+		cwd=root,
+		check=False,
+		capture_output=True,
+	)
+
+	return result.returncode == 0
+
+
 def _resolve_base(root: Path, base: str | None) -> str | None:
 	"""Turn the requested base, or HEAD, into a commit SHA.
 

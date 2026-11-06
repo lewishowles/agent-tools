@@ -28,6 +28,9 @@ def render(
 	contents: tuple[str, ...],
 	settings_name: str | None,
 	related: RelatedTasks,
+	unresolved: tuple[str, ...],
+	unreadable: tuple[str, ...],
+	outside: tuple[str, ...],
 ) -> str:
 	"""Build the recorded context and the agent sections as Markdown.
 
@@ -37,6 +40,9 @@ def render(
 		contents: The files selected for the packet.
 		settings_name: The settings file name to show, or None.
 		related: Titles of prerequisite and dependent tasks.
+		unresolved: Local imports that could not be found.
+		unreadable: Changed files whose imports could not be read.
+		outside: Imported files or matched tests that link outside the repository.
 
 	Returns:
 		The brief. The review question section holds the chunk's recorded
@@ -46,6 +52,13 @@ def render(
 	task = chunk.task
 	# The task's other chunks.
 	siblings = [item for item in task.chunks if item.id != chunk.id]
+	# Missing imports, unreadable files and outside links shown under Left out.
+	left_out = [f"- {name} (could not read imports)" for name in unreadable]
+	left_out.extend(f"- {name} (unresolved import)" for name in unresolved)
+	left_out.extend(f"- {name} (links outside the repository)" for name in outside)
+
+	if not left_out:
+		left_out = ["Nothing left out."]
 
 	# The tool-written part of the brief.
 	lines = [
@@ -100,7 +113,7 @@ def render(
 		"",
 		"### Left out",
 		"",
-		"Not listed yet.",
+		*left_out,
 		"",
 	]
 
