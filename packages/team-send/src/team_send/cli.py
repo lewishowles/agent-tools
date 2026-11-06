@@ -49,12 +49,18 @@ class BodyFileRead:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Send a file or piped message to the one live teammate for the requested role.
+    """Send a file to the one live teammate for the requested role.
 
     With --team, the teammate comes from that named team in the sender's repository.
-    With --body-file, the file is removed only after HCOM confirms delivery.
+    The file is removed only after HCOM confirms delivery.
     A refusal or failed send prints the reason and returns 1, and a message is never sent twice.
     Invalid arguments exit with status 2, as argparse does.
+
+    Args:
+        argv: The command-line arguments, or None to read them from sys.argv.
+
+    Returns:
+        The exit status: 0 when delivery is confirmed, otherwise 1.
     """
     arguments = sys.argv[1:] if argv is None else argv
     parser = _ArgumentParser(
@@ -71,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--body-file",
         type=Path,
-        help="Send this file and remove it after confirmed delivery",
+        help="Required: send this file and remove it after confirmed delivery",
     )
     parser.add_argument("--json", action="store_true", help="Print structured output")
     args = parser.parse_args(arguments)
@@ -137,24 +143,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.intent == "ack" and not args.reply_to:
         return _refuse("--intent ack requires --reply-to.", args.json)
 
-    # The body file's text and details, when the message comes from a file.
-    body_file_read = None
+    if args.body_file is None:
+        return _refuse(
+            "Pass a message file with: team-send <role> --body-file <path>.",
+            args.json,
+        )
 
-    # The message text, from the body file or from stdin.
-    if args.body_file is not None:
-        try:
-            body_file_read = _read_body_file(args.body_file)
-        except BodyFileError as error:
-            return _refuse(str(error), args.json)
+    try:
+        # The file's text, and the details used to spot a change before removing it.
+        body_file_read = _read_body_file(args.body_file)
+    except BodyFileError as error:
+        return _refuse(str(error), args.json)
 
-        body = body_file_read.text
-    else:
-        if sys.stdin.isatty():
-            return _refuse(
-                "Pipe a message body to stdin or use --body-file.", args.json
-            )
-
-        body = sys.stdin.read()
+    # The message text to send to HCOM.
+    body = body_file_read.text
 
     if not body.strip():
         return _refuse("Message body is empty.", args.json)
@@ -227,7 +229,12 @@ def main(argv: list[str] | None = None) -> int:
             timeout=10,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except subprocess.TimeoutExpired as error:
+        return _refuse(
+            f"HCOM send timed out after {error.timeout} seconds. The message may still have been delivered.",
+            args.json,
+        )
+    except OSError as error:
         return _refuse(f"HCOM send failed: {_one_line(str(error))}", args.json)
 
     if result.returncode:
@@ -260,11 +267,8 @@ def main(argv: list[str] | None = None) -> int:
             args.json,
         )
 
-    # The warning for the sender when a delivered body file was kept or could not be removed.
-    warning = None
-
-    if args.body_file is not None:
-        warning = _finish_body_file(args.body_file, body_file_read.file_stat)
+    # The warning when a delivered body file was kept or could not be removed.
+    warning = _finish_body_file(args.body_file, body_file_read.file_stat)
 
     if args.json:
         # The delivery details in the success output.

@@ -25,8 +25,17 @@ def agent(
 
 
 @pytest.fixture
+def message_file(tmp_path):
+    """Provide a message file for tests that use the normal send path."""
+    # The file that team-send reads and removes after confirmed delivery.
+    body_file = tmp_path / "message.txt"
+    body_file.write_text("hello teammate\n")
+    return body_file
+
+
+@pytest.fixture
 def hcom(monkeypatch):
-    """Provide a piped body, sender environment, and stubbed HCOM commands."""
+    """Provide the sender environment and stubbed HCOM commands."""
     calls = []
     listing = [agent("agent-tools-scout-peko")]
     receipt = {"delivered_to": ["peko"], "event_id": 42}
@@ -37,7 +46,6 @@ def hcom(monkeypatch):
         output = listing if command[1] == "list" else receipt
         return subprocess.CompletedProcess(command, 0, json.dumps(output), "")
 
-    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("hello teammate\n"))
     monkeypatch.setenv("HCOM_TAG", "agent-tools-implementer")
     monkeypatch.setenv("HCOM_NAME", "agent-tools-implementer-safe")
     monkeypatch.delenv("HCOM_TEAM_LABEL", raising=False)
@@ -46,7 +54,7 @@ def hcom(monkeypatch):
     return listing, receipt, calls
 
 
-def test_single_live_peer_is_selected_by_exact_tag(hcom, capsys) -> None:
+def test_single_live_peer_is_selected_by_exact_tag(hcom, message_file, capsys) -> None:
     """Only a live agent whose tag equals the target tag exactly is picked."""
     listing, _, calls = hcom
     listing.extend(
@@ -60,7 +68,17 @@ def test_single_live_peer_is_selected_by_exact_tag(hcom, capsys) -> None:
 
     assert (
         cli.main(
-            ["scout", "--intent", "request", "--reply-to", "42", "--thread", "work"]
+            [
+                "scout",
+                "--intent",
+                "request",
+                "--reply-to",
+                "42",
+                "--thread",
+                "work",
+                "--body-file",
+                str(message_file),
+            ]
         )
         == 0
     )
@@ -99,12 +117,14 @@ def test_single_live_peer_is_selected_by_exact_tag(hcom, capsys) -> None:
 
 
 @pytest.mark.parametrize("status", ["active", "listening", "blocked"])
-def test_each_live_status_matches(hcom, capsys, status: str) -> None:
+def test_each_live_status_matches(hcom, message_file, capsys, status: str) -> None:
     """Active, listening and blocked teammates can all receive a message."""
     listing, _, _ = hcom
     listing[0]["status"] = status
 
-    assert cli.main(["scout", "--intent", "inform"]) == 0
+    assert (
+        cli.main(["scout", "--intent", "inform", "--body-file", str(message_file)]) == 0
+    )
     assert "agent-tools-scout-peko" in capsys.readouterr().out
 
 
@@ -155,12 +175,15 @@ def test_ack_requires_reply_to(hcom, capsys) -> None:
     assert calls == []
 
 
-def test_missing_hcom_refuses(hcom, monkeypatch, capsys) -> None:
+def test_missing_hcom_refuses(hcom, message_file, monkeypatch, capsys) -> None:
     """A missing executable is reported without launching a lookup."""
     _, _, calls = hcom
     monkeypatch.setattr(cli.shutil, "which", lambda command: None)
 
-    assert cli.main(["scout", "--intent", "request"]) == 1
+    assert (
+        cli.main(["scout", "--intent", "request", "--body-file", str(message_file)])
+        == 1
+    )
     assert "not on PATH" in capsys.readouterr().err
     assert calls == []
 
@@ -181,19 +204,24 @@ def test_missing_hcom_refuses(hcom, monkeypatch, capsys) -> None:
     ],
 )
 def test_failed_or_unreadable_listing_refuses(
-    hcom, monkeypatch, capsys, result, expected: str
+    hcom, message_file, monkeypatch, capsys, result, expected: str
 ) -> None:
     """Failed and malformed HCOM listings cannot select a recipient."""
     monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: result)
 
-    assert cli.main(["scout", "--intent", "request"]) == 1
+    assert (
+        cli.main(["scout", "--intent", "request", "--body-file", str(message_file)])
+        == 1
+    )
     assert expected in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
     "error", [OSError("gone"), subprocess.TimeoutExpired("hcom", 10)]
 )
-def test_hcom_launch_error_refuses(hcom, monkeypatch, capsys, error) -> None:
+def test_hcom_launch_error_refuses(
+    hcom, message_file, monkeypatch, capsys, error
+) -> None:
     """An unavailable or timed-out HCOM process gives one reason."""
 
     def fail(*args, **kwargs):
@@ -202,36 +230,50 @@ def test_hcom_launch_error_refuses(hcom, monkeypatch, capsys, error) -> None:
 
     monkeypatch.setattr(cli.subprocess, "run", fail)
 
-    assert cli.main(["scout", "--intent", "request"]) == 1
+    assert (
+        cli.main(["scout", "--intent", "request", "--body-file", str(message_file)])
+        == 1
+    )
     assert "HCOM list failed" in capsys.readouterr().err
 
 
-def test_no_match_names_target_tag(hcom, capsys) -> None:
+def test_no_match_names_target_tag(hcom, message_file, capsys) -> None:
     """The refusal identifies the exact missing team role."""
     listing, _, _ = hcom
     listing.clear()
 
-    assert cli.main(["scout", "--intent", "request"]) == 1
+    assert (
+        cli.main(["scout", "--intent", "request", "--body-file", str(message_file)])
+        == 1
+    )
     assert "agent-tools-scout" in capsys.readouterr().err
 
 
-def test_multiple_matches_list_names(hcom, capsys) -> None:
+def test_multiple_matches_list_names(hcom, message_file, capsys) -> None:
     """Two live peers for one role are refused, and both are named."""
     listing, _, _ = hcom
     listing.append(agent("agent-tools-scout-nova", status="blocked"))
 
-    assert cli.main(["scout", "--intent", "request"]) == 1
+    assert (
+        cli.main(["scout", "--intent", "request", "--body-file", str(message_file)])
+        == 1
+    )
     error = capsys.readouterr().err
     assert "agent-tools-scout-peko" in error
     assert "agent-tools-scout-nova" in error
 
 
-def test_json_refusal_is_envelope(hcom, capsys) -> None:
+def test_json_refusal_is_envelope(hcom, message_file, capsys) -> None:
     """Structured refusals use the shared ok/error shape."""
     listing, _, _ = hcom
     listing.clear()
 
-    assert cli.main(["scout", "--intent", "request", "--json"]) == 1
+    assert (
+        cli.main(
+            ["scout", "--intent", "request", "--body-file", str(message_file), "--json"]
+        )
+        == 1
+    )
     output = capsys.readouterr()
 
     assert json.loads(output.out) == {
@@ -286,20 +328,25 @@ def test_plain_usage_error_keeps_argparse_output(hcom, capsys) -> None:
     assert calls == []
 
 
-def test_nested_team_tag_replaces_only_role(hcom, monkeypatch, capsys) -> None:
+def test_nested_team_tag_replaces_only_role(
+    hcom, message_file, monkeypatch, capsys
+) -> None:
     """A team label in the sender's tag is kept in the target tag."""
     listing, receipt, _ = hcom
     monkeypatch.setenv("HCOM_TAG", "agent-tools-blue-implementer")
     listing[:] = [agent("agent-tools-blue-scout-nova", tag="agent-tools-blue-scout")]
     receipt["delivered_to"] = ["nova"]
 
-    assert cli.main(["scout", "--intent", "request"]) == 0
+    assert (
+        cli.main(["scout", "--intent", "request", "--body-file", str(message_file)])
+        == 0
+    )
     assert "agent-tools-blue-scout-nova" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("sender_team", [None, ""])
 def test_named_team_selects_exact_cross_team_tag(
-    hcom, monkeypatch, capsys, sender_team: str | None
+    hcom, message_file, monkeypatch, capsys, sender_team: str | None
 ) -> None:
     """A named team targets its role using the sender's repository tag."""
     listing, receipt, calls = hcom
@@ -313,12 +360,27 @@ def test_named_team_selects_exact_cross_team_tag(
     ]
     receipt["delivered_to"] = ["nova"]
 
-    assert cli.main(["scout", "--intent", "inform", "--team", "green"]) == 0
+    assert (
+        cli.main(
+            [
+                "scout",
+                "--intent",
+                "inform",
+                "--team",
+                "green",
+                "--body-file",
+                str(message_file),
+            ]
+        )
+        == 0
+    )
     assert "agent-tools-green-scout-nova" in capsys.readouterr().out
     assert calls[1][0][2] == "@agent-tools-green-scout-nova"
 
 
-def test_named_team_from_labelled_sender(hcom, monkeypatch, capsys) -> None:
+def test_named_team_from_labelled_sender(
+    hcom, message_file, monkeypatch, capsys
+) -> None:
     """A labelled sender removes its own label before choosing another team."""
     listing, receipt, calls = hcom
     monkeypatch.setenv("HCOM_TAG", "agent-tools-blue-implementer")
@@ -326,12 +388,27 @@ def test_named_team_from_labelled_sender(hcom, monkeypatch, capsys) -> None:
     listing[:] = [agent("agent-tools-green-scout-nova", tag="agent-tools-green-scout")]
     receipt["delivered_to"] = ["nova"]
 
-    assert cli.main(["scout", "--intent", "inform", "--team", "green"]) == 0
+    assert (
+        cli.main(
+            [
+                "scout",
+                "--intent",
+                "inform",
+                "--team",
+                "green",
+                "--body-file",
+                str(message_file),
+            ]
+        )
+        == 0
+    )
     assert "agent-tools-green-scout-nova" in capsys.readouterr().out
     assert calls[1][0][2] == "@agent-tools-green-scout-nova"
 
 
-def test_same_role_in_another_team_succeeds(hcom, monkeypatch, capsys) -> None:
+def test_same_role_in_another_team_succeeds(
+    hcom, message_file, monkeypatch, capsys
+) -> None:
     """A sender can reach their role in another named team."""
     listing, receipt, calls = hcom
     monkeypatch.setenv("HCOM_TAG", "agent-tools-blue-reviewer")
@@ -341,7 +418,20 @@ def test_same_role_in_another_team_succeeds(hcom, monkeypatch, capsys) -> None:
     ]
     receipt["delivered_to"] = ["nova"]
 
-    assert cli.main(["reviewer", "--intent", "inform", "--team", "green"]) == 0
+    assert (
+        cli.main(
+            [
+                "reviewer",
+                "--intent",
+                "inform",
+                "--team",
+                "green",
+                "--body-file",
+                str(message_file),
+            ]
+        )
+        == 0
+    )
     assert "agent-tools-green-reviewer-nova" in capsys.readouterr().out
     assert calls[1][0][2] == "@agent-tools-green-reviewer-nova"
 
@@ -357,19 +447,34 @@ def test_same_role_in_own_named_team_refuses(hcom, monkeypatch, capsys) -> None:
     assert calls == []
 
 
-def test_named_team_without_match_refuses(hcom, monkeypatch, capsys) -> None:
+def test_named_team_without_match_refuses(
+    hcom, message_file, monkeypatch, capsys
+) -> None:
     """A named team with no live role reports the exact target tag."""
     listing, _, calls = hcom
     monkeypatch.setenv("HCOM_TEAM_LABEL", "blue")
     monkeypatch.setenv("HCOM_TAG", "agent-tools-blue-implementer")
     listing.clear()
 
-    assert cli.main(["scout", "--intent", "request", "--team", "green"]) == 1
+    assert (
+        cli.main(
+            [
+                "scout",
+                "--intent",
+                "request",
+                "--team",
+                "green",
+                "--body-file",
+                str(message_file),
+            ]
+        )
+        == 1
+    )
     assert "No live teammate for agent-tools-green-scout." in capsys.readouterr().err
     assert len(calls) == 1
 
 
-def test_named_team_with_multiple_matches_refuses(hcom, capsys) -> None:
+def test_named_team_with_multiple_matches_refuses(hcom, message_file, capsys) -> None:
     """Several live matches for a named team are reported without sending."""
     listing, _, calls = hcom
     listing[:] = [
@@ -377,7 +482,20 @@ def test_named_team_with_multiple_matches_refuses(hcom, capsys) -> None:
         agent("agent-tools-green-scout-nova", tag="agent-tools-green-scout"),
     ]
 
-    assert cli.main(["scout", "--intent", "request", "--team", "green"]) == 1
+    assert (
+        cli.main(
+            [
+                "scout",
+                "--intent",
+                "request",
+                "--team",
+                "green",
+                "--body-file",
+                str(message_file),
+            ]
+        )
+        == 1
+    )
     error = capsys.readouterr().err
     assert "Several live teammates for agent-tools-green-scout" in error
     assert "agent-tools-green-scout-peko" in error
@@ -427,24 +545,47 @@ def test_sender_team_without_repository_refuses_before_listing(
 
 
 @pytest.mark.parametrize(
-    ("body", "terminal", "expected"),
+    ("body", "terminal"),
     [
-        ("hello", True, "Pipe a message body"),
-        ("", False, "Message body is empty"),
-        ("  \n", False, "Message body is empty"),
+        ("hello", True),
+        ("hello", False),
+        ("", False),
     ],
 )
-def test_missing_piped_body_refuses_before_hcom(
-    hcom, monkeypatch, capsys, body: str, terminal: bool, expected: str
+@pytest.mark.parametrize("json_output", [False, True])
+def test_missing_body_file_refuses_without_reading_stdin(
+    hcom, monkeypatch, capsys, body: str, terminal: bool, json_output: bool
 ) -> None:
-    """A terminal or empty body never launches HCOM."""
+    """A missing file option refuses terminal and piped input without reading it."""
     _, _, calls = hcom
+    # Input waiting on stdin, whose read position shows whether it was consumed.
     stdin = io.StringIO(body)
     stdin.isatty = lambda: terminal
     monkeypatch.setattr(cli.sys, "stdin", stdin)
+    # The command line without a message file.
+    arguments = ["scout", "--intent", "request"]
 
-    assert cli.main(["scout", "--intent", "request"]) == 1
-    assert expected in capsys.readouterr().err
+    if json_output:
+        arguments.append("--json")
+
+    assert cli.main(arguments) == 1
+
+    # What the refusal printed.
+    output = capsys.readouterr()
+    # The form of the command that the refusal must name.
+    expected = "team-send <role> --body-file <path>"
+
+    if json_output:
+        assert json.loads(output.out) == {
+            "ok": False,
+            "error": f"Pass a message file with: {expected}.",
+        }
+        assert output.err == ""
+    else:
+        assert expected in output.err
+        assert output.out == ""
+
+    assert stdin.tell() == 0
     assert calls == []
 
 
@@ -818,11 +959,16 @@ def test_removal_failure_reports_success_and_warns(
     assert len(calls) == 2
 
 
-def test_json_success_names_the_selected_teammate(hcom, capsys) -> None:
+def test_json_success_names_the_selected_teammate(hcom, message_file, capsys) -> None:
     """Structured success carries the exact recipient and HCOM event ID."""
     _, _, calls = hcom
 
-    assert cli.main(["scout", "--intent", "inform", "--json"]) == 0
+    assert (
+        cli.main(
+            ["scout", "--intent", "inform", "--body-file", str(message_file), "--json"]
+        )
+        == 0
+    )
     assert json.loads(capsys.readouterr().out) == {
         "ok": True,
         "data": {
@@ -836,19 +982,24 @@ def test_json_success_names_the_selected_teammate(hcom, capsys) -> None:
 
 
 @pytest.mark.parametrize("delivered_to", [[], ["nova"], ["peko", "nova"]])
-def test_other_delivery_refuses_without_resending(hcom, capsys, delivered_to) -> None:
+def test_other_delivery_refuses_without_resending(
+    hcom, message_file, capsys, delivered_to
+) -> None:
     """A receipt must name only the selected agent's base name."""
     _, receipt, calls = hcom
     receipt["delivered_to"] = delivered_to
 
-    assert cli.main(["scout", "--intent", "request"]) == 1
+    assert (
+        cli.main(["scout", "--intent", "request", "--body-file", str(message_file)])
+        == 1
+    )
     assert "did not name only the chosen teammate" in capsys.readouterr().err
     assert len(calls) == 2
 
 
 @pytest.mark.parametrize("receipt", ["not json", "{}", '{"delivered_to": ["peko"]}'])
 def test_unreadable_send_receipt_refuses(
-    hcom, monkeypatch, capsys, receipt: str
+    hcom, message_file, monkeypatch, capsys, receipt: str
 ) -> None:
     """A malformed or incomplete receipt cannot confirm delivery."""
     _, _, calls = hcom
@@ -864,12 +1015,17 @@ def test_unreadable_send_receipt_refuses(
 
     monkeypatch.setattr(cli.subprocess, "run", run)
 
-    assert cli.main(["scout", "--intent", "request"]) == 1
+    assert (
+        cli.main(["scout", "--intent", "request", "--body-file", str(message_file)])
+        == 1
+    )
     assert "Unexpected HCOM send receipt" in capsys.readouterr().err
     assert len(calls) == 2
 
 
-def test_hcom_send_failure_reports_its_error(hcom, monkeypatch, capsys) -> None:
+def test_hcom_send_failure_reports_its_error(
+    hcom, message_file, monkeypatch, capsys
+) -> None:
     """A failed send reports HCOM's error and is never repeated."""
     _, _, calls = hcom
     original_run = cli.subprocess.run
@@ -886,6 +1042,70 @@ def test_hcom_send_failure_reports_its_error(hcom, monkeypatch, capsys) -> None:
 
     monkeypatch.setattr(cli.subprocess, "run", run)
 
-    assert cli.main(["scout", "--intent", "request"]) == 1
+    assert (
+        cli.main(["scout", "--intent", "request", "--body-file", str(message_file)])
+        == 1
+    )
     assert "HCOM send failed: delivery failed try later" in capsys.readouterr().err
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("error", "expected", "delivery_uncertain"),
+    [
+        (
+            subprocess.TimeoutExpired("hcom send", 10),
+            "HCOM send timed out after 10 seconds.",
+            True,
+        ),
+        (OSError("cannot start"), "HCOM send failed: cannot start", False),
+    ],
+)
+@pytest.mark.parametrize("json_output", [False, True])
+def test_hcom_send_error_keeps_body_file(
+    hcom,
+    tmp_path,
+    monkeypatch,
+    capsys,
+    error,
+    expected: str,
+    delivery_uncertain: bool,
+    json_output: bool,
+) -> None:
+    """A send timeout or launch error refuses without removing the report."""
+    _, _, calls = hcom
+    # The report that must survive the failed send.
+    body_file = tmp_path / "report.txt"
+    body_file.write_text("keep this")
+    # The stubbed HCOM command, which still answers the teammate lookup.
+    original_run = cli.subprocess.run
+
+    def run(command, **kwargs):
+        """Raise the configured error only when HCOM starts the send."""
+        if command[1] == "send":
+            calls.append((command, kwargs))
+            raise error
+
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    # The command line for the send, with JSON output when the case asks for it.
+    arguments = ["scout", "--intent", "inform", "--body-file", str(body_file)]
+
+    if json_output:
+        arguments.append("--json")
+
+    assert cli.main(arguments) == 1
+
+    # What the refusal printed.
+    output = capsys.readouterr()
+    # The refusal text, from whichever output the case uses.
+    refusal = json.loads(output.out)["error"] if json_output else output.err
+
+    assert expected in refusal
+    assert (
+        refusal.rstrip().endswith("The message may still have been delivered.")
+        == delivery_uncertain
+    )
+    assert body_file.read_text() == "keep this"
     assert len(calls) == 2
