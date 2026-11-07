@@ -28,6 +28,8 @@ By default, the change set starts at the last commit and includes staged, unstag
 
 The brief ends with a fixed request for the outside reviewer to list files they had to ask for or guess at, and files in the packet they didn't need. You don't need to fill in this section before building the packet.
 
+Before writing the brief or manifest, the draft checks the selected files and the generated brief for `.env` files (except `.env.example` and `.env.sample`), private key blocks, recognisable AWS, GitHub, Slack, npm and `sk-` keys, and absolute home paths. It also refuses selected links that lead outside the repository. When the scan finds material it cannot share, the command says why, lists each `path:line: kind`, exits with code `1` and leaves no new brief or manifest. In JSON mode, the locations and kinds are in `error.data.findings`; matched text is never included. This scan cannot recognise every secret or client detail, so check the material yourself before sharing it.
+
 The draft selects changed files that still exist, plus `AGENTS.md` and the root `README.md` when present. For each changed file, it also selects the nearest package's manifest, README and test configuration when those files exist. It adds files imported directly by changed Python, JavaScript and TypeScript files, and same-name tests beside a changed file or in its project's test folders. Imported files are not followed further. Files named with `--include` or in the settings file are added as well. Deleted files appear in the brief's change list, but cannot appear in the contents list.
 
 The brief's **Callers** section lists existing files in the same package that directly import a changed file, including a deleted file or the old name of a renamed file. It also lists callers already in the packet. Callers from another package in the repository are not listed. The section says when no callers were found. Listing a caller does not add it to the packet or manifest.
@@ -50,6 +52,6 @@ include = ["docs/architecture.md"]
 ## Exit codes
 
 - `0`: The brief was written.
-- `1`: The requested progress record was not found.
+- `1`: The requested progress record was not found, or the scan found material that cannot be shared.
 - `2`: Invalid arguments, settings, base revision or included path, or an existing brief without `--force`.
 - `3`: A Git, progress environment, internal or file system error prevented the draft.

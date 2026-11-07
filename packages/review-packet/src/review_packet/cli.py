@@ -18,6 +18,7 @@ from review_packet.progress_records import (
 	read_chunk,
 	read_related_tasks,
 )
+from review_packet.scan import Finding, scan_files, scan_text
 from review_packet.selection import (
 	MissingIncludeError,
 	OutsideSymlinkError,
@@ -44,6 +45,21 @@ class BriefExistsError(ValueError):
 	"""The draft brief already exists and force was not requested."""
 
 
+class ScanError(ValueError):
+	"""The draft would share a secret, a local path or a .env file."""
+
+	def __init__(self, findings: tuple[Finding, ...]) -> None:
+		"""Store the findings so the command can list each one.
+
+		Args:
+			findings: Where each secret or local path was found, and its kind.
+		"""
+		super().__init__(
+			f"Draft refused: secrets or local paths found ({len(findings)})"
+		)
+		self.findings = findings
+
+
 # Failures the user can fix by changing the command or the settings file.
 USAGE_ERRORS = (
 	BriefExistsError,
@@ -65,6 +81,9 @@ ENVIRONMENT_EXIT = 3
 
 # The exit code when progress cannot find a requested record.
 NOT_FOUND_EXIT = 1
+
+# The exit code when the scan found material that cannot be shared.
+SCAN_EXIT = 1
 
 # The exit code for each progress error kind, from docs/cli-contract.md.
 PROGRESS_EXITS = {
@@ -195,6 +214,9 @@ def main(argv: list[str] | None = None) -> int:
 			related,
 			args.force,
 		)
+	except ScanError as error:
+		_print_scan_findings(error.findings, args.json)
+		return SCAN_EXIT
 	except USAGE_ERRORS as error:
 		_print_error("usage", str(error), args.json)
 		return USAGE_EXIT
@@ -264,6 +286,7 @@ def _write_draft(
 
 	Raises:
 		BriefExistsError: A brief exists and force is false.
+		ScanError: The draft would share a secret, a local path or a .env file.
 		OSError: A selected file cannot be read or a draft file cannot be written.
 	"""
 	# The settings file name to show, or None when there is no settings file.
@@ -274,6 +297,24 @@ def _write_draft(
 			f"The review brief already exists: {brief_path}. Use --force to replace it."
 		)
 
+	# The finished brief, including the task record and generated file list.
+	brief = render(
+		chunk,
+		snapshot,
+		selection.files,
+		callers,
+		settings_name,
+		related,
+		selection.unresolved,
+		selection.unreadable,
+		selection.outside,
+	)
+	# Findings in selected files and in the generated brief.
+	findings = (*scan_files(root, selection.files), *scan_text("REVIEW.md", brief))
+
+	if findings:
+		raise ScanError(findings)
+
 	# Hash every selected path before either draft file is replaced.
 	manifest = create_manifest(root, snapshot, selection.files)
 	# The manifest sits beside REVIEW.md, where the build step looks for it.
@@ -283,19 +324,7 @@ def _write_draft(
 	# The brief is written first. If the manifest write then fails, the old
 	# manifest either still matches the files or shows that they changed, whereas
 	# a new manifest beside an old brief would pass off older work as current.
-	brief_path.write_text(
-		render(
-			chunk,
-			snapshot,
-			selection.files,
-			callers,
-			settings_name,
-			related,
-			selection.unresolved,
-			selection.unreadable,
-			selection.outside,
-		)
-	)
+	brief_path.write_text(brief)
 	manifest_path.write_text(json.dumps(manifest_to_json(manifest), indent=2) + "\n")
 
 	return DraftResult(
@@ -350,6 +379,46 @@ def _print_error(code: str, message: str, json_mode: bool) -> None:
 		return
 
 	print(f"Error: {message}", file=sys.stderr)
+
+
+def _print_scan_findings(findings: tuple[Finding, ...], json_mode: bool) -> None:
+	"""Explain why the draft was refused without showing matched text.
+
+	Args:
+		findings: Where each secret or local path was found, and its kind.
+		json_mode: Whether to print a JSON envelope.
+	"""
+	# The explanation shown before the locations, or in the JSON error.
+	message = "Draft not written: these files hold secrets or local paths."
+
+	if json_mode:
+		# Safe locations and kinds for the JSON error.
+		finding_data = [
+			{"path": item.path, "line": item.line, "kind": item.kind}
+			for item in findings
+		]
+
+		print(
+			json.dumps(
+				{
+					"ok": False,
+					"error": {
+						"code": "check-failed",
+						"message": message,
+						"data": {"findings": finding_data},
+					},
+				}
+			)
+		)
+		return
+
+	# One line per finding: the file, the line number and the kind.
+	lines = [f"{item.path}:{item.line}: {item.kind}" for item in findings]
+
+	print(message, file=sys.stderr)
+
+	for line in lines:
+		print(line, file=sys.stderr)
 
 
 if __name__ == "__main__":

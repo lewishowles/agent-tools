@@ -106,7 +106,7 @@ def select_files(root: Path, snapshot: Snapshot, extra: tuple[str, ...]) -> Sele
 		for path in sorted(paths)
 		if not Path(path).is_absolute()
 		and ".." not in Path(path).parts
-		and _leads_outside(root, path)
+		and leads_outside(root, path)
 	]
 
 	if outside_links:
@@ -162,7 +162,7 @@ def _changed_context(root: Path, snapshot: Snapshot) -> _ChangedContext:
 
 		# A changed path that leads outside the repository through a link is
 		# refused later by select_files, so its imports are never read.
-		if _leads_outside(root, change.path):
+		if leads_outside(root, change.path):
 			continue
 
 		# The files this change imports directly.
@@ -172,7 +172,7 @@ def _changed_context(root: Path, snapshot: Snapshot) -> _ChangedContext:
 		unreadable.update(imports.unreadable)
 
 		for path in (*imports.paths, *_matching_tests(root, change.path)):
-			if _leads_outside(root, path):
+			if leads_outside(root, path):
 				outside.add(path)
 			else:
 				paths.add(path)
@@ -180,7 +180,7 @@ def _changed_context(root: Path, snapshot: Snapshot) -> _ChangedContext:
 	return _ChangedContext(paths, unresolved, unreadable, outside)
 
 
-def _leads_outside(root: Path, path: str) -> bool:
+def leads_outside(root: Path, path: str) -> bool:
 	"""Check whether a repository path resolves outside its root.
 
 	Args:
@@ -301,7 +301,7 @@ def _is_repository_file(root: Path, path: str) -> bool:
 	# The path on disk.
 	candidate = root / path
 
-	return candidate.is_file() and not _leads_outside(root, path)
+	return candidate.is_file() and not leads_outside(root, path)
 
 
 def _nearest_project_folder(root: Path, changed_path: str) -> Path | None:
