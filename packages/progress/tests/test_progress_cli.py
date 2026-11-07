@@ -19,6 +19,7 @@ from agents_progress.errors import (
 	GitBindingError,
 	NotFoundError,
 	ProgressError,
+	UncommittedChangesError,
 )
 from agents_progress.projects import Project, ProjectStore
 from agents_progress.reads import ReadStore
@@ -1030,12 +1031,14 @@ def test_task_start_reports_shared_files_without_blocking(
 	tmp_path: Path,
 	monkeypatch,
 	capsys,
+	committed_repository: Path,
 	selected_files: list[str],
 	other_files: list[str],
 	other_status: str,
 	expected_path: str | None,
 ) -> None:
 	"""List only normalised files shared with other in-progress tasks."""
+	monkeypatch.chdir(committed_repository)
 	database_path = tmp_path / "progress.db"
 	project = Project(
 		"prj_" + "p" * 22,
@@ -1105,9 +1108,10 @@ def test_task_start_reports_shared_files_without_blocking(
 
 
 def test_task_start_names_each_other_task_once_for_a_shared_path(
-	tmp_path: Path, monkeypatch, capsys
+	tmp_path: Path, monkeypatch, capsys, committed_repository: Path
 ) -> None:
 	"""Name each other task once when it lists the same file twice."""
+	monkeypatch.chdir(committed_repository)
 	database_path = tmp_path / "progress.db"
 	project = Project(
 		"prj_" + "p" * 22,
@@ -1172,9 +1176,10 @@ def test_task_start_names_each_other_task_once_for_a_shared_path(
 
 
 def test_task_start_lists_shared_tasks_in_release_queue_order(
-	tmp_path: Path, monkeypatch, capsys
+	tmp_path: Path, monkeypatch, capsys, committed_repository: Path
 ) -> None:
 	"""List tasks in the earlier release first, even when its task is later within that release."""
+	monkeypatch.chdir(committed_repository)
 	database_path = tmp_path / "progress.db"
 	project = Project(
 		"prj_" + "p" * 22,
@@ -1344,16 +1349,21 @@ def test_next_rejects_a_named_task_with_an_area_filter(tmp_path: Path, capsys) -
 def test_task_start_secondary_flag_reaches_the_write_store(
 	tmp_path: Path, monkeypatch, capsys
 ) -> None:
+	"""Pass --secondary to the store, leaving the override off unless asked for."""
 	task_id = "tsk_" + "t" * 22
 	data = {"id": task_id, "status": "in-progress"}
 
 	class _WriteStore:
+		"""Check the options the CLI passes for a task start."""
+
 		def __init__(self, database) -> None:
 			pass
 
-		def task_start(self, selected_id: str, *, secondary: bool):
+		def task_start(self, selected_id: str, *, secondary: bool, allow_dirty: bool):
+			"""Return the task when the options match what the command asked for."""
 			assert selected_id == task_id
 			assert secondary is True
+			assert allow_dirty is False
 			return data
 
 	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
@@ -1372,6 +1382,159 @@ def test_task_start_secondary_flag_reaches_the_write_store(
 		)
 		== 0
 	)
+	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
+
+
+@pytest.mark.parametrize("start_kind", ["task", "chunk"])
+def test_start_refusal_uses_the_json_error_envelope(
+	tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, start_kind: str
+) -> None:
+	"""Expose the paths and override command in JSON and human errors."""
+	# The record named by the requested start.
+	identifier = ("tsk_" if start_kind == "task" else "chk_") + "t" * 22
+	# The command shown to a person for continuing despite checkout changes.
+	human_hint = (
+		f"progress {start_kind} start {identifier} --allow-dirty "
+		f"--database {tmp_path / 'db'}"
+	)
+	# The JSON retry command must keep JSON output for agents.
+	json_hint = f"{human_hint} --json"
+
+	class _WriteStore:
+		"""Refuse every start because of uncommitted changes."""
+
+		def __init__(self, database: Database) -> None:
+			"""Accept the command's database."""
+
+		def task_start(self, selected_id: str, *, secondary: bool, allow_dirty: bool):
+			"""Refuse a task start without the override."""
+			assert selected_id == identifier
+			assert allow_dirty is False
+			raise UncommittedChangesError(
+				"Uncommitted changes in the checkout",
+				{"paths": ["new file.txt"], "count": 1, "reason": None},
+			)
+
+		def chunk_start(self, selected_id: str, *, allow_dirty: bool):
+			"""Refuse a chunk start without the override."""
+			return self.task_start(
+				selected_id, secondary=False, allow_dirty=allow_dirty
+			)
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+	# The same request is used for JSON and human output.
+	arguments = [start_kind, "start", identifier, "--database", str(tmp_path / "db")]
+
+	assert cli.main([*arguments, "--json"]) == 1
+	assert json.loads(capsys.readouterr().out) == {
+		"ok": False,
+		"error": {
+			"code": "uncommitted-changes",
+			"message": "Uncommitted changes in the checkout",
+			"details": {
+				"paths": ["new file.txt"],
+				"count": 1,
+				"reason": None,
+				"hint": json_hint,
+			},
+		},
+	}
+	assert cli.main(arguments) == 1
+	# The message shown to a person after the refusal.
+	human_error = capsys.readouterr().err
+	assert "  new file.txt" in human_error
+	assert "'new file.txt'" not in human_error
+	assert human_hint in human_error
+	assert json_hint not in human_error
+	assert human_error.index("  new file.txt") < human_error.index(human_hint)
+
+
+def test_secondary_task_start_refusal_keeps_secondary_in_retry(
+	tmp_path: Path,
+	monkeypatch: pytest.MonkeyPatch,
+	capsys,
+	committed_repository: Path,
+) -> None:
+	"""Keep the secondary task choice in the suggested retry command."""
+	monkeypatch.chdir(committed_repository)
+	# The secondary task that the CLI tries to start.
+	task_id = "tsk_" + "t" * 22
+
+	class _WriteStore:
+		"""Refuse a secondary task start because the checkout changed."""
+
+		def __init__(self, database: Database) -> None:
+			"""Accept the command's database."""
+
+		def task_start(self, selected_id: str, *, secondary: bool, allow_dirty: bool):
+			"""Confirm the request stays secondary before refusing it."""
+			assert selected_id == task_id
+			assert secondary is True
+			assert allow_dirty is False
+			raise UncommittedChangesError(
+				"Uncommitted changes in the checkout",
+				{"paths": ["new file.txt"], "count": 1, "reason": None},
+			)
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+	# The command for a secondary task start in human mode.
+	arguments = [
+		"task",
+		"start",
+		task_id,
+		"--secondary",
+		"--database",
+		str(tmp_path / "db"),
+	]
+
+	assert cli.main(arguments) == 1
+	assert (
+		f"progress task start {task_id} --secondary --allow-dirty --database {tmp_path / 'db'}"
+		in capsys.readouterr().err
+	)
+
+
+@pytest.mark.parametrize("start_kind", ["task", "chunk"])
+def test_start_allow_dirty_flag_reaches_the_write_store(
+	tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, start_kind: str
+) -> None:
+	"""Pass --allow-dirty to the store from either start command."""
+	# The record whose start should receive the override.
+	identifier = ("tsk_" if start_kind == "task" else "chk_") + "t" * 22
+	# The store result returned when the override is passed through.
+	data = {"id": identifier, "status": "active"}
+
+	class _WriteStore:
+		"""Check that the override arrives from the CLI."""
+
+		def __init__(self, database: Database) -> None:
+			"""Accept the command's database."""
+
+		def task_start(self, selected_id: str, *, secondary: bool, allow_dirty: bool):
+			"""Return a task only when the override reaches the store."""
+			assert selected_id == identifier
+			assert allow_dirty is True
+			return data
+
+		def chunk_start(self, selected_id: str, *, allow_dirty: bool):
+			"""Return a chunk only when the override reaches the store."""
+			return self.task_start(
+				selected_id, secondary=False, allow_dirty=allow_dirty
+			)
+
+	monkeypatch.setattr(cli, "WriteStore", _WriteStore)
+	# The start command with --allow-dirty.
+	arguments = [
+		start_kind,
+		"start",
+		identifier,
+		"--allow-dirty",
+		"--json",
+		"--database",
+		str(tmp_path / "db"),
+	]
+
+	assert cli.main(arguments) == 0
 	assert json.loads(capsys.readouterr().out) == {"ok": True, "data": data}
 
 
@@ -1402,6 +1565,7 @@ def test_task_start_secondary_flag_reaches_the_write_store(
 def test_start_human_output_only_warns_for_dirty_or_unavailable(
 	command: str, changes: dict[str, object], expected: str | None
 ) -> None:
+	"""Warn, listing any changed paths, only when the checkout is dirty or Git status failed."""
 	output = cli._render_human_output(
 		command,
 		{
@@ -1416,9 +1580,16 @@ def test_start_human_output_only_warns_for_dirty_or_unavailable(
 
 	if expected:
 		assert plain_lines[1] == expected
+		if changes["status"] == "dirty":
+			assert plain_lines[2:] == [f"  {path}" for path in changes["paths"]]
 	else:
 		assert "Uncommitted changes:" not in output
 	assert "{'status':" not in output
+
+
+def test_start_path_lines_reports_the_omitted_count() -> None:
+	"""List the paths shown, then how many were left out."""
+	assert cli._start_path_lines(["one.txt"], 3) == ["  one.txt", "  ... and 2 more"]
 
 
 @pytest.mark.parametrize(
@@ -3048,8 +3219,11 @@ def test_task_move_names_the_new_release_only_when_it_changes(
 	assert "moved_to_release" not in json_task
 
 
-def test_chunk_start_updates_its_parent_task(complete_records, capsys) -> None:
+def test_chunk_start_updates_its_parent_task(
+	complete_records, capsys, committed_repository: Path, monkeypatch
+) -> None:
 	"""Starting a pending chunk changes its parent task's update time."""
+	monkeypatch.chdir(committed_repository)
 	database_path, task, _chunk = complete_records
 	database = Database(database_path)
 	writer = WriteStore(database)
@@ -3432,8 +3606,11 @@ def test_release_note_and_context_change_keep_task_time(
 		assert ReadStore(database).task_get(task["id"])["updated_at"] == old_time
 
 
-def test_complete_finishes_a_real_chunk_by_id(complete_records, capsys) -> None:
+def test_complete_finishes_a_real_chunk_by_id(
+	complete_records, capsys, committed_repository: Path, monkeypatch
+) -> None:
 	"""Complete an active chunk through the public command."""
+	monkeypatch.chdir(committed_repository)
 	database_path, task, chunk = complete_records
 	writer = WriteStore(Database(database_path))
 	writer.task_start(task["id"])
@@ -7802,15 +7979,19 @@ def test_human_write_output_includes_a_next_command(
 def test_human_task_start_hint_selects_started_task(
 	tmp_path: Path, monkeypatch, capsys, secondary: bool
 ) -> None:
+	"""Make the hint after a human task start select the task that started."""
 	task_id = "tsk_test"
 	data = {"id": task_id, "title": "Selected task", "status": "in-progress"}
 	expected_secondary = secondary
 
 	class _WriteStore:
+		"""Return a started task, checking the secondary option on the way."""
+
 		def __init__(self, database) -> None:
 			pass
 
-		def task_start(self, selected_id: str, *, secondary: bool):
+		def task_start(self, selected_id: str, *, secondary: bool, allow_dirty: bool):
+			"""Return the task when the secondary option matches the command."""
 			assert selected_id == task_id
 			assert secondary is expected_secondary
 			return data
@@ -9430,9 +9611,10 @@ def test_summary_runs_outside_a_repository_without_recording_checkout(
 
 
 def test_summary_lists_overlapping_paths_and_every_in_progress_task(
-	tmp_path: Path, monkeypatch, capsys
+	tmp_path: Path, monkeypatch, capsys, committed_repository: Path
 ) -> None:
 	"""Show tidied folder and file overlaps with all involved tasks in queue order."""
+	monkeypatch.chdir(committed_repository)
 	database_path = tmp_path / "progress.db"
 	project = Project(
 		"prj_" + "p" * 22,
@@ -9489,9 +9671,10 @@ def test_summary_lists_overlapping_paths_and_every_in_progress_task(
 
 
 def test_summary_reports_no_shared_files_when_in_progress_tasks_list_unrelated_paths(
-	tmp_path: Path, monkeypatch, capsys
+	tmp_path: Path, monkeypatch, capsys, committed_repository: Path
 ) -> None:
 	"""Show no shared files when in-progress tasks list unrelated paths."""
+	monkeypatch.chdir(committed_repository)
 	database_path = tmp_path / "progress.db"
 	project = Project(
 		"prj_" + "p" * 22,
@@ -9533,9 +9716,10 @@ def test_summary_reports_no_shared_files_when_in_progress_tasks_list_unrelated_p
 
 
 def test_summary_ignores_files_listed_by_done_tasks(
-	tmp_path: Path, monkeypatch
+	tmp_path: Path, monkeypatch, committed_repository: Path
 ) -> None:
 	"""Leave the shared file list empty when only a done task overlaps."""
+	monkeypatch.chdir(committed_repository)
 	database_path = tmp_path / "progress.db"
 	project = Project(
 		"prj_" + "p" * 22,

@@ -70,7 +70,7 @@ class GitRepository:
 
 		The result has a status of clean, dirty, or unavailable, the full entry
 		count, and a capped list of paths. A failed or undecodable status query
-		returns unavailable with a short reason, so a start can still go ahead.
+		returns unavailable with a short reason that the caller can show.
 		"""
 		try:
 			result = self.run(["status", "--porcelain=v1", "-z"])

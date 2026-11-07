@@ -16,6 +16,7 @@ from .errors import (
 	PendingChunksError,
 	ProgressError,
 	StillReferencedError,
+	UncommittedChangesError,
 	UnresolvedDependenciesError,
 )
 from .ids import (
@@ -1377,15 +1378,31 @@ class WriteStore(_StoreBase):
 			return _chunk_dict(connection, chunk_id, project.id)
 
 	def chunk_start(
-		self, chunk_id: str, path: str | Path | None = None
+		self,
+		chunk_id: str,
+		path: str | Path | None = None,
+		*,
+		allow_dirty: bool = False,
 	) -> dict[str, object]:
 		"""Activate a pending chunk on an in-progress task atomically.
 
-		The result reports the worktree's uncommitted changes, which never prevent
-		the activation.
+		Args:
+			chunk_id: The chunk to activate.
+			path: A path inside the project's checkout, or the current directory when omitted.
+			allow_dirty: Whether to start despite uncommitted changes or an unreadable Git status.
+
+		Returns:
+			The chunk, with the state of the checkout under uncommitted_changes.
+
+		Raises:
+			UncommittedChangesError: The checkout has uncommitted changes or its Git status
+				cannot be read, and allow_dirty is false. The chunk stays pending.
 		"""
 		validate_object_id(chunk_id, CHUNK_PREFIX)
 		project = self.current_project(path)
+		# The checkout state, read before the transaction so that a slow Git status does
+		# not hold the database write lock.
+		changes = self.projects.uncommitted_changes(path)
 
 		with self.database.transaction() as connection:
 			chunk = _chunk_row(connection, chunk_id, project.id)
@@ -1409,6 +1426,8 @@ class WriteStore(_StoreBase):
 					},
 				)
 
+			_refuse_dirty_start(changes, allow_dirty)
+
 			now = utc_timestamp()
 			connection.execute(
 				"UPDATE chunks SET status = 'pending', started_at = NULL "
@@ -1426,7 +1445,7 @@ class WriteStore(_StoreBase):
 
 			result = _chunk_dict(connection, chunk_id, project.id)
 
-		result["uncommitted_changes"] = self.projects.uncommitted_changes(path)
+		result["uncommitted_changes"] = changes
 		return result
 
 	def chunk_remove(
@@ -1519,7 +1538,12 @@ class WriteStore(_StoreBase):
 			return _chunk_dict(connection, chunk_id, project.id)
 
 	def task_start(
-		self, task_id: str, path: str | Path | None = None, *, secondary: bool = False
+		self,
+		task_id: str,
+		path: str | Path | None = None,
+		*,
+		secondary: bool = False,
+		allow_dirty: bool = False,
 	) -> dict[str, object]:
 		"""Start a ready task by ID or project slug and activate its first pending chunk.
 
@@ -1527,11 +1551,27 @@ class WriteStore(_StoreBase):
 		another default task is in progress. A secondary start never changes the
 		default. Other in-progress tasks and their active chunks stay as they are.
 		The result reports the worktree's uncommitted changes and shared_files for
-		files that overlap those listed by other in-progress tasks. Neither prevents
-		the start.
+		files that overlap those listed by other in-progress tasks. Shared files
+		never prevent the start.
+
+		Args:
+			task_id: The ID or project slug of the task to start.
+			path: A path inside the project's checkout, or the current directory when omitted.
+			secondary: Whether to start the task alongside the default task.
+			allow_dirty: Whether to start despite uncommitted changes or an unreadable Git status.
+
+		Returns:
+			The task, with its shared_files and the state of the checkout under uncommitted_changes.
+
+		Raises:
+			UncommittedChangesError: The checkout has uncommitted changes or its Git status
+				cannot be read, and allow_dirty is false. The task stays as it was.
 		"""
 		task_id = validate_identifier(task_id, TASK_PREFIX)
 		project = self.current_project(path)
+		# The checkout state, read before the transaction so that a slow Git status does
+		# not hold the database write lock.
+		changes = self.projects.uncommitted_changes(path)
 
 		with self.database.transaction() as connection:
 			task_id = resolve_identifier(connection, task_id, TASK_PREFIX, project.id)
@@ -1560,6 +1600,8 @@ class WriteStore(_StoreBase):
 					f"task {default['id']} is already the project's default task; use --secondary to run task {task_id} alongside it",
 					{"id": task_id, "default_task_id": default["id"]},
 				)
+
+			_refuse_dirty_start(changes, allow_dirty)
 
 			now = utc_timestamp()
 
@@ -1591,7 +1633,7 @@ class WriteStore(_StoreBase):
 			result = _task_dict(connection, task_id, project.id)
 			result["shared_files"] = shared_task_files(connection, task_id, project.id)
 
-		result["uncommitted_changes"] = self.projects.uncommitted_changes(path)
+		result["uncommitted_changes"] = changes
 		return result
 
 	def task_complete(
@@ -2003,6 +2045,37 @@ class WriteStore(_StoreBase):
 				).fetchone()
 
 		return Context.from_row(row).to_dict()
+
+
+def _refuse_dirty_start(changes: dict[str, object], allow_dirty: bool) -> None:
+	"""Refuse a start over uncommitted changes or an unreadable Git status, unless overridden.
+
+	Args:
+		changes: The checkout state read before the database transaction.
+		allow_dirty: Whether to start despite uncommitted changes or an unreadable Git status.
+
+	Raises:
+		UncommittedChangesError: The checkout has uncommitted changes or its Git status
+			cannot be read, and allow_dirty is false.
+	"""
+	if allow_dirty or changes["status"] == "clean":
+		return
+
+	# The one-line reason for the refusal. The CLI adds the paths and the retry command.
+	message = (
+		"Uncommitted changes in the checkout"
+		if changes["status"] == "dirty"
+		else f"Git status could not be read: {changes['reason']}"
+	)
+
+	raise UncommittedChangesError(
+		message,
+		{
+			"paths": changes["paths"],
+			"count": changes["count"],
+			"reason": changes.get("reason"),
+		},
+	)
 
 
 def _normalise_write_ids(

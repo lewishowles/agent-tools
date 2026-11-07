@@ -4,6 +4,7 @@ import argparse
 import difflib
 import json
 import re
+import shlex
 import sys
 from collections.abc import Callable
 from contextlib import suppress
@@ -12,7 +13,12 @@ from typing import TextIO
 
 from . import __version__
 from .database import Database
-from .errors import NotFoundError, ProgressError, WrongObjectIdTypeError
+from .errors import (
+	NotFoundError,
+	ProgressError,
+	UncommittedChangesError,
+	WrongObjectIdTypeError,
+)
 from .ids import (
 	CHUNK_PREFIX,
 	NOTE_PREFIX,
@@ -714,6 +720,11 @@ _COMMAND_SPECS = (
 				arguments=(
 					_argument("task_id"),
 					_argument("--secondary", action="store_true"),
+					_argument(
+						"--allow-dirty",
+						action="store_true",
+						help="start despite uncommitted changes or unreadable Git status",
+					),
 				),
 			),
 			_CommandSpec(
@@ -800,7 +811,14 @@ _COMMAND_SPECS = (
 			_CommandSpec(
 				"start",
 				"activate a pending chunk",
-				arguments=(_argument("chunk_id"),),
+				arguments=(
+					_argument("chunk_id"),
+					_argument(
+						"--allow-dirty",
+						action="store_true",
+						help="start despite uncommitted changes or unreadable Git status",
+					),
+				),
 			),
 			_CommandSpec(
 				"complete",
@@ -1490,6 +1508,9 @@ def main(argv: list[str] | None = None) -> int:
 			status=2,
 		)
 	except ProgressError as error:
+		if isinstance(error, UncommittedChangesError):
+			return _write_start_refusal(error, args, json_mode)
+
 		return _write_error(error.code, error.message, error.details, json_mode)
 
 	# The store does not echo the search term, and the renderer needs it to bold matches; JSON output stays the untouched store response.
@@ -1612,11 +1633,12 @@ def _render_human_output(
 			for key, value in data.items()
 			if key not in {"uncommitted_changes", "shared_files"}
 		}
-		line = _uncommitted_changes_line(changes)
+		# The checkout warning can include changed paths on following lines.
+		changes_warning = _uncommitted_changes_line(changes)
 		# Start warnings: uncommitted changes first, then one line per shared file.
-		warning_lines = ([line] if line else []) + _shared_file_lines(
-			data.get("shared_files", [])
-		)
+		warning_lines = (
+			[changes_warning] if changes_warning else []
+		) + _shared_file_lines(data.get("shared_files", []))
 		return render(command, record) + "".join(
 			f"{warning}\n" for warning in warning_lines
 		)
@@ -1739,11 +1761,86 @@ def _worktree_cleanup_lines(data: dict[str, object]) -> list[str]:
 	return lines
 
 
+def _write_start_refusal(
+	error: UncommittedChangesError, args: argparse.Namespace, json_mode: bool
+) -> int:
+	"""Report a refused start along with the command that starts it anyway.
+
+	Args:
+		error: The refusal from the store, holding the changed paths and their count.
+		args: The parsed arguments of the `task start` or `chunk start` command.
+		json_mode: Whether to write the error as JSON.
+
+	Returns:
+		The process exit status.
+	"""
+	# The task or chunk as the user named it, so the suggested command repeats their start.
+	identifier = args.task_id if args.command == "task" else args.chunk_id
+	# Only `task start` has a secondary option, and the retry must keep it.
+	secondary = " --secondary" if args.command == "task" and args.secondary else ""
+	# The command that repeats this start despite the changes.
+	hint = f"progress {args.command} start {identifier}{secondary} --allow-dirty"
+	# The database the user named, which the retry must keep.
+	database = getattr(args, "database", None)
+
+	if database is not None:
+		hint += f" --database {shlex.quote(str(database))}"
+
+	if json_mode:
+		hint += " --json"
+		return _write_error(
+			error.code, error.message, {**error.details, "hint": hint}, True
+		)
+
+	# The reason for the refusal and any changed paths.
+	message = "\n".join(
+		[
+			error.message,
+			*_start_path_lines(error.details["paths"], error.details["count"]),
+		]
+	)
+
+	return _write_error(
+		error.code, message, {"hint": f"To start anyway, run: {hint}"}, False
+	)
+
+
+def _start_path_lines(paths: list[str], count: int) -> list[str]:
+	"""List changed paths for a start message, ending with how many were left out.
+
+	Args:
+		paths: The paths to show, which Git status may have capped.
+		count: The total number of changed paths.
+
+	Returns:
+		One indented line per path, plus an "and N more" line when paths were left out.
+	"""
+	# One indented line for each path being shown.
+	lines = [f"  {path}" for path in paths]
+
+	if count > len(paths):
+		lines.append(f"  ... and {count - len(paths)} more")
+
+	return lines
+
+
 def _uncommitted_changes_line(data: dict[str, object]) -> str:
-	"""Return the start warning about uncommitted changes, or an empty string when the worktree is clean."""
+	"""Build the start warning about the checkout's uncommitted changes.
+
+	Args:
+		data: The uncommitted_changes value from a start result.
+
+	Returns:
+		The warning with any changed paths below it, or an empty string when the checkout is clean.
+	"""
 	if data["status"] == "dirty":
+		# The total number of changed files, which can exceed the paths listed.
 		count = data["count"]
-		return f"Uncommitted changes: {count} {'file' if count == 1 else 'files'}"
+		# The summary shown above the list of paths.
+		heading = f"Uncommitted changes: {count} {'file' if count == 1 else 'files'}"
+
+		return "\n".join([heading, *_start_path_lines(data["paths"], count)])
+
 	if data["status"] == "unavailable":
 		return f"Uncommitted changes: not checked ({data['reason']})"
 	return ""
@@ -1963,7 +2060,9 @@ def _run_command(
 		),
 		("task", "edit"): lambda: _run_task_edit(args, database),
 		("task", "start"): lambda: (
-			WriteStore(database).task_start(args.task_id, secondary=args.secondary),
+			WriteStore(database).task_start(
+				args.task_id, secondary=args.secondary, allow_dirty=args.allow_dirty
+			),
 			"task start",
 		),
 		("task", "complete"): lambda: (
@@ -2037,7 +2136,9 @@ def _run_command(
 		),
 		("chunk", "move"): lambda: _run_chunk_move(args, database),
 		("chunk", "start"): lambda: (
-			WriteStore(database).chunk_start(args.chunk_id),
+			WriteStore(database).chunk_start(
+				args.chunk_id, allow_dirty=args.allow_dirty
+			),
 			"chunk start",
 		),
 		("chunk", "complete"): lambda: (

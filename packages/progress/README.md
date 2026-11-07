@@ -615,7 +615,7 @@ have to match a list of known names.
 Start a task:
 
 ```text
-progress task start <task_id> [--secondary] [--json] [--database <path>]
+progress task start <task_id> [--secondary] [--allow-dirty] [--json] [--database <path>]
 ```
 
 Starting a task requires the task to be `ready`, moves it to `in-progress`, and
@@ -627,12 +627,20 @@ default task is in progress. If another task holds the default, use
 the default even when it is empty. Other tasks and their active chunks stay
 as they are.
 
-Every start reports `uncommitted_changes` in JSON: `status` is `clean`,
-`dirty`, or `unavailable`; `count` is the number of changed Git entries; and
-`paths` lists up to 20 of them. A failed status check includes `reason`.
-Staged, unstaged, and untracked files count, while ignored files do not.
-The task still starts when changes exist or the status check fails. Human
-output adds one line when changes exist or Git could not check them.
+A start is refused when the checkout has uncommitted changes or Git status
+cannot be read. Staged, unstaged, and untracked files count as changes, while
+ignored files do not. The refusal uses the error code `uncommitted-changes` and
+leaves the task as it was. Its message lists up to 20 changed paths, says how
+many more there are, and gives the command to start anyway. In JSON, the error
+details hold `paths`, `count`, `reason`, and that command as `hint`. The `reason`
+is `null` when the refusal is for changes. Use `--allow-dirty` to start despite
+changes or an unreadable status.
+
+Every successful start reports `uncommitted_changes` in JSON: `status` is
+`clean`, `dirty`, or `unavailable`; `count` is the number of changed Git
+entries; and `paths` lists up to 20 of them. An `unavailable` status includes
+`reason`. Human output adds a warning, with any changed paths below it, when
+changes exist or Git could not check them.
 
 Every start also reports `shared_files` in JSON. Each `path` is one of this
 task's listed paths, tidied so different spellings, such as `./src/a.ts` and
@@ -798,15 +806,17 @@ It renumbers the task's chunks from 1 with no gaps.
 Activate a pending chunk:
 
 ```text
-progress chunk start <chunk_id> [--json] [--database <path>]
+progress chunk start <chunk_id> [--allow-dirty] [--json] [--database <path>]
 ```
 
 The chunk's task must already be `in-progress`. If another chunk on the same
 task is active, it returns that chunk to `pending` before activating the
 requested chunk.
 
-Chunk starts report the same `uncommitted_changes` result as task starts.
-Changes and a failed Git status check do not prevent activation.
+Chunk starts check the checkout in the same way as task starts: changes or an
+unreadable Git status refuse the start and leave the chunk `pending`, unless you
+pass `--allow-dirty`. A successful start reports the same `uncommitted_changes`
+result.
 
 ### `progress chunk complete`
 

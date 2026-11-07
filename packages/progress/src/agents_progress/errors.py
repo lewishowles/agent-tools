@@ -94,6 +94,12 @@ class NotAProjectError(ProgressError):
 	code = "not-a-project"
 
 
+class UncommittedChangesError(ProgressError):
+	"""Indicate that a start was refused because the checkout has uncommitted changes or its Git status could not be read."""
+
+	code = "uncommitted-changes"
+
+
 class UninitialisedProjectError(ProgressError):
 	"""Indicate that a Git repository has no progress project binding."""
 

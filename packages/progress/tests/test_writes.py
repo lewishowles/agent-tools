@@ -19,6 +19,7 @@ from agents_progress.errors import (
 	PendingChunksError,
 	ProgressError,
 	StillReferencedError,
+	UncommittedChangesError,
 	WrongObjectIdTypeError,
 )
 from agents_progress.projects import Project, ProjectStore
@@ -1341,12 +1342,13 @@ def test_task_start_accepts_an_id_or_slug(tmp_path: Path, use_slug: bool) -> Non
 @pytest.mark.parametrize("secondary", [False, True])
 @pytest.mark.parametrize("start_kind", ["task", "chunk"])
 @pytest.mark.parametrize("change_kind", ["staged", "unstaged", "untracked"])
-def test_start_reports_uncommitted_changes_without_blocking(
+def test_start_reports_uncommitted_changes_with_override(
 	committed_repository: Path,
 	secondary: bool,
 	start_kind: str,
 	change_kind: str,
 ) -> None:
+	"""Start over staged, unstaged, or untracked changes with the override, and report them."""
 	store, _ = _git_backed_completion_store(committed_repository)
 	task = _add_task(store, "start-task", "Start task", path=committed_repository)
 	_add_chunk(store, task["id"], "First chunk", path=committed_repository)
@@ -1366,13 +1368,18 @@ def test_start_reports_uncommitted_changes_without_blocking(
 				check=True,
 			)
 
+	# The task's start result. The chunk case needs this first, because a chunk can only
+	# start once its task is in progress.
 	started_task = store.task_start(
-		task["id"], committed_repository, secondary=secondary
+		task["id"], committed_repository, secondary=secondary, allow_dirty=True
 	)
+	# The result of the start that this case covers.
 	started = (
 		started_task
 		if start_kind == "task"
-		else store.chunk_start(second_chunk["id"], committed_repository)
+		else store.chunk_start(
+			second_chunk["id"], committed_repository, allow_dirty=True
+		)
 	)
 
 	assert started["uncommitted_changes"] == {
@@ -1381,6 +1388,102 @@ def test_start_reports_uncommitted_changes_without_blocking(
 		"paths": [path.name],
 	}
 	assert started["status"] == ("in-progress" if start_kind == "task" else "active")
+
+
+@pytest.mark.parametrize("start_kind", ["task", "chunk"])
+@pytest.mark.parametrize("status_kind", ["dirty", "unavailable"])
+def test_start_refuses_before_changing_state(
+	committed_repository: Path,
+	monkeypatch: pytest.MonkeyPatch,
+	start_kind: str,
+	status_kind: str,
+) -> None:
+	"""Leave task and chunk state intact when Git reports changes or fails."""
+	# The store holding the task and chunks that the refused start must leave unchanged.
+	store, _ = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "start-task", "Start task", path=committed_repository)
+	first_chunk = _add_chunk(store, task["id"], "First", path=committed_repository)
+	second_chunk = _add_chunk(store, task["id"], "Second", path=committed_repository)
+	if start_kind == "chunk":
+		store.task_start(task["id"], committed_repository)
+
+	if status_kind == "dirty":
+		(committed_repository / "new file.txt").write_text("new\n")
+	else:
+		# The original Git command for requests other than status.
+		original_run = GitRepository.run
+
+		def failing_status(
+			repository: GitRepository, arguments: list[str]
+		) -> subprocess.CompletedProcess[str]:
+			"""Fail only the Git status call that the start makes."""
+			if arguments[:1] == ["status"]:
+				return subprocess.CompletedProcess(
+					arguments, 128, "", "status failed\n"
+				)
+			return original_run(repository, arguments)
+
+		monkeypatch.setattr(GitRepository, "run", failing_status)
+
+	with pytest.raises(UncommittedChangesError) as captured:
+		if start_kind == "task":
+			store.task_start(task["id"], committed_repository)
+		else:
+			store.chunk_start(second_chunk["id"], committed_repository)
+
+	assert captured.value.code == "uncommitted-changes"
+	assert set(captured.value.details) == {"paths", "count", "reason"}
+	assert captured.value.details["paths"] == (
+		["new file.txt"] if status_kind == "dirty" else []
+	)
+	assert captured.value.details["reason"] == (
+		None if status_kind == "dirty" else "status failed"
+	)
+	# Reads the records back to check that the refused start left them unchanged.
+	reader = ReadStore(store.database, store.projects)
+	assert reader.task_get(task["id"], committed_repository)["status"] == (
+		"ready" if start_kind == "task" else "in-progress"
+	)
+	assert (
+		reader.chunk_get(second_chunk["id"], committed_repository)["status"]
+		== "pending"
+	)
+	assert reader.chunk_get(first_chunk["id"], committed_repository)["status"] == (
+		"pending" if start_kind == "task" else "active"
+	)
+
+
+def test_start_validates_task_before_refusing_checkout_changes(
+	committed_repository: Path,
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	"""Report an invalid task transition before refusing a dirty checkout."""
+	monkeypatch.chdir(committed_repository)
+	# The store and a task that is already in progress, so a second start is invalid.
+	store, _ = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "start-task", "Start task", path=committed_repository)
+	store.task_start(task["id"], committed_repository)
+	(committed_repository / "new file.txt").write_text("new\n")
+
+	with pytest.raises(InvalidTransitionError):
+		store.task_start(task["id"], committed_repository)
+
+
+def test_start_validates_chunk_before_refusing_checkout_changes(
+	committed_repository: Path,
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	"""Report an invalid chunk transition before refusing a dirty checkout."""
+	monkeypatch.chdir(committed_repository)
+	# Starting the task activates its first chunk, so starting that chunk again is invalid.
+	store, _ = _git_backed_completion_store(committed_repository)
+	task = _add_task(store, "start-task", "Start task", path=committed_repository)
+	chunk = _add_chunk(store, task["id"], "First chunk", path=committed_repository)
+	store.task_start(task["id"], committed_repository)
+	(committed_repository / "new file.txt").write_text("new\n")
+
+	with pytest.raises(InvalidTransitionError):
+		store.chunk_start(chunk["id"], committed_repository)
 
 
 @pytest.mark.parametrize("start_kind", ["task", "chunk"])
@@ -1412,9 +1515,10 @@ def test_start_ignores_ignored_files_and_reports_clean(
 
 
 @pytest.mark.parametrize("start_kind", ["task", "chunk"])
-def test_start_reports_failed_git_status_without_blocking(
+def test_start_reports_failed_git_status_with_override(
 	committed_repository: Path, monkeypatch: pytest.MonkeyPatch, start_kind: str
 ) -> None:
+	"""Start with the override when Git status fails, and report why it was not checked."""
 	store, _ = _git_backed_completion_store(committed_repository)
 	task = _add_task(store, "start-task", "Start task", path=committed_repository)
 	_add_chunk(store, task["id"], "First chunk", path=committed_repository)
@@ -1432,9 +1536,12 @@ def test_start_reports_failed_git_status_without_blocking(
 		return original_run(repository, arguments)
 
 	monkeypatch.setattr(GitRepository, "run", failing_status)
-	started_task = store.task_start(task["id"], committed_repository)
+	# The task's start result. The chunk case needs this first, because a chunk can only
+	# start once its task is in progress.
+	started_task = store.task_start(task["id"], committed_repository, allow_dirty=True)
+	# The result of the start that this case covers.
 	started = (
-		store.chunk_start(second_chunk["id"], committed_repository)
+		store.chunk_start(second_chunk["id"], committed_repository, allow_dirty=True)
 		if start_kind == "chunk"
 		else started_task
 	)
@@ -1449,9 +1556,10 @@ def test_start_reports_failed_git_status_without_blocking(
 
 
 @pytest.mark.parametrize("start_kind", ["task", "chunk"])
-def test_start_reports_undecodable_git_status_without_blocking(
+def test_start_reports_undecodable_git_status_with_override(
 	committed_repository: Path, monkeypatch: pytest.MonkeyPatch, start_kind: str
 ) -> None:
+	"""Start with the override when Git status output cannot be decoded, and report why."""
 	store, _ = _git_backed_completion_store(committed_repository)
 	task = _add_task(store, "start-task", "Start task", path=committed_repository)
 	_add_chunk(store, task["id"], "First chunk", path=committed_repository)
@@ -1469,9 +1577,12 @@ def test_start_reports_undecodable_git_status_without_blocking(
 		return original_run(repository, arguments)
 
 	monkeypatch.setattr(GitRepository, "run", undecodable_status)
-	started_task = store.task_start(task["id"], committed_repository)
+	# The task's start result. The chunk case needs this first, because a chunk can only
+	# start once its task is in progress.
+	started_task = store.task_start(task["id"], committed_repository, allow_dirty=True)
+	# The result of the start that this case covers.
 	started = (
-		store.chunk_start(second_chunk["id"], committed_repository)
+		store.chunk_start(second_chunk["id"], committed_repository, allow_dirty=True)
 		if start_kind == "chunk"
 		else started_task
 	)
