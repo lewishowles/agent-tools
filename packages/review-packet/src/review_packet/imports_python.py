@@ -7,12 +7,15 @@ from pathlib import Path
 from review_packet.imports import ImportResult, repository_path
 
 
-def python_imports(root: Path, file_path: Path) -> ImportResult:
+def python_imports(
+	root: Path, file_path: Path, deleted_paths: frozenset[Path]
+) -> ImportResult:
 	"""Find the files named by a Python file's relative and repository imports.
 
 	Args:
 		root: The repository root.
 		file_path: The changed Python file.
+		deleted_paths: Deleted files to resolve while finding callers.
 
 	Returns:
 		The imported files and the local imports with no file, or the changed
@@ -35,9 +38,9 @@ def python_imports(root: Path, file_path: Path) -> ImportResult:
 	for node in ast.walk(tree):
 		if isinstance(node, ast.Import):
 			# The files and missing names for one import statement.
-			result = _plain_import(root, bases, node)
+			result = _plain_import(root, bases, node, deleted_paths)
 		elif isinstance(node, ast.ImportFrom):
-			result = _from_import(root, file_path, bases, node)
+			result = _from_import(root, file_path, bases, node, deleted_paths)
 		else:
 			continue
 
@@ -48,7 +51,10 @@ def python_imports(root: Path, file_path: Path) -> ImportResult:
 
 
 def _plain_import(
-	root: Path, bases: tuple[Path, ...], node: ast.Import
+	root: Path,
+	bases: tuple[Path, ...],
+	node: ast.Import,
+	deleted_paths: frozenset[Path],
 ) -> ImportResult:
 	"""Find the repository files named by an `import a.b` statement.
 
@@ -56,6 +62,7 @@ def _plain_import(
 		root: The repository root.
 		bases: Folders that may hold the repository's own packages.
 		node: The import statement.
+		deleted_paths: Deleted files to resolve while finding callers.
 
 	Returns:
 		The imported files, and the names that start with one of the
@@ -71,7 +78,7 @@ def _plain_import(
 			continue
 
 		# The module's file, when the repository has it.
-		match = _find_python_module(root, bases, alias.name)
+		match = _find_python_module(root, bases, alias.name, deleted_paths)
 
 		if match is not None:
 			found.append(repository_path(root, match))
@@ -82,7 +89,11 @@ def _plain_import(
 
 
 def _from_import(
-	root: Path, file_path: Path, bases: tuple[Path, ...], node: ast.ImportFrom
+	root: Path,
+	file_path: Path,
+	bases: tuple[Path, ...],
+	node: ast.ImportFrom,
+	deleted_paths: frozenset[Path],
 ) -> ImportResult:
 	"""Find the repository files named by a `from … import …` statement.
 
@@ -91,6 +102,7 @@ def _from_import(
 		file_path: The changed Python file, which relative imports start from.
 		bases: Folders that may hold the repository's own packages.
 		node: The import statement.
+		deleted_paths: Deleted files to resolve while finding callers.
 
 	Returns:
 		The imported module, any submodules imported from a package, and the
@@ -108,14 +120,14 @@ def _from_import(
 
 	if not module:
 		# A missing member keeps the dots that identify its relative import.
-		members = _package_members(root, search_bases[0], node.names)
+		members = _package_members(root, search_bases[0], node.names, deleted_paths)
 		return ImportResult(
 			members.paths,
 			tuple("." * node.level + name for name in members.unresolved),
 		)
 
 	# The module's file, when the repository has it.
-	match = _find_python_module(root, search_bases, module)
+	match = _find_python_module(root, search_bases, module, deleted_paths)
 
 	if match is None:
 		if node.level or _is_repository_python_name(search_bases, module):
@@ -125,7 +137,7 @@ def _from_import(
 
 	# Submodules imported from a package, such as `from package import child`.
 	children = (
-		_package_members(root, match.parent, node.names).paths
+		_package_members(root, match.parent, node.names, deleted_paths).paths
 		if match.name == "__init__.py"
 		else ()
 	)
@@ -134,7 +146,7 @@ def _from_import(
 
 
 def _package_members(
-	root: Path, package: Path, members: list[ast.alias]
+	root: Path, package: Path, members: list[ast.alias], deleted_paths: frozenset[Path]
 ) -> ImportResult:
 	"""Find the files for names imported from a package folder.
 
@@ -145,6 +157,7 @@ def _package_members(
 		root: The repository root.
 		package: The package folder.
 		members: The imported names.
+		deleted_paths: Deleted files to resolve while finding callers.
 
 	Returns:
 		The submodule or `__init__.py` file for each name, and the names
@@ -162,8 +175,10 @@ def _package_members(
 			continue
 
 		# The submodule's file, or the package file that defines the name.
-		match = _python_file(package / member.name) or (
-			package_file if package_file.is_file() else None
+		match = _python_file(package / member.name, deleted_paths) or (
+			package_file
+			if package_file.is_file() or package_file in deleted_paths
+			else None
 		)
 
 		if match is None or not match.is_relative_to(root):
@@ -222,13 +237,16 @@ def _relative_python_base(file_path: Path, level: int) -> Path:
 	return base
 
 
-def _find_python_module(root: Path, bases: tuple[Path, ...], name: str) -> Path | None:
+def _find_python_module(
+	root: Path, bases: tuple[Path, ...], name: str, deleted_paths: frozenset[Path]
+) -> Path | None:
 	"""Find a Python module or package file inside the repository.
 
 	Args:
 		root: The repository root.
 		bases: Folders that may contain the module.
 		name: The dotted module name.
+		deleted_paths: Deleted files to resolve while finding callers.
 
 	Returns:
 		The first matching file, or None.
@@ -240,7 +258,7 @@ def _find_python_module(root: Path, bases: tuple[Path, ...], name: str) -> Path 
 		(
 			path
 			for base in bases
-			if (path := _python_file(base.joinpath(*parts))) is not None
+			if (path := _python_file(base.joinpath(*parts), deleted_paths)) is not None
 			and path.is_relative_to(root)
 		),
 		None,
@@ -268,11 +286,14 @@ def _is_repository_python_name(bases: tuple[Path, ...], name: str) -> bool:
 	)
 
 
-def _python_file(path: Path) -> Path | None:
+def _python_file(
+	path: Path, deleted_paths: frozenset[Path] = frozenset()
+) -> Path | None:
 	"""Return a Python module or package entry file when present.
 
 	Args:
 		path: The module path without a suffix.
+		deleted_paths: Deleted files to resolve while finding callers.
 
 	Returns:
 		The existing Python file, or None.
@@ -281,7 +302,7 @@ def _python_file(path: Path) -> Path | None:
 	candidates = (path.with_suffix(".py"), path / "__init__.py")
 
 	for candidate in candidates:
-		if candidate.is_file():
+		if candidate.is_file() or candidate in deleted_paths:
 			return candidate
 
 	return None

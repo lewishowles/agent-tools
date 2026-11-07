@@ -12,6 +12,7 @@ import review_packet.cli as cli
 import review_packet.progress_records as records
 from review_packet.brief import render
 from review_packet.cli import main
+from review_packet.imports import find_imports
 from review_packet.manifest import create as create_manifest
 from review_packet.manifest import to_json as manifest_to_json
 from review_packet.progress_records import (
@@ -35,6 +36,15 @@ from review_packet.snapshot import NO_COMMITS, capture
 def git(root: Path, *args: str) -> None:
 	"""Run a Git command in an invented repository."""
 	subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+
+
+def _caller_lines(brief: str) -> list[str]:
+	"""Return the lines of a draft brief's Callers section."""
+	return (
+		brief.split("### Callers\n\n", 1)[1]
+		.split("\n\n### Left out", 1)[0]
+		.splitlines()
+	)
 
 
 @pytest.fixture
@@ -268,6 +278,209 @@ def test_draft_adds_direct_imports_and_changed_files_tests(
 	assert "app/tests/helper.test.ts" not in contents
 	assert "app/src/helper.ts" in {item["path"] for item in manifest["files"]}
 	assert "app/src/changed.ts: ./missing (unresolved import)" in brief
+
+
+def test_draft_lists_same_package_callers_without_selecting_them(
+	repo: Path,
+	draft_context: None,
+	capsys: pytest.CaptureFixture[str],
+) -> None:
+	"""List tracked and new callers in the same package, even one already in the packet."""
+	# The package holding the changed file and its callers.
+	package = repo / "app"
+	# A second package whose importer should not be listed.
+	other = repo / "other"
+	package.mkdir()
+	other.mkdir()
+	(package / "package.json").write_text("{}")
+	(other / "package.json").write_text("{}")
+	(package / ".gitignore").write_text("ignored.ts\n")
+	(package / "changed.ts").write_text('import "./included";\n')
+	(package / "included.ts").write_text('import "./changed";\n')
+	(package / "caller.ts").write_text('import "./changed";\n')
+	(other / "caller.ts").write_text('import "../app/changed";\n')
+	git(repo, "add", "app", "other")
+	git(repo, "commit", "-qm", "add callers")
+	(package / "changed.ts").write_text(
+		'import "./included";\nexport const changed = 1;\n'
+	)
+	(package / "new.ts").write_text('import "./changed";\n')
+	(package / "ignored.ts").write_text('import "./changed";\n')
+
+	assert main(["draft", "chk_example", "--json"]) == 0
+
+	# The draft's JSON result.
+	data = json.loads(capsys.readouterr().out)["data"]
+	# The brief the draft wrote.
+	brief = Path(data["brief"]).read_text()
+	# The caller paths in the brief.
+	callers = _caller_lines(brief)
+	# The manifest the draft wrote.
+	manifest = json.loads(Path(data["manifest"]).read_text())
+
+	assert callers == [
+		"- app/caller.ts",
+		"- app/included.ts",
+		"- app/new.ts",
+	]
+	assert "app/included.ts" in data["contents"]
+	assert "app/caller.ts" not in data["contents"]
+	assert "app/new.ts" in data["contents"]
+	assert "app/caller.ts" not in {item["path"] for item in manifest["files"]}
+
+
+def test_draft_lists_callers_of_deleted_python_and_typescript_files(
+	repo: Path,
+	draft_context: None,
+	capsys: pytest.CaptureFixture[str],
+) -> None:
+	"""List importers of deleted files without adding the deleted files anywhere else."""
+	# The Python package that loses a module.
+	python_package = repo / "python"
+	# The Python import package inside it.
+	module = python_package / "src" / "app"
+	module.mkdir(parents=True)
+	(python_package / "pyproject.toml").write_text("[project]\nname = 'app'\n")
+	(module / "__init__.py").write_text("\n")
+	(module / "removed.py").write_text("value = 1\n")
+	(module / "caller.py").write_text("from app import removed\n")
+	# The TypeScript package that loses a file.
+	js_package = repo / "javascript"
+	js_package.mkdir()
+	(js_package / "package.json").write_text("{}")
+	(js_package / "removed.ts").write_text("export const value = 1;\n")
+	(js_package / "caller.ts").write_text('import "./removed";\n')
+	git(repo, "add", "python", "javascript")
+	git(repo, "commit", "-qm", "add files that will be deleted")
+	git(repo, "rm", "python/src/app/removed.py", "javascript/removed.ts")
+
+	assert main(["draft", "chk_example", "--json"]) == 0
+
+	# The draft's JSON result.
+	data = json.loads(capsys.readouterr().out)["data"]
+	# The brief the draft wrote.
+	brief = Path(data["brief"]).read_text()
+	# The caller paths in the brief.
+	callers = _caller_lines(brief)
+	# The manifest the draft wrote.
+	manifest = json.loads(Path(data["manifest"]).read_text())
+	# The Python caller's imports when followed forward for the packet.
+	python_imports = find_imports(repo, "python/src/app/caller.py")
+	# The TypeScript caller's imports when followed forward for the packet.
+	js_imports = find_imports(repo, "javascript/caller.ts")
+
+	assert callers == [
+		"- javascript/caller.ts",
+		"- python/src/app/caller.py",
+	]
+	assert "python/src/app/removed.py" not in python_imports.paths
+	assert python_imports.paths == ("python/src/app/__init__.py",)
+	assert "javascript/removed.ts" not in js_imports.paths
+	assert "./removed" in js_imports.unresolved
+	assert "python/src/app/removed.py" not in data["contents"]
+	assert "javascript/removed.ts" not in data["contents"]
+	assert {item["path"] for item in manifest["changes"]} >= {
+		"python/src/app/removed.py",
+		"javascript/removed.ts",
+	}
+	assert not {item["path"] for item in manifest["files"]} & {
+		"python/src/app/removed.py",
+		"javascript/removed.ts",
+	}
+
+
+def test_draft_lists_a_caller_of_a_deleted_package_file(
+	repo: Path,
+	draft_context: None,
+	capsys: pytest.CaptureFixture[str],
+) -> None:
+	"""List a relative importer when the package file it imports is deleted."""
+	# The Python package that loses its entry file.
+	package = repo / "project"
+	# The import package holding the relative caller.
+	module = package / "src" / "app"
+	module.mkdir(parents=True)
+	(package / "pyproject.toml").write_text("[project]\nname = 'app'\n")
+	(module / "__init__.py").write_text("name = 1\n")
+	(module / "caller.py").write_text("from . import name\n")
+	git(repo, "add", "project")
+	git(repo, "commit", "-qm", "add package and caller")
+	git(repo, "rm", "project/src/app/__init__.py")
+
+	assert main(["draft", "chk_example", "--json"]) == 0
+
+	# The draft's JSON result.
+	data = json.loads(capsys.readouterr().out)["data"]
+	# The brief the draft wrote.
+	brief = Path(data["brief"]).read_text()
+	# The manifest the draft wrote.
+	manifest = json.loads(Path(data["manifest"]).read_text())
+	# The deleted package file.
+	deleted = "project/src/app/__init__.py"
+
+	assert _caller_lines(brief) == ["- project/src/app/caller.py"]
+	assert deleted not in data["contents"]
+	assert deleted not in find_imports(repo, "project/src/app/caller.py").paths
+	assert deleted not in {item["path"] for item in manifest["files"]}
+
+
+def test_draft_lists_importers_of_a_renamed_python_file(
+	repo: Path,
+	draft_context: None,
+	capsys: pytest.CaptureFixture[str],
+) -> None:
+	"""List files that still import a renamed module by its old name."""
+	# The package holding the renamed module.
+	package = repo / "project"
+	# The Python import package inside it.
+	module = package / "src" / "app"
+	module.mkdir(parents=True)
+	(package / "pyproject.toml").write_text("[project]\nname = 'app'\n")
+	(module / "__init__.py").write_text("\n")
+	(module / "old.py").write_text("value = 1\n")
+	(module / "caller.py").write_text("from app import old\n")
+	git(repo, "add", "project")
+	git(repo, "commit", "-qm", "add old module")
+	git(repo, "mv", "project/src/app/old.py", "project/src/app/new.py")
+
+	assert main(["draft", "chk_example", "--json"]) == 0
+
+	# The draft's JSON result.
+	data = json.loads(capsys.readouterr().out)["data"]
+	# The brief the draft wrote.
+	brief = Path(data["brief"]).read_text()
+	# The caller paths in the brief.
+	callers = _caller_lines(brief)
+	# The manifest the draft wrote.
+	manifest = json.loads(Path(data["manifest"]).read_text())
+	# The manifest's changed files, by path.
+	changes = {item["path"]: item for item in manifest["changes"]}
+
+	assert changes["project/src/app/new.py"]["old_path"] == "project/src/app/old.py"
+	assert callers == ["- project/src/app/caller.py"]
+	assert "project/src/app/caller.py" not in data["contents"]
+	assert "project/src/app/old.py" not in data["contents"]
+	assert "project/src/app/caller.py" not in {
+		item["path"] for item in manifest["files"]
+	}
+
+
+def test_draft_says_when_no_callers_were_found(
+	repo: Path,
+	draft_context: None,
+	capsys: pytest.CaptureFixture[str],
+) -> None:
+	"""Say so in the brief when no file imports a changed file."""
+	(repo / "old.txt").write_text("changed\n")
+
+	assert main(["draft", "chk_example", "--json"]) == 0
+
+	# The draft's JSON result.
+	data = json.loads(capsys.readouterr().out)["data"]
+	# The brief the draft wrote.
+	brief = Path(data["brief"]).read_text()
+
+	assert "### Callers\n\nNo callers found.\n\n### Left out" in brief
 
 
 def test_draft_lists_unparseable_python_file_separately(
@@ -709,7 +922,7 @@ def test_draft_text_and_usage_errors(
 	assert "Draft a brief" in brief
 	assert "Is it complete?" in brief
 	assert "Settings: .review-packet.toml" in brief
-	assert "### Callers\n\nNot listed yet." in brief
+	assert "### Callers\n\nNo callers found." in brief
 	assert "### Left out\n\nNothing left out." in brief
 
 	assert main(["draft", "chk_example", "--base", "missing", "--json"]) == 2
@@ -743,7 +956,7 @@ def test_null_progress_text_uses_review_prompt(
 	)
 
 	chunk = read_chunk(repo, "chk_null")
-	brief = render(chunk, capture(repo), (), None, RelatedTasks((), ()), (), (), ())
+	brief = render(chunk, capture(repo), (), (), None, RelatedTasks((), ()), (), (), ())
 
 	assert chunk.description == ""
 	assert chunk.task.overview == ""
@@ -778,7 +991,7 @@ def test_snapshot_before_first_commit_marks_index_as_added(tmp_path: Path) -> No
 		"",
 		Task("tsk_only", "Review", "Overview", (), ()),
 	)
-	brief = render(chunk, snapshot, (), None, RelatedTasks((), ()), (), (), ())
+	brief = render(chunk, snapshot, (), (), None, RelatedTasks((), ()), (), (), ())
 
 	assert snapshot.base_sha is None
 	assert snapshot.changes[0].status == "added"
@@ -828,7 +1041,7 @@ def test_brief_uses_outside_review_question_when_marked(
 		),
 	)
 
-	brief = render(chunk, capture(repo), (), None, RelatedTasks((), ()), (), (), ())
+	brief = render(chunk, capture(repo), (), (), None, RelatedTasks((), ()), (), (), ())
 
 	assert f"Review question: {question}" in brief
 	assert f"## Main review question\n\n{main_question}\n" in brief
@@ -846,7 +1059,7 @@ def test_brief_has_no_other_chunks_when_task_has_one(repo: Path) -> None:
 		Task("tsk_only", "Review", "Overview", (), ()),
 	)
 
-	brief = render(chunk, capture(repo), (), None, RelatedTasks((), ()), (), (), ())
+	brief = render(chunk, capture(repo), (), (), None, RelatedTasks((), ()), (), (), ())
 
 	assert "### Other chunks\n\nNone." in brief
 
@@ -861,7 +1074,7 @@ def test_brief_marks_agent_sections_and_empty_question(repo: Path) -> None:
 		Task("tsk_only", "Review", "Overview", (), ()),
 	)
 
-	brief = render(chunk, capture(repo), (), None, RelatedTasks((), ()), (), (), ())
+	brief = render(chunk, capture(repo), (), (), None, RelatedTasks((), ()), (), (), ())
 
 	assert "<!-- agent:start review-question -->" in brief
 	assert "<!-- agent:end review-question -->" in brief
@@ -880,7 +1093,7 @@ def test_brief_ends_with_fixed_file_questions(repo: Path) -> None:
 	)
 
 	# The full text of the drafted brief.
-	brief = render(chunk, capture(repo), (), None, RelatedTasks((), ()), (), (), ())
+	brief = render(chunk, capture(repo), (), (), None, RelatedTasks((), ()), (), (), ())
 	# Everything after the closing heading, which should hold no drafting work.
 	closing_section = brief.split("## Files in this packet", 1)[1]
 

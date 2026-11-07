@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from review_packet.brief import render
+from review_packet.imports import find_callers
 from review_packet.manifest import create as create_manifest
 from review_packet.manifest import to_json as manifest_to_json
 from review_packet.progress_records import (
@@ -178,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
 		snapshot = capture(root, args.base)
 		# The packet's files and what the brief lists under Left out.
 		selection = select_files(root, snapshot, tuple(args.include) + settings.include)
+		# Existing files that directly import a changed file in the same package.
+		callers = find_callers(root, snapshot.changes)
 		# Where the brief is written.
 		brief_path = _brief_path(root, args.chunk_id)
 		# The paths to report.
@@ -187,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
 			chunk,
 			snapshot,
 			selection,
+			callers,
 			settings,
 			related,
 			args.force,
@@ -237,6 +241,7 @@ def _write_draft(
 	chunk: Chunk,
 	snapshot: Snapshot,
 	selection: Selection,
+	callers: tuple[str, ...],
 	settings: Settings,
 	related: RelatedTasks,
 	force: bool,
@@ -249,6 +254,7 @@ def _write_draft(
 		chunk: The reviewed chunk and its task.
 		snapshot: The current Git change set.
 		selection: The selected files and what the brief lists under Left out.
+		callers: Existing files that directly import a changed file.
 		settings: The optional settings file and its values.
 		related: Titles of prerequisite and dependent tasks.
 		force: Whether an existing brief may be replaced.
@@ -282,6 +288,7 @@ def _write_draft(
 			chunk,
 			snapshot,
 			selection.files,
+			callers,
 			settings_name,
 			related,
 			selection.unresolved,

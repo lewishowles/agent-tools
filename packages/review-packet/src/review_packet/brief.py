@@ -26,6 +26,7 @@ def render(
 	chunk: Chunk,
 	snapshot: Snapshot,
 	contents: tuple[str, ...],
+	callers: tuple[str, ...],
 	settings_name: str | None,
 	related: RelatedTasks,
 	unresolved: tuple[str, ...],
@@ -41,6 +42,7 @@ def render(
 		chunk: The reviewed chunk and its task.
 		snapshot: The current Git changes.
 		contents: The files selected for the packet.
+		callers: Existing files that directly import a changed file.
 		settings_name: The settings file name to show, or None.
 		related: Titles of prerequisite and dependent tasks.
 		unresolved: Local imports that could not be found.
@@ -112,7 +114,7 @@ def render(
 		"",
 		"### Callers",
 		"",
-		"Not listed yet.",
+		*([f"- {path}" for path in callers] or ["No callers found."]),
 		"",
 		"### Left out",
 		"",
