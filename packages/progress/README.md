@@ -636,6 +636,11 @@ details hold `paths`, `count`, `reason`, and that command as `hint`. The `reason
 is `null` when the refusal is for changes. Use `--allow-dirty` to start despite
 changes or an unreadable status.
 
+Untracked files are listed individually regardless of Git's status settings,
+so every file inside an untracked directory contributes to `count` and the
+`... and N more` line. Human messages escape control characters in filenames,
+such as `\n` and `\x1b`, while JSON `paths` keep the raw filenames.
+
 Every successful start reports `uncommitted_changes` in JSON: `status` is
 `clean`, `dirty`, or `unavailable`; `count` is the number of changed Git
 entries; and `paths` lists up to 20 of them. An `unavailable` status includes

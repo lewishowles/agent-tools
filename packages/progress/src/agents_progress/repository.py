@@ -73,7 +73,11 @@ class GitRepository:
 		returns unavailable with a short reason that the caller can show.
 		"""
 		try:
-			result = self.run(["status", "--porcelain=v1", "-z"])
+			# List every untracked file, even when the user's Git settings hide
+			# untracked files or show only their folder.
+			result = self.run(
+				["status", "--porcelain=v1", "-z", "--untracked-files=all"]
+			)
 		except UnicodeDecodeError:
 			return {
 				"status": "unavailable",

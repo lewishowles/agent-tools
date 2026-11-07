@@ -1386,10 +1386,23 @@ def test_task_start_secondary_flag_reaches_the_write_store(
 
 
 @pytest.mark.parametrize("start_kind", ["task", "chunk"])
-def test_start_refusal_uses_the_json_error_envelope(
-	tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, start_kind: str
+@pytest.mark.parametrize(
+	"changed_path, displayed_path",
+	[
+		("new file.txt", "new file.txt"),
+		("new\nfile.txt", "new\\nfile.txt"),
+		("new\x1bfile.txt", "new\\x1bfile.txt"),
+	],
+)
+def test_start_refusal_keeps_json_paths_raw_and_escapes_human_paths(
+	tmp_path: Path,
+	monkeypatch: pytest.MonkeyPatch,
+	capsys,
+	start_kind: str,
+	changed_path: str,
+	displayed_path: str,
 ) -> None:
-	"""Expose the paths and override command in JSON and human errors."""
+	"""Keep JSON paths raw and print each human path on one safe line."""
 	# The record named by the requested start.
 	identifier = ("tsk_" if start_kind == "task" else "chk_") + "t" * 22
 	# The command shown to a person for continuing despite checkout changes.
@@ -1412,7 +1425,7 @@ def test_start_refusal_uses_the_json_error_envelope(
 			assert allow_dirty is False
 			raise UncommittedChangesError(
 				"Uncommitted changes in the checkout",
-				{"paths": ["new file.txt"], "count": 1, "reason": None},
+				{"paths": [changed_path], "count": 1, "reason": None},
 			)
 
 		def chunk_start(self, selected_id: str, *, allow_dirty: bool):
@@ -1432,7 +1445,7 @@ def test_start_refusal_uses_the_json_error_envelope(
 			"code": "uncommitted-changes",
 			"message": "Uncommitted changes in the checkout",
 			"details": {
-				"paths": ["new file.txt"],
+				"paths": [changed_path],
 				"count": 1,
 				"reason": None,
 				"hint": json_hint,
@@ -1442,11 +1455,13 @@ def test_start_refusal_uses_the_json_error_envelope(
 	assert cli.main(arguments) == 1
 	# The message shown to a person after the refusal.
 	human_error = capsys.readouterr().err
-	assert "  new file.txt" in human_error
-	assert "'new file.txt'" not in human_error
+	assert f"  {displayed_path}\n" in human_error
+	if changed_path != displayed_path:
+		assert f"  {changed_path}\n" not in human_error
+	assert f"'{changed_path}'" not in human_error
 	assert human_hint in human_error
 	assert json_hint not in human_error
-	assert human_error.index("  new file.txt") < human_error.index(human_hint)
+	assert human_error.index(f"  {displayed_path}") < human_error.index(human_hint)
 
 
 def test_secondary_task_start_refusal_keeps_secondary_in_retry(
@@ -1590,6 +1605,38 @@ def test_start_human_output_only_warns_for_dirty_or_unavailable(
 def test_start_path_lines_reports_the_omitted_count() -> None:
 	"""List the paths shown, then how many were left out."""
 	assert cli._start_path_lines(["one.txt"], 3) == ["  one.txt", "  ... and 2 more"]
+
+
+@pytest.mark.parametrize(
+	"changed_path, displayed_path",
+	[
+		("new\nfile.txt", "new\\nfile.txt"),
+		("new\x1bfile.txt", "new\\x1bfile.txt"),
+	],
+)
+def test_start_override_warning_escapes_control_characters(
+	changed_path: str, displayed_path: str
+) -> None:
+	"""Escape control characters in the paths listed by the --allow-dirty start warning."""
+	# The start output shown to a person, including the warning.
+	output = cli._render_human_output(
+		"task start",
+		{
+			"id": "test",
+			"title": "Sample",
+			"status": "active",
+			"uncommitted_changes": {
+				"status": "dirty",
+				"count": 1,
+				"paths": [changed_path],
+			},
+		},
+	)
+	# The same output with colour codes removed, so only filename escapes remain.
+	plain_output = render_module._ANSI_ESCAPE_PATTERN.sub("", output)
+
+	assert f"  {displayed_path}\n" in plain_output
+	assert f"  {changed_path}\n" not in plain_output
 
 
 @pytest.mark.parametrize(

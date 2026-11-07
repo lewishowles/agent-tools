@@ -1453,6 +1453,56 @@ def test_start_refuses_before_changing_state(
 	)
 
 
+@pytest.mark.parametrize("start_kind", ["task", "chunk"])
+def test_start_refuses_untracked_files_when_git_config_hides_them(
+	committed_repository: Path, start_kind: str
+) -> None:
+	"""Refuse an untracked file even when the local Git status setting hides it."""
+	# The write store backed by the test repository.
+	store, _ = _git_backed_completion_store(committed_repository)
+	# The task whose start, or whose second chunk's start, should be refused.
+	task = _add_task(store, "start-task", "Start task", path=committed_repository)
+	_add_chunk(store, task["id"], "First", path=committed_repository)
+	# The chunk the chunk-start case tries to start.
+	second_chunk = _add_chunk(store, task["id"], "Second", path=committed_repository)
+
+	if start_kind == "chunk":
+		store.task_start(task["id"], committed_repository)
+
+	subprocess.run(
+		[
+			"git",
+			"-C",
+			str(committed_repository),
+			"config",
+			"--local",
+			"status.showUntrackedFiles",
+			"no",
+		],
+		check=True,
+	)
+	(committed_repository / "new file.txt").write_text("new\n")
+
+	with pytest.raises(UncommittedChangesError) as captured:
+		if start_kind == "task":
+			store.task_start(task["id"], committed_repository)
+		else:
+			store.chunk_start(second_chunk["id"], committed_repository)
+
+	assert captured.value.details["paths"] == ["new file.txt"]
+
+	# Reads the records back to confirm the refusal changed nothing.
+	reader = ReadStore(store.database, store.projects)
+
+	assert reader.task_get(task["id"], committed_repository)["status"] == (
+		"ready" if start_kind == "task" else "in-progress"
+	)
+	assert (
+		reader.chunk_get(second_chunk["id"], committed_repository)["status"]
+		== "pending"
+	)
+
+
 def test_start_validates_task_before_refusing_checkout_changes(
 	committed_repository: Path,
 	monkeypatch: pytest.MonkeyPatch,

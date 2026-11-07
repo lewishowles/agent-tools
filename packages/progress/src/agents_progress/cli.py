@@ -1816,12 +1816,32 @@ def _start_path_lines(paths: list[str], count: int) -> list[str]:
 		One indented line per path, plus an "and N more" line when paths were left out.
 	"""
 	# One indented line for each path being shown.
-	lines = [f"  {path}" for path in paths]
+	lines = [f"  {_escape_control_characters(path)}" for path in paths]
 
 	if count > len(paths):
 		lines.append(f"  ... and {count - len(paths)} more")
 
 	return lines
+
+
+def _escape_control_characters(path: str) -> str:
+	"""Make a changed path safe to print, so a filename cannot break or restyle the terminal output.
+
+	Args:
+		path: The raw path returned by Git status.
+
+	Returns:
+		The path with C0 and DEL control characters shown as escape sequences.
+	"""
+	# Familiar whitespace controls keep their short escape sequences.
+	escapes = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+	return "".join(
+		escapes.get(character, f"\\x{ord(character):02x}")
+		if ord(character) < 32 or ord(character) == 127
+		else character
+		for character in path
+	)
 
 
 def _uncommitted_changes_line(data: dict[str, object]) -> str:
