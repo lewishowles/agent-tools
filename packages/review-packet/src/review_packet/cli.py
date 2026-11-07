@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from review_packet.brief import render
+from review_packet.checks import CheckError, run_checks
 from review_packet.imports import find_callers
+from review_packet.manifest import Manifest
 from review_packet.manifest import create as create_manifest
 from review_packet.manifest import to_json as manifest_to_json
 from review_packet.progress_records import (
@@ -39,6 +41,7 @@ from review_packet.snapshot import (
 	repository_name,
 	repository_root,
 )
+from review_packet.verification import render as render_verification
 
 
 class BriefExistsError(ValueError):
@@ -60,6 +63,23 @@ class ScanError(ValueError):
 		self.findings = findings
 
 
+# The refusal shown when a check changes a selected file.
+CHANGED_FILES_MESSAGE = "Draft not written: checks changed selected files."
+
+
+class ChangedFilesError(ValueError):
+	"""A check changed a selected file after its hash was recorded."""
+
+	def __init__(self, paths: tuple[str, ...]) -> None:
+		"""Keep the changed paths so the refusal can list them.
+
+		Args:
+			paths: The repository-relative selected paths that a check changed.
+		"""
+		super().__init__(CHANGED_FILES_MESSAGE)
+		self.paths = paths
+
+
 # Failures the user can fix by changing the command or the settings file.
 USAGE_ERRORS = (
 	BriefExistsError,
@@ -69,9 +89,9 @@ USAGE_ERRORS = (
 	OutsideSymlinkError,
 )
 
-# Failures in Git or the file system that stop the draft. Progress failures
+# Failures in Git, agent-run or the file system that stop the draft. Progress failures
 # are handled separately so they keep their own exit code.
-ENVIRONMENT_ERRORS = (GitError, OSError)
+ENVIRONMENT_ERRORS = (CheckError, GitError, OSError)
 
 # The exit code for a usage failure, matching argparse.
 USAGE_EXIT = 2
@@ -82,8 +102,8 @@ ENVIRONMENT_EXIT = 3
 # The exit code when progress cannot find a requested record.
 NOT_FOUND_EXIT = 1
 
-# The exit code when the scan found material that cannot be shared.
-SCAN_EXIT = 1
+# The exit code when the draft is refused because it would share private material or a check changed a selected file.
+REFUSED_EXIT = 1
 
 # The exit code for each progress error kind, from docs/cli-contract.md.
 PROGRESS_EXITS = {
@@ -104,6 +124,8 @@ class DraftResult:
 	brief: str
 	# The absolute path lets the next command find the manifest.
 	manifest: str
+	# The absolute path to the author's check results beside the brief.
+	verification: str
 	# The selected repository paths preview the packet contents.
 	contents: tuple[str, ...]
 	# The relative settings path avoids leaking the user's home directory.
@@ -216,7 +238,10 @@ def main(argv: list[str] | None = None) -> int:
 		)
 	except ScanError as error:
 		_print_scan_findings(error.findings, args.json)
-		return SCAN_EXIT
+		return REFUSED_EXIT
+	except ChangedFilesError as error:
+		_print_changed_files(error.paths, args.json)
+		return REFUSED_EXIT
 	except USAGE_ERRORS as error:
 		_print_error("usage", str(error), args.json)
 		return USAGE_EXIT
@@ -268,7 +293,7 @@ def _write_draft(
 	related: RelatedTasks,
 	force: bool,
 ) -> DraftResult:
-	"""Write the brief and manifest, then return their paths.
+	"""Write the brief, check report and manifest, then return their paths.
 
 	Args:
 		root: The repository root containing the selected files.
@@ -287,6 +312,8 @@ def _write_draft(
 	Raises:
 		BriefExistsError: A brief exists and force is false.
 		ScanError: The draft would share a secret, a local path or a .env file.
+		ChangedFilesError: A check changed a selected file.
+		CheckError: Agent-run could not be started or returned an unexpected result.
 		OSError: A selected file cannot be read or a draft file cannot be written.
 	"""
 	# The settings file name to show, or None when there is no settings file.
@@ -315,24 +342,78 @@ def _write_draft(
 	if findings:
 		raise ScanError(findings)
 
-	# Hash every selected path before either draft file is replaced.
+	# The selected file hashes, recorded before any check can change the files.
 	manifest = create_manifest(root, snapshot, selection.files)
+	# The author's check results for the files the manifest records.
+	verification = _verify(root, snapshot, selection.files, settings, manifest)
 	# The manifest sits beside REVIEW.md, where the build step looks for it.
 	manifest_path = brief_path.with_name("manifest.json")
+	# The check report sits beside REVIEW.md and goes into the zip with it.
+	verification_path = brief_path.with_name("verification.md")
 
 	brief_path.parent.mkdir(parents=True, exist_ok=True)
-	# The brief is written first. If the manifest write then fails, the old
-	# manifest either still matches the files or shows that they changed, whereas
-	# a new manifest beside an old brief would pass off older work as current.
+	# The manifest is written last. If an earlier write fails, the old manifest
+	# either still matches the files or shows that they changed, whereas a new
+	# manifest beside an old brief or report would pass off older work as current.
 	brief_path.write_text(brief)
+	verification_path.write_text(verification)
 	manifest_path.write_text(json.dumps(manifest_to_json(manifest), indent=2) + "\n")
 
 	return DraftResult(
 		str(brief_path.resolve()),
 		str(manifest_path.resolve()),
+		str(verification_path.resolve()),
 		selection.files,
 		settings_name,
 	)
+
+
+def _verify(
+	root: Path,
+	snapshot: Snapshot,
+	files: tuple[str, ...],
+	settings: Settings,
+	manifest: Manifest,
+) -> str:
+	"""Run the configured checks and return the report to share with the reviewer.
+
+	Args:
+		root: The repository root containing the selected files.
+		snapshot: The current Git change set.
+		files: The selected repository paths.
+		settings: The settings file's checks.
+		manifest: The selected file hashes recorded before the checks ran.
+
+	Returns:
+		The verification report in Markdown.
+
+	Raises:
+		CheckError: Agent-run could not be started or returned an unexpected result.
+		ScanError: The check output contains a secret or a local path.
+		ChangedFilesError: A check changed a selected file.
+		OSError: A selected file cannot be read.
+	"""
+	# The report, built from the results of every configured check.
+	verification = render_verification(root, run_checks(root, settings.checks))
+	# Check output goes into the packet, so it gets the same sharing scan.
+	findings = scan_text("verification.md", verification)
+
+	if findings:
+		raise ScanError(findings)
+
+	# The hashes after the checks. A check can rewrite a file and still pass.
+	current = create_manifest(root, snapshot, files)
+	# The selected paths whose contents changed while the checks ran.
+	changed = tuple(
+		before.path
+		for before, after in zip(manifest.files, current.files, strict=True)
+		if before.sha256 != after.sha256
+	)
+
+	if changed:
+		raise ChangedFilesError(changed)
+
+	return verification
 
 
 def _print_result(data: DraftResult, json_mode: bool) -> None:
@@ -349,6 +430,7 @@ def _print_result(data: DraftResult, json_mode: bool) -> None:
 			"data": {
 				"brief": data.brief,
 				"manifest": data.manifest,
+				"verification": data.verification,
 				"contents": list(data.contents),
 				"settings": data.settings,
 			},
@@ -359,6 +441,7 @@ def _print_result(data: DraftResult, json_mode: bool) -> None:
 
 	print(f"Brief: {data.brief}")
 	print(f"Manifest: {data.manifest}")
+	print(f"Verification: {data.verification}")
 	print(f"Settings: {data.settings or '(none)'}")
 	print("Contents:")
 
@@ -419,6 +502,35 @@ def _print_scan_findings(findings: tuple[Finding, ...], json_mode: bool) -> None
 
 	for line in lines:
 		print(line, file=sys.stderr)
+
+
+def _print_changed_files(paths: tuple[str, ...], json_mode: bool) -> None:
+	"""Print the refusal and the selected paths that a check changed.
+
+	Args:
+		paths: The repository-relative paths that changed after their hashes
+			were recorded.
+		json_mode: Whether to print a JSON error result.
+	"""
+	if json_mode:
+		print(
+			json.dumps(
+				{
+					"ok": False,
+					"error": {
+						"code": "check-failed",
+						"message": CHANGED_FILES_MESSAGE,
+						"data": {"paths": list(paths)},
+					},
+				}
+			)
+		)
+		return
+
+	print(CHANGED_FILES_MESSAGE, file=sys.stderr)
+
+	for path in paths:
+		print(path, file=sys.stderr)
 
 
 if __name__ == "__main__":
