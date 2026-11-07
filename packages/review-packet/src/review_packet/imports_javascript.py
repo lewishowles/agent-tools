@@ -25,12 +25,15 @@ JS_IMPORT = re.compile(
 PACKET_SUFFIXES = (*RESOLVED_SOURCE_SUFFIXES, ".vue", ".css")
 
 
-def javascript_imports(root: Path, file_path: Path) -> ImportResult:
+def javascript_imports(
+	root: Path, file_path: Path, deleted_paths: frozenset[Path]
+) -> ImportResult:
 	"""Resolve JavaScript and TypeScript relative imports and package aliases.
 
 	Args:
 		root: The repository root.
 		file_path: The changed source file.
+		deleted_paths: Deleted files to resolve while finding callers.
 
 	Returns:
 		The imported files, missing names, and unreadable files.
@@ -70,7 +73,7 @@ def javascript_imports(root: Path, file_path: Path) -> ImportResult:
 			continue
 
 		# The imported file, when it exists.
-		match = _source_file(candidate)
+		match = _source_file(candidate, deleted_paths)
 
 		if match is None or not match.is_relative_to(root):
 			missing.add(name)
@@ -132,11 +135,12 @@ def _alias_target(root: Path, file_path: Path, name: str) -> Path | None:
 	return None
 
 
-def _source_file(path: Path) -> Path | None:
+def _source_file(path: Path, deleted_paths: frozenset[Path]) -> Path | None:
 	"""Return an existing source file or directory index file.
 
 	Args:
 		path: The import target before suffix lookup.
+		deleted_paths: Deleted files to resolve while finding callers.
 
 	Returns:
 		The existing file, or None.
@@ -149,7 +153,7 @@ def _source_file(path: Path) -> Path | None:
 	candidates.extend(path / f"index{suffix}" for suffix in RESOLVED_SOURCE_SUFFIXES)
 
 	for candidate in candidates:
-		if candidate.is_file():
+		if candidate.is_file() or candidate in deleted_paths:
 			return candidate
 
 	return None

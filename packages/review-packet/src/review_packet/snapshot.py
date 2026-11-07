@@ -154,6 +154,25 @@ def is_ignored(root: Path, path: Path) -> bool:
 	return result.returncode == 0
 
 
+def repository_files(root: Path) -> tuple[str, ...]:
+	"""List the repository's tracked files and its new files that Git does not ignore.
+
+	Args:
+		root: The repository root.
+
+	Returns:
+		Repository-relative paths, including tracked files deleted from disk.
+
+	Raises:
+		GitError: Git could not list the files.
+	"""
+	return tuple(
+		_split_paths(
+			_git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+		)
+	)
+
+
 def _resolve_base(root: Path, base: str | None) -> str | None:
 	"""Turn the requested base, or HEAD, into a commit SHA.
 
