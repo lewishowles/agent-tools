@@ -24,6 +24,7 @@ from review_packet.progress_records import (
 	read_chunk,
 	read_related_tasks,
 )
+from review_packet.scan import Finding
 from review_packet.selection import (
 	MissingIncludeError,
 	OutsideSymlinkError,
@@ -84,6 +85,97 @@ def draft_context(
 		cli.tempfile, "gettempdir", lambda: str(tmp_path_factory.mktemp("drafts"))
 	)
 	monkeypatch.chdir(repo)
+
+
+def test_draft_refuses_secret_in_selected_file(
+	repo: Path,
+	draft_context: None,
+	capsys: pytest.CaptureFixture[str],
+) -> None:
+	"""Refuse a selected file with a credential without writing a draft."""
+	# An invented credential that must never appear in the output.
+	secret = "AKIA" + "1234567890123456"
+	(repo / "old.txt").write_text(f"safe\n{secret}\n")
+	# The draft destination lives outside the invented repository.
+	brief_path = cli._brief_path(repo, "chk_example")
+
+	assert main(["draft", "chk_example"]) == 1
+
+	output = capsys.readouterr()
+
+	assert output.err.splitlines() == [
+		"Draft not written: these files hold secrets or local paths.",
+		"old.txt:2: AWS key",
+	]
+	assert secret not in output.out + output.err
+	assert not brief_path.exists()
+	assert not brief_path.with_name("manifest.json").exists()
+
+
+def test_draft_refuses_secret_in_rendered_brief(
+	repo: Path,
+	draft_context: None,
+	monkeypatch: pytest.MonkeyPatch,
+	capsys: pytest.CaptureFixture[str],
+) -> None:
+	"""Refuse a credential copied into the brief without writing a draft."""
+	# The brief copies the task overview from the progress record.
+	secret = "AKIA" + "1234567890123456"
+	chunk = Chunk(
+		"chk_example",
+		"Draft",
+		"Draft a brief",
+		"Is it complete?",
+		Task("tsk_example", "Review", f"Overview {secret}", (), ()),
+	)
+	monkeypatch.setattr(cli, "read_chunk", lambda _root, _id: chunk)
+	# The draft destination lives outside the invented repository.
+	brief_path = cli._brief_path(repo, "chk_example")
+
+	assert main(["draft", "chk_example"]) == 1
+
+	output = capsys.readouterr()
+
+	assert output.err.splitlines()[0] == (
+		"Draft not written: these files hold secrets or local paths."
+	)
+	assert output.err.splitlines()[1].startswith("REVIEW.md:")
+	assert secret not in output.out + output.err
+	assert not brief_path.exists()
+	assert not brief_path.with_name("manifest.json").exists()
+
+
+def test_draft_json_refusal_has_structured_findings_without_matched_text(
+	repo: Path,
+	draft_context: None,
+	capsys: pytest.CaptureFixture[str],
+) -> None:
+	"""Return safe finding fields in the JSON error data."""
+	# A changed file with an invented credential.
+	secret = "AKIA" + "1234567890123456"
+	(repo / "old.txt").write_text(f"{secret}\n")
+
+	assert main(["draft", "chk_example", "--json"]) == 1
+
+	output = capsys.readouterr()
+	error = json.loads(output.out)["error"]
+
+	assert error == {
+		"code": "check-failed",
+		"message": "Draft not written: these files hold secrets or local paths.",
+		"data": {"findings": [{"path": "old.txt", "line": 1, "kind": "AWS key"}]},
+	}
+	assert secret not in output.out + output.err
+
+
+def test_scan_error_has_short_summary() -> None:
+	"""Give callers a useful exception message without listing findings."""
+	findings = (Finding("notes.txt", 2, "AWS key"),)
+
+	assert (
+		str(cli.ScanError(findings))
+		== "Draft refused: secrets or local paths found (1)"
+	)
 
 
 def test_snapshot_covers_renames_deletions_untracked_and_base(repo: Path) -> None:
