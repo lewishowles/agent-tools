@@ -11,6 +11,7 @@ import pytest
 import review_packet.cli as cli
 import review_packet.progress_records as records
 from review_packet.brief import render
+from review_packet.checks import CheckResult, CheckState
 from review_packet.cli import main
 from review_packet.imports import find_imports
 from review_packet.manifest import create as create_manifest
@@ -999,6 +1000,14 @@ def test_draft_text_and_usage_errors(
 	monkeypatch.setattr(cli.tempfile, "gettempdir", lambda: str(tmp_path / "drafts"))
 	monkeypatch.chdir(repo)
 	(repo / ".review-packet.toml").write_text('checks = ["test"]\n')
+	# run_checks is replaced, so no project command runs.
+	monkeypatch.setattr(
+		cli,
+		"run_checks",
+		lambda _root, _names: (
+			CheckResult("test", "pytest tests", CheckState.PASSED, 0.1, None),
+		),
+	)
 
 	assert main(["draft", "chk_example"]) == 0
 
@@ -1006,6 +1015,7 @@ def test_draft_text_and_usage_errors(
 
 	assert "Brief:" in output
 	assert "Manifest:" in output
+	assert "Verification:" in output
 	assert "Settings: .review-packet.toml" in output
 
 	brief = next((tmp_path / "drafts").rglob("REVIEW.md")).read_text()
