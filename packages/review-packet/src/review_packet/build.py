@@ -31,7 +31,7 @@ For findings, cite repository-relative path:line locations.
 Say when the evidence is not enough to conclude.
 
 Reply with a verdict, findings by severity, what you could not verify, and gaps
-that limit your answer to the main question.
+that limit your answer to the main question. End with the line requested in REVIEW.md.
 """
 
 

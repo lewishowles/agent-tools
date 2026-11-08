@@ -1183,9 +1183,9 @@ def test_brief_marks_agent_sections_and_empty_question(repo: Path) -> None:
 	assert "Review question: (none)" in brief
 
 
-def test_brief_ends_with_fixed_file_questions(repo: Path) -> None:
-	"""End the brief with the reviewer's file questions, after the agent sections."""
-	# A chunk with no recorded details, so the closing section can't depend on them.
+def test_brief_ends_with_review_identity(repo: Path) -> None:
+	"""End the brief with the review identity, after the agent sections."""
+	# The task and chunk IDs used in the final review line.
 	chunk = Chunk(
 		"chk_only",
 		"Draft",
@@ -1201,9 +1201,8 @@ def test_brief_ends_with_fixed_file_questions(repo: Path) -> None:
 
 	assert brief.count("## Files in this packet") == 1
 
-	assert brief.rstrip().endswith(
-		'Write "None" under either point if nothing applies.'
-	)
+	assert brief.rstrip().endswith("Reviewed: Review (tsk_only), chunk chk_only")
+	assert "End your review with this line" in closing_section
 
 	assert "Please finish your review by listing:" in closing_section
 

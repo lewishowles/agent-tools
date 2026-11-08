@@ -131,6 +131,7 @@ def render(
 		lines.extend(_agent_section(name, heading, body))
 
 	lines.extend(_files_in_packet_section())
+	lines.extend(_reviewed_line(chunk))
 
 	return "\n".join(lines)
 
@@ -189,6 +190,26 @@ def _files_in_packet_section() -> list[str]:
 		"- Files in this packet you didn't need.",
 		"",
 		'Write "None" under either point if nothing applies.',
+		"",
+	]
+
+
+def _reviewed_line(chunk: Chunk) -> list[str]:
+	"""Ask the outside reviewer to end with the task and chunk they reviewed.
+
+	A person can get several reviews back at once, and this line tells them
+	which piece of work each one covers.
+
+	Args:
+		chunk: The chunk being reviewed, with its task.
+
+	Returns:
+		The request and the line to copy, ending with a blank line.
+	"""
+	return [
+		"End your review with this line, so it can be matched to the work it covers:",
+		"",
+		f"Reviewed: {chunk.task.title} ({chunk.task.id}), chunk {chunk.id}",
 		"",
 	]
 

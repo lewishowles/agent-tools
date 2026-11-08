@@ -96,6 +96,9 @@ def test_build_writes_one_patch_and_full_files_without_running_checks(
 			"Answer the main review question" in archive.read("START-HERE.md").decode()
 		)
 		assert b"under files/" in archive.read("START-HERE.md")
+		assert b"End with the line requested in REVIEW.md." in archive.read(
+			"START-HERE.md"
+		)
 
 
 @pytest.mark.parametrize(
