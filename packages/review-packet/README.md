@@ -1,6 +1,6 @@
 # review-packet
 
-`review-packet` drafts a brief, file list and check report for an outside review of a `progress` chunk. The draft command writes a Markdown brief for you to complete; it does not create a zip.
+`review-packet` drafts a brief, file list and check report for an outside review of a `progress` chunk, then builds a zip for the reviewer. Complete the marked sections of the brief before building the packet.
 
 ## Requirements
 
@@ -49,9 +49,19 @@ include = ["docs/architecture.md"]
 
 `include` adds repository files to the draft file list. `checks` names registered `agent-run` commands that the draft runs in order. A failed or timed-out check does not stop the draft. `verification.md` lists each command, its state, run time and first failure output, and says the reviewer has not re-run it. Manual and unregistered checks are listed without running them. When no checks are configured, the report says so. If a check changes a selected file after its hash is recorded, the draft exits with code `1` and lists the changed paths without writing draft files. The command prints `.review-packet.toml` when it loads the file, or `(none)` when there is no settings file.
 
+## Build the packet
+
+After completing `REVIEW.md`, run this in the same worktree:
+
+```sh
+review-packet build <chunk-id> [--output PATH] [--json]
+```
+
+Build reads the brief, check report and manifest from the draft folder. It never runs checks or reads progress. If a selected file or the Git change list differs from the manifest, it names the changed paths and asks you to run `draft` again. The zip contains the selected files in full under `files/<repository path>`, one `changes.diff` for files that existed at the base revision, the authored `REVIEW.md` and `verification.md`, and a fixed `START-HERE.md` for the reviewer. A selected link inside the repository is stored as its target contents; a changed target requires a new draft. Build scans these documents, the patch, archive entry names and the same selected bytes it writes before creating the zip. The zip is completed under a temporary name and moved into place at `~/Downloads/<repo>-review-<chunk-id>.zip`, or at `--output PATH` when supplied. Use `--json` for a machine-readable result containing the absolute packet path. Review the finished archive before sharing it.
+
 ## Exit codes
 
-- `0`: The brief was written.
-- `1`: The requested progress record was not found, the scan found material that cannot be shared, or a check changed a selected file.
-- `2`: Invalid arguments, settings, base revision or included path, or an existing brief without `--force`.
-- `3`: A Git, progress environment, internal or file system error prevented the draft.
+- `0`: The brief or zip was written.
+- `1`: The requested progress record was not found, the scan found material that cannot be shared, or a selected file changed during or after drafting.
+- `2`: Invalid arguments, settings, base revision, included path or draft manifest, or an existing brief without `--force`.
+- `3`: A Git, progress environment, internal or file system error prevented the draft or build.

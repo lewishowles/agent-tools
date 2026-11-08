@@ -7,7 +7,7 @@ set -eo pipefail
 
 # The tools this script can install, in menu order. Each name is also the
 # package folder under packages/.
-TOOL_NAMES=(agent-board agent-quota agent-run doc-paths friction page-to-markdown progress review-feedback team-send)
+TOOL_NAMES=(agent-board agent-quota agent-run doc-paths friction page-to-markdown progress review-feedback review-packet team-send)
 
 # The one-line purpose shown beside each tool, in the same order as TOOL_NAMES.
 TOOL_PURPOSES=(
@@ -19,6 +19,7 @@ TOOL_PURPOSES=(
 	'Convert a page or HTML file to Markdown'
 	'Track local project tasks and progress'
 	'Prepare review comments and patches (also installs review-patches)'
+	'Prepare an outside review zip for a progress chunk'
 	'Send a message to one HCOM teammate'
 )
 

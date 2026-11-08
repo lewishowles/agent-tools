@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from review_packet.selection import leads_outside
 from review_packet.snapshot import Snapshot
 
 
@@ -23,12 +24,19 @@ class RecordedChange:
 
 @dataclass(frozen=True)
 class FileHash:
-	"""A selected file and the hash of its contents or link text."""
+	"""The hashes that show whether a selected file changed after drafting.
+
+	A plain file has one hash of its contents. A link has a hash of its link
+	text and, when it points inside the repository, a hash of the contents it
+	points to, so build notices when the target changes.
+	"""
 
 	# The selected repository-relative path.
 	path: str
 	# The SHA-256 hash of the file's bytes, or of the link text for a symlink.
 	sha256: str
+	# The SHA-256 hash of the target's contents for a link inside the repository.
+	target_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -45,7 +53,12 @@ class Manifest:
 	fingerprint: str
 
 
-def create(root: Path, snapshot: Snapshot, contents: tuple[str, ...]) -> Manifest:
+def create(
+	root: Path,
+	snapshot: Snapshot,
+	contents: tuple[str, ...],
+	selected_bytes: dict[str, bytes] | None = None,
+) -> Manifest:
 	"""Record a draft's base, changes and file hashes, with one fingerprint over them.
 
 	The build step compares the packet against this record to spot files that
@@ -55,6 +68,7 @@ def create(root: Path, snapshot: Snapshot, contents: tuple[str, ...]) -> Manifes
 		root: The repository root containing the selected files.
 		snapshot: The resolved base and Git changes.
 		contents: Every selected repository-relative file path.
+		selected_bytes: File bytes already read by build, when available.
 
 	Returns:
 		The manifest, including its overall SHA-256 fingerprint.
@@ -65,7 +79,10 @@ def create(root: Path, snapshot: Snapshot, contents: tuple[str, ...]) -> Manifes
 		for change in snapshot.changes
 	)
 	# The hash of each selected file.
-	files = tuple(FileHash(path, _file_hash(root / path)) for path in contents)
+	files = tuple(
+		_file_hash(root, path, None if selected_bytes is None else selected_bytes[path])
+		for path in contents
+	)
 	# The record as compact JSON with sorted keys, so the same record always gives
 	# the same fingerprint.
 	content = json.dumps(
@@ -116,25 +133,44 @@ def _json_fields(
 			{"path": change.path, "status": change.status, "old_path": change.old_path}
 			for change in changes
 		],
-		"files": [{"path": item.path, "sha256": item.sha256} for item in files],
+		"files": [
+			{
+				"path": item.path,
+				"sha256": item.sha256,
+				**(
+					{"target_sha256": item.target_sha256}
+					if item.target_sha256 is not None
+					else {}
+				),
+			}
+			for item in files
+		],
 	}
 
 
-def _file_hash(file_path: Path) -> str:
-	"""Hash a selected file's bytes, or a symlink's own link text.
+def _file_hash(root: Path, path: str, content: bytes | None) -> FileHash:
+	"""Hash a selected file and the target of an internal link.
 
 	Args:
-		file_path: The selected path, which must exist inside the repository.
+		root: The repository containing the selected file.
+		path: The selected repository-relative path.
+		content: Bytes already read from the file, when available.
 
 	Returns:
-		The hexadecimal SHA-256 hash of the file or link text.
+		The file hash and an internal link's target content hash.
 	"""
-	# A link's own text is hashed, so a link never leads to reading a file outside
-	# the repository.
-	content = (
-		os.fsencode(os.readlink(file_path))
-		if file_path.is_symlink()
-		else file_path.read_bytes()
-	)
+	# The selected path on disk.
+	file_path = root / path
 
-	return hashlib.sha256(content).hexdigest()
+	if file_path.is_symlink():
+		# The link text detects a changed destination without opening an outside file.
+		link_hash = hashlib.sha256(os.fsencode(os.readlink(file_path))).hexdigest()
+		if leads_outside(root, path):
+			return FileHash(path, link_hash)
+
+		# The target contents detect changes that leave the link text intact.
+		target = content if content is not None else file_path.read_bytes()
+		return FileHash(path, link_hash, hashlib.sha256(target).hexdigest())
+
+	file_content = content if content is not None else file_path.read_bytes()
+	return FileHash(path, hashlib.sha256(file_content).hexdigest())

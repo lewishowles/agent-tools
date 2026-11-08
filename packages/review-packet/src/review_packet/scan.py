@@ -81,6 +81,22 @@ def scan_files(root: Path, paths: tuple[str, ...]) -> tuple[Finding, ...]:
 	return tuple(findings)
 
 
+def scan_content(contents: dict[str, bytes]) -> tuple[Finding, ...]:
+	"""Scan the exact selected bytes that build will place in the archive.
+
+	Args:
+		contents: Repository-relative names and their already-read file bytes.
+
+	Returns:
+		Findings with locations and kinds, without matched values.
+	"""
+	return tuple(
+		finding
+		for path, content in contents.items()
+		for finding in scan_text(path, content.decode(errors="replace"))
+	)
+
+
 def scan_text(path: str, content: str) -> tuple[Finding, ...]:
 	"""Find blocked file names and content in a packet item.
 

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from review_packet.brief import render
+from review_packet.build import StaleDraftError, UnsafePacketError, build_packet
 from review_packet.checks import CheckError, run_checks
 from review_packet.imports import find_callers
 from review_packet.manifest import Manifest
@@ -136,7 +137,7 @@ class Parser(argparse.ArgumentParser):
 	"""An argument parser that reports errors as JSON when asked to."""
 
 	# Whether --json was passed. It lives on the class because argparse builds the
-	# draft subparser as another Parser, and that subparser reports most argument errors.
+	# subparsers as Parser instances, which report most argument errors.
 	json_mode = False
 
 	def error(self, message: str) -> None:
@@ -156,14 +157,14 @@ class Parser(argparse.ArgumentParser):
 
 
 def build_parser() -> argparse.ArgumentParser:
-	"""Describe the draft command and its options.
+	"""Describe the draft and build commands and their options.
 
 	Returns:
 		The parser for the review-packet command.
 	"""
 	# The top-level parser; its error method can print JSON.
 	parser = Parser(prog="review-packet")
-	# The subcommand group; draft is the only subcommand so far.
+	# The subcommand group for drafting and building packets.
 	commands = parser.add_subparsers(dest="command", required=True)
 	# The draft subcommand and its options.
 	draft = commands.add_parser(
@@ -184,12 +185,23 @@ def build_parser() -> argparse.ArgumentParser:
 	draft.add_argument(
 		"--json", action="store_true", help="Print a JSON result or error."
 	)
+	# The build command reads an existing draft and writes its zip.
+	build = commands.add_parser(
+		"build", description="Package a current draft for outside review."
+	)
+	build.add_argument("chunk_id", help="The drafted progress chunk to package.")
+	build.add_argument(
+		"--output", type=Path, help="Write the zip to this path instead of Downloads."
+	)
+	build.add_argument(
+		"--json", action="store_true", help="Print a JSON result or error."
+	)
 
 	return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-	"""Draft the brief and print its path and selected contents.
+	"""Run the requested review packet command and print its result.
 
 	Args:
 		argv: The command-line arguments, or None to read sys.argv.
@@ -206,6 +218,9 @@ def main(argv: list[str] | None = None) -> int:
 	Parser.json_mode = "--json" in arguments
 	# The parsed command-line options.
 	args = parser.parse_args(arguments)
+
+	if args.command == "build":
+		return _run_build(args.chunk_id, args.output, args.json)
 
 	try:
 		# The worktree the command runs in.
@@ -256,6 +271,46 @@ def main(argv: list[str] | None = None) -> int:
 
 	_print_result(data, args.json)
 
+	return 0
+
+
+def _run_build(chunk_id: str, output: Path | None, json_mode: bool) -> int:
+	"""Build the zip and report its path or a refusal.
+
+	Args:
+		chunk_id: The chunk whose draft folder is read.
+		output: An optional path for the finished zip.
+		json_mode: Whether to print a JSON envelope.
+
+	Returns:
+		Zero after a zip is written, or the relevant failure exit code.
+	"""
+	try:
+		# The worktree the command runs in.
+		root = repository_root(Path.cwd())
+		# The brief written by draft; its folder holds the other draft files.
+		brief_path = _brief_path(root, chunk_id)
+		if not brief_path.parent.is_dir():
+			raise FileNotFoundError("No draft found. Run review-packet draft first.")
+		# The finished zip.
+		archive = build_packet(root, chunk_id, brief_path.parent, output)
+	except StaleDraftError as error:
+		_print_changed_files(error.paths, json_mode, str(error))
+		return REFUSED_EXIT
+	except UnsafePacketError as error:
+		_print_scan_findings(error.findings, json_mode, str(error))
+		return REFUSED_EXIT
+	except ValueError as error:
+		_print_error("usage", str(error), json_mode)
+		return USAGE_EXIT
+	except (GitError, OSError) as error:
+		_print_error("environment", str(error), json_mode)
+		return ENVIRONMENT_EXIT
+
+	if json_mode:
+		print(json.dumps({"ok": True, "data": {"packet": str(archive)}}))
+	else:
+		print(f"Packet: {archive}")
 	return 0
 
 
@@ -464,16 +519,18 @@ def _print_error(code: str, message: str, json_mode: bool) -> None:
 	print(f"Error: {message}", file=sys.stderr)
 
 
-def _print_scan_findings(findings: tuple[Finding, ...], json_mode: bool) -> None:
-	"""Explain why the draft was refused without showing matched text.
+def _print_scan_findings(
+	findings: tuple[Finding, ...],
+	json_mode: bool,
+	message: str = "Draft not written: these files hold secrets or local paths.",
+) -> None:
+	"""Explain why a draft or build was refused without showing matched text.
 
 	Args:
 		findings: Where each secret or local path was found, and its kind.
 		json_mode: Whether to print a JSON envelope.
+		message: The refusal shown before the locations; build passes its own.
 	"""
-	# The explanation shown before the locations, or in the JSON error.
-	message = "Draft not written: these files hold secrets or local paths."
-
 	if json_mode:
 		# Safe locations and kinds for the JSON error.
 		finding_data = [
@@ -504,13 +561,16 @@ def _print_scan_findings(findings: tuple[Finding, ...], json_mode: bool) -> None
 		print(line, file=sys.stderr)
 
 
-def _print_changed_files(paths: tuple[str, ...], json_mode: bool) -> None:
-	"""Print the refusal and the selected paths that a check changed.
+def _print_changed_files(
+	paths: tuple[str, ...], json_mode: bool, message: str = CHANGED_FILES_MESSAGE
+) -> None:
+	"""Print the refusal and the selected paths that changed after hashing.
 
 	Args:
 		paths: The repository-relative paths that changed after their hashes
 			were recorded.
 		json_mode: Whether to print a JSON error result.
+		message: The refusal shown before the changed paths; build passes its own.
 	"""
 	if json_mode:
 		print(
@@ -519,7 +579,7 @@ def _print_changed_files(paths: tuple[str, ...], json_mode: bool) -> None:
 					"ok": False,
 					"error": {
 						"code": "check-failed",
-						"message": CHANGED_FILES_MESSAGE,
+						"message": message,
 						"data": {"paths": list(paths)},
 					},
 				}
@@ -527,7 +587,7 @@ def _print_changed_files(paths: tuple[str, ...], json_mode: bool) -> None:
 		)
 		return
 
-	print(CHANGED_FILES_MESSAGE, file=sys.stderr)
+	print(message, file=sys.stderr)
 
 	for path in paths:
 		print(path, file=sys.stderr)

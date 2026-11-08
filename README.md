@@ -26,12 +26,13 @@ The tools are for developers who use agents in their own projects. Each tool ins
 | [page-to-markdown](packages/page-to-markdown/README.md) | Turns a URL, local HTML file, or piped HTML into compact Markdown                                | macOS for `--copy`                                   |
 | [progress](packages/progress/README.md)                 | Tracks local project releases, tasks, chunks, and handoffs                                       | Run inside a Git repository                          |
 | [review-feedback](packages/review-feedback/README.md)   | Prepares review comments and reviewable patches; also installs `review-patches`                  | Git worktree; macOS for clipboard input and `--copy` |
+| [review-packet](packages/review-packet/README.md)       | Prepares an outside review zip for a progress chunk                                              | Git worktree and progress                            |
 | [team-send](packages/team-send/README.md)               | Sends an HCOM message to one live teammate by role                                               | HCOM session and `hcom` on `PATH`                    |
 | [retina-shrink](packages/retina-shrink/README.md)       | Makes copied images smaller before chat and halves Retina image files before an agent opens them | macOS 13+, Swift 6.0 or newer; install separately    |
 
 ## Install, upgrade, or remove a tool
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and have Python 3.11 or newer available before installing a Python tool. The installer offers the nine Python tools. Run this command in a terminal to choose from a menu:
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and have Python 3.11 or newer available before installing a Python tool. The installer offers the ten Python tools. Run this command in a terminal to choose from a menu:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lewishowles/agent-tools/main/install.sh | bash
